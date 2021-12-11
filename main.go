@@ -16,8 +16,15 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
+	"net/http"
+	"io/ioutil"
+	"bufio"
+	"bytes"
 	"log"
 	"time"
+	"io"
+	"compress/gzip"
+	"encoding/json"
 )
 
 var iface = flag.String("i", "eth0", "Interface to get packets from")
@@ -78,12 +85,12 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 	bd := f.bidiMap[k]
 	if bd == nil {
 		bd = &bidi{a: s, key: k}
-		log.Printf("[%v] created first side of bidirectional stream", bd.key)
+		//log.Printf("[%v] created first side of bidirectional stream", bd.key)
 		// Register bidirectional with the reverse key, so the matching stream going
 		// the other direction will find it.
 		f.bidiMap[key{netFlow.Reverse(), tcpFlow.Reverse()}] = bd
 	} else {
-		log.Printf("[%v] found second side of bidirectional stream", bd.key)
+		//log.Printf("[%v] found second side of bidirectional stream", bd.key)
 		bd.b = s
 		// Clear out the bidi we're using from the map, just in case.
 		delete(f.bidiMap, k)
@@ -116,7 +123,6 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 	for _, r := range rs {
 		// For now, we'll simply count the bytes on each side of the TCP stream.
 		s.bytes = append(s.bytes, r.Bytes...)
-		log.Println("new packet %v %v %v =================================================================================", r.Start, r.End, string(r.Bytes))
 		// Mark that we've received new packet data.
 		// We could just use time.Now, but by using r.Seen we handle the case
 		// where packets are being read from a file and could be very old.
@@ -136,16 +142,110 @@ func (s *myStream) ReassemblyComplete() {
 // stats.
 func (bd *bidi) maybeFinish() {
 	switch {
-	case bd.a == nil:
-		log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
-	case !bd.a.done:
-		log.Printf("[%v] still waiting on first stream", bd.key)
-	case bd.b == nil:
-		log.Printf("[%v] no second stream yet", bd.key)
-	case !bd.b.done:
-		log.Printf("[%v] still waiting on second stream", bd.key)
-	default:
-		log.Println("[%v] FINISHED, bytes: %v tx, %v rx", bd.key, string(bd.a.bytes), string(bd.b.bytes))
+		case bd.a == nil:
+			//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
+		case !bd.a.done:
+			//log.Printf("[%v] still waiting on first stream", bd.key)
+		case bd.b == nil:
+			//log.Printf("[%v] no second stream yet", bd.key)
+		case !bd.b.done:
+			//log.Printf("[%v] still waiting on second stream", bd.key)
+		default: 
+		reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
+		i := 0
+		requests := []http.Request{}
+		requestsContent := []string{}
+
+		for {
+			req, err := http.ReadRequest(reader)
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			} else if err != nil {
+				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			}
+			body, err := ioutil.ReadAll(req.Body)
+			req.Body.Close()
+			if err != nil {
+				log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			}
+
+			requests = append(requests, *req)
+			requestsContent = append(requestsContent, string(body))
+			// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
+			i++
+		}
+
+		reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
+		i = 0
+		log.Println("len(req)", len(requests))
+		for {
+			if (len(requests) < i+1) {
+				break
+			}
+			req := &requests[i]
+			resp, err := http.ReadResponse(reader, req)
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			} else if err != nil {
+				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			}
+			body, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			}
+			encoding := resp.Header["Content-Encoding"]
+			var r io.Reader
+			r = bytes.NewBuffer(body)
+			if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
+				r, err = gzip.NewReader(r)
+				if err != nil {
+					log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
+				}
+			}
+			if err == nil {
+				body, err = ioutil.ReadAll(r)
+				if _, ok := r.(*gzip.Reader); ok {
+					r.(*gzip.Reader).Close()
+				}
+
+			}
+
+			reqHeader := ""
+			for name, values := range req.Header {
+				// Loop over all values for the name.
+				for _, value := range values {
+					reqHeader += (name + ":" + value + "\r\n")
+				}
+			}
+			
+			respHeader := ""
+			for name, values := range resp.Header {
+				// Loop over all values for the name.
+				for _, value := range values {
+					respHeader += (name + ":" + value + "\r\n")
+				}
+			}
+			
+
+			value := map[string]string{
+				"path": req.URL.String(),
+				"requestHeaders": reqHeader,
+				"responseHeaders":respHeader,
+				"method": req.Method,
+				"requestPayload": requestsContent[i],
+				"responsePayload": string(body),
+				"ip": bd.key.net.Src().String(),
+				"time": fmt.Sprint(time.Now().Unix()),
+				"statusCode": fmt.Sprint(resp.StatusCode),
+				"type": string(req.Proto),
+				"status": resp.Status,
+				"akto_account_id": fmt.Sprint(1000000),
+			}
+
+			out, _ := json.Marshal(value)
+			log.Println("req-resp.String()", string(out))
+			i++
+		}
 	}
 }
 
