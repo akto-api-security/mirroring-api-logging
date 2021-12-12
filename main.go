@@ -7,7 +7,7 @@
 // This binary provides an example of connecting up bidirectional streams from
 // the unidirectional streams provided by gopacket/tcpassembly.
 package main
-/*
+
 
 import (
 	"flag"
@@ -254,8 +254,14 @@ func main() {
 	defer util.Run()()
 	log.Printf("starting capture on interface %q", *iface)
 	// Set up pcap packet capture
-    handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
-    if err != nil { log.Fatal(err) }
+    // handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
+    // if err != nil {  }
+
+	if handle, err := pcap.OpenLive("eth0", 1600, true, pcap.BlockForever); err != nil {
+		log.Fatal(err)
+	  } else if err := handle.SetBPFFilter("udp and port 4789"); err != nil {  // optional
+		log.Fatal(err)
+	  }
     defer handle.Close()
 
 
@@ -292,5 +298,3 @@ func main() {
 		}
 	}
 }
-
-*/

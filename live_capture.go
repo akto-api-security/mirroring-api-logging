@@ -1,5 +1,5 @@
 package main
-
+/*
 import (
     "github.com/google/gopacket"
     "github.com/google/gopacket/pcap"
@@ -45,3 +45,4 @@ func main() {
 	  }
 }
 
+*/
