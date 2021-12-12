@@ -20,6 +20,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -251,8 +253,9 @@ func (bd *bidi) maybeFinish() {
 
 			out, _ := json.Marshal(value)
 			ctx := context.Background()
-			gomiddleware.Produce(kafkaWriter, ctx, string(out))
 			log.Println("req-resp.String()", string(out))
+			gomiddleware.Produce(kafkaWriter, ctx, string(out))
+			log.Println("done sending")
 			i++
 		}
 	}
@@ -261,7 +264,23 @@ func (bd *bidi) maybeFinish() {
 var kafkaWriter *kafka.Writer
 
 func main() {
-	kafkaWriter = gomiddleware.GetKafkaWriter("172.18.0.4", "akto.api.logs", 100, 1*time.Second)
+	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
+	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
+	if e != nil {
+		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+		return
+	}
+
+	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
+	if e != nil {
+		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+		return
+	}
+
+	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+
+	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+
 	defer util.Run()()
 	log.Printf("starting capture on interface %q", *iface)
 	// Set up pcap packet capture
