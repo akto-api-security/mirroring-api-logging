@@ -261,40 +261,36 @@ func main() {
 		log.Fatal(err)
 	  } else if err := handle.SetBPFFilter("udp and port 4789"); err != nil {  // optional
 		log.Fatal(err)
-	  }
-    defer handle.Close()
+	  }  else {
+		// Set up assembly
+		streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
+		streamPool := tcpassembly.NewStreamPool(streamFactory)
+		assembler := tcpassembly.NewAssembler(streamPool)
+		// Limit memory usage by auto-flushing connection state if we get over 100K
+		// packets in memory, or over 1000 for a single stream.
+		assembler.MaxBufferedPagesTotal = 100000
+		assembler.MaxBufferedPagesPerConnection = 1000
 
+		log.Println("reading in packets")
+		// Read in packets, pass to assembler.
 
-	// Set up assembly
-	streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
-	streamPool := tcpassembly.NewStreamPool(streamFactory)
-	assembler := tcpassembly.NewAssembler(streamPool)
-	// Limit memory usage by auto-flushing connection state if we get over 100K
-	// packets in memory, or over 1000 for a single stream.
-	assembler.MaxBufferedPagesTotal = 100000
-	assembler.MaxBufferedPagesPerConnection = 1000
-
-	log.Println("reading in packets")
-	// Read in packets, pass to assembler.
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-
-	// Loop through packets in file
-	for packet := range packetSource.Packets() {
-		// log.Println("some packet")
-
-		udpContent := packet.TransportLayer().(*layers.UDP)
-		// log.Println("%v", udpContent.Payload)
-
-		innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-
-		// log.Println("%v", innerPacket)
-
-		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-			// log.Println("not a tcp payload")
-			continue
-		} else {
-			tcp := innerPacket.TransportLayer().(*layers.TCP)
-			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+		for packet := range packetSource.Packets() {
+			udpContent := packet.TransportLayer().(*layers.UDP)
+			// log.Println("%v", udpContent.Payload)
+	
+			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+	
+			// log.Println("%v", innerPacket)
+	
+			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
+				// log.Println("not a tcp payload")
+				continue
+			} else {
+				tcp := innerPacket.TransportLayer().(*layers.TCP)
+				log.Println(string(tcp.Payload))
+				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+			}
 		}
 	}
 }
