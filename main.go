@@ -257,7 +257,7 @@ func main() {
     // handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
     // if err != nil {  }
 
-	if handle, err := pcap.OpenLive("eth0", 1600, true, pcap.BlockForever); err != nil {
+	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	  } else if err := handle.SetBPFFilter("udp and port 4789"); err != nil {  // optional
 		log.Fatal(err)
@@ -288,7 +288,6 @@ func main() {
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
-				log.Println(string(tcp.Payload))
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
 		}
