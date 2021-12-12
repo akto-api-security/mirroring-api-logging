@@ -7,6 +7,7 @@
 // This binary provides an example of connecting up bidirectional streams from
 // the unidirectional streams provided by gopacket/tcpassembly.
 package main
+/*
 
 import (
 	"flag"
@@ -292,3 +293,4 @@ func main() {
 	}
 }
 
+*/
