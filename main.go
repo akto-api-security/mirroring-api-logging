@@ -8,6 +8,7 @@
 // the unidirectional streams provided by gopacket/tcpassembly.
 package main
 
+
 import (
 	"flag"
 	"fmt"
@@ -253,42 +254,42 @@ func main() {
 	defer util.Run()()
 	log.Printf("starting capture on interface %q", *iface)
 	// Set up pcap packet capture
-    handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
-    if err != nil { log.Fatal(err) }
-    defer handle.Close()
+    // handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
+    // if err != nil {  }
 
+	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+		log.Fatal(err)
+	  } else if err := handle.SetBPFFilter("udp and port 4789"); err != nil {  // optional
+		log.Fatal(err)
+	  }  else {
+		// Set up assembly
+		streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
+		streamPool := tcpassembly.NewStreamPool(streamFactory)
+		assembler := tcpassembly.NewAssembler(streamPool)
+		// Limit memory usage by auto-flushing connection state if we get over 100K
+		// packets in memory, or over 1000 for a single stream.
+		assembler.MaxBufferedPagesTotal = 100000
+		assembler.MaxBufferedPagesPerConnection = 1000
 
-	// Set up assembly
-	streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
-	streamPool := tcpassembly.NewStreamPool(streamFactory)
-	assembler := tcpassembly.NewAssembler(streamPool)
-	// Limit memory usage by auto-flushing connection state if we get over 100K
-	// packets in memory, or over 1000 for a single stream.
-	assembler.MaxBufferedPagesTotal = 100000
-	assembler.MaxBufferedPagesPerConnection = 1000
+		log.Println("reading in packets")
+		// Read in packets, pass to assembler.
 
-	log.Println("reading in packets")
-	// Read in packets, pass to assembler.
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-
-	// Loop through packets in file
-	for packet := range packetSource.Packets() {
-		// log.Println("some packet")
-
-		udpContent := packet.TransportLayer().(*layers.UDP)
-		// log.Println("%v", udpContent.Payload)
-
-		innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-
-		// log.Println("%v", innerPacket)
-
-		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-			// log.Println("not a tcp payload")
-			continue
-		} else {
-			tcp := innerPacket.TransportLayer().(*layers.TCP)
-			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+		for packet := range packetSource.Packets() {
+			udpContent := packet.TransportLayer().(*layers.UDP)
+			// log.Println("%v", udpContent.Payload)
+	
+			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+	
+			// log.Println("%v", innerPacket)
+	
+			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
+				// log.Println("not a tcp payload")
+				continue
+			} else {
+				tcp := innerPacket.TransportLayer().(*layers.TCP)
+				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+			}
 		}
 	}
 }
-
