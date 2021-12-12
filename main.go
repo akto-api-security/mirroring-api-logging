@@ -9,22 +9,27 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"time"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/examples/util"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
-	"net/http"
-	"io/ioutil"
-	"bufio"
-	"bytes"
-	"log"
-	"time"
-	"io"
-	"compress/gzip"
-	"encoding/json"
+
+	"github.com/akto-api-security/gomiddleware"
+	"github.com/segmentio/kafka-go"
 )
 
 var iface = flag.String("i", "eth0", "Interface to get packets from")
@@ -32,8 +37,8 @@ var snaplen = flag.Int("s", 16<<10, "SnapLen for pcap packet capture")
 var filter = flag.String("f", "tcp", "BPF filter for pcap")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 var (
-    handle   *pcap.Handle
-    err      error	
+	handle *pcap.Handle
+	err    error
 )
 
 // key is used to map bidirectional streams to each other.
@@ -53,8 +58,8 @@ const timeout time.Duration = time.Minute * 5
 // myStream implements tcpassembly.Stream
 type myStream struct {
 	bytes []byte // total bytes seen on this stream.
-	bidi  *bidi // maps to my bidirectional twin.
-	done  bool  // if true, we've seen the last packet we're going to for this stream.
+	bidi  *bidi  // maps to my bidirectional twin.
+	done  bool   // if true, we've seen the last packet we're going to for this stream.
 }
 
 // bidi stores each unidirectional side of a bidirectional stream.
@@ -142,15 +147,15 @@ func (s *myStream) ReassemblyComplete() {
 // stats.
 func (bd *bidi) maybeFinish() {
 	switch {
-		case bd.a == nil:
-			//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
-		case !bd.a.done:
-			//log.Printf("[%v] still waiting on first stream", bd.key)
-		case bd.b == nil:
-			//log.Printf("[%v] no second stream yet", bd.key)
-		case !bd.b.done:
-			//log.Printf("[%v] still waiting on second stream", bd.key)
-		default: 
+	case bd.a == nil:
+		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
+	case !bd.a.done:
+		//log.Printf("[%v] still waiting on first stream", bd.key)
+	case bd.b == nil:
+		//log.Printf("[%v] no second stream yet", bd.key)
+	case !bd.b.done:
+		//log.Printf("[%v] still waiting on second stream", bd.key)
+	default:
 		reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 		i := 0
 		requests := []http.Request{}
@@ -179,7 +184,7 @@ func (bd *bidi) maybeFinish() {
 		i = 0
 		log.Println("len(req)", len(requests))
 		for {
-			if (len(requests) < i+1) {
+			if len(requests) < i+1 {
 				break
 			}
 			req := &requests[i]
@@ -210,53 +215,61 @@ func (bd *bidi) maybeFinish() {
 
 			}
 
-			reqHeader := ""
+			reqHeader := make(map[string]string)
 			for name, values := range req.Header {
 				// Loop over all values for the name.
 				for _, value := range values {
-					reqHeader += (name + ":" + value + "\r\n")
+					reqHeader[name] = value
 				}
 			}
-			
-			respHeader := ""
+
+			respHeader := make(map[string]string)
 			for name, values := range resp.Header {
 				// Loop over all values for the name.
 				for _, value := range values {
-					respHeader += (name + ":" + value + "\r\n")
+					respHeader[name] = value
 				}
 			}
-			
+
+			reqHeaderString, _ := json.Marshal(reqHeader)
+			respHeaderString, _ := json.Marshal(respHeader)
 
 			value := map[string]string{
-				"path": req.URL.String(),
-				"requestHeaders": reqHeader,
-				"responseHeaders":respHeader,
-				"method": req.Method,
-				"requestPayload": requestsContent[i],
+				"path":            req.URL.String(),
+				"requestHeaders":  string(reqHeaderString),
+				"responseHeaders": string(respHeaderString),
+				"method":          req.Method,
+				"requestPayload":  requestsContent[i],
 				"responsePayload": string(body),
-				"ip": bd.key.net.Src().String(),
-				"time": fmt.Sprint(time.Now().Unix()),
-				"statusCode": fmt.Sprint(resp.StatusCode),
-				"type": string(req.Proto),
-				"status": resp.Status,
+				"ip":              bd.key.net.Src().String(),
+				"time":            fmt.Sprint(time.Now().Unix()),
+				"statusCode":      fmt.Sprint(resp.StatusCode),
+				"type":            string(req.Proto),
+				"status":          resp.Status,
 				"akto_account_id": fmt.Sprint(1000000),
 			}
 
 			out, _ := json.Marshal(value)
+			ctx := context.Background()
+			gomiddleware.Produce(kafkaWriter, ctx, string(out))
 			log.Println("req-resp.String()", string(out))
 			i++
 		}
 	}
 }
 
+var kafkaWriter *kafka.Writer
+
 func main() {
+	kafkaWriter = gomiddleware.GetKafkaWriter("172.18.0.4", "akto.api.logs", 100, 1*time.Second)
 	defer util.Run()()
 	log.Printf("starting capture on interface %q", *iface)
 	// Set up pcap packet capture
-    handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
-    if err != nil { log.Fatal(err) }
-    defer handle.Close()
-
+	handle, err = pcap.OpenOffline("/home/avneesh/Downloads/dump1.pcap")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer handle.Close()
 
 	// Set up assembly
 	streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
@@ -291,4 +304,3 @@ func main() {
 		}
 	}
 }
-
