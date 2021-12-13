@@ -259,7 +259,7 @@ func (bd *bidi) maybeFinish() {
 				printCounter--
 				log.Println("req-resp.String()", string(out))
 			}
-			
+
 			gomiddleware.Produce(kafkaWriter, ctx, string(out))
 			i++
 		}
@@ -311,6 +311,11 @@ func main() {
 
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
+
+			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
+				continue;
+			}
+
 			udpContent := packet.TransportLayer().(*layers.UDP)
 			// log.Println("%v", udpContent.Payload)
 
