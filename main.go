@@ -38,6 +38,8 @@ var iface = flag.String("i", "eth0", "Interface to get packets from")
 var snaplen = flag.Int("s", 16<<10, "SnapLen for pcap packet capture")
 var filter = flag.String("f", "tcp", "BPF filter for pcap")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
+var printCounter = 500
+
 var (
 	handle *pcap.Handle
 	err    error
@@ -253,9 +255,12 @@ func (bd *bidi) maybeFinish() {
 
 			out, _ := json.Marshal(value)
 			ctx := context.Background()
-			log.Println("req-resp.String()", string(out))
+			if printCounter > 0 {
+				printCounter--
+				log.Println("req-resp.String()", string(out))
+			}
+			
 			gomiddleware.Produce(kafkaWriter, ctx, string(out))
-			log.Println("done sending")
 			i++
 		}
 	}
