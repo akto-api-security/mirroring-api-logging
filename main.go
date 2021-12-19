@@ -13,6 +13,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"os"
+	"strconv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,8 +22,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
-	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -39,6 +39,7 @@ var snaplen = flag.Int("s", 16<<10, "SnapLen for pcap packet capture")
 var filter = flag.String("f", "tcp", "BPF filter for pcap")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 var printCounter = 500
+var assemblerMap = make(map[int]*tcpassembly.Assembler)
 
 var (
 	handle *pcap.Handle
@@ -75,12 +76,14 @@ type bidi struct {
 	key            key       // Key of the first stream, mostly for logging.
 	a, b           *myStream // the two bidirectional streams.
 	lastPacketSeen time.Time // last time we saw a packet from either stream.
+	vxlanID        int
 }
 
 // myFactory implements tcpassmebly.StreamFactory
 type myFactory struct {
 	// bidiMap maps keys to bidirectional stream pairs.
 	bidiMap map[key]*bidi
+	vxlanID int
 }
 
 // New handles creating a new tcpassembly.Stream.
@@ -93,7 +96,7 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 	k := key{netFlow, tcpFlow}
 	bd := f.bidiMap[k]
 	if bd == nil {
-		bd = &bidi{a: s, key: k}
+		bd = &bidi{a: s, key: k, vxlanID: f.vxlanID}
 		//log.Printf("[%v] created first side of bidirectional stream", bd.key)
 		// Register bidirectional with the reverse key, so the matching stream going
 		// the other direction will find it.
@@ -251,6 +254,7 @@ func (bd *bidi) maybeFinish() {
 				"type":            string(req.Proto),
 				"status":          resp.Status,
 				"akto_account_id": fmt.Sprint(1000000),
+				"vxlanID":         fmt.Sprint(bd.vxlanID),
 			}
 
 			out, _ := json.Marshal(value)
@@ -259,11 +263,32 @@ func (bd *bidi) maybeFinish() {
 				printCounter--
 				log.Println("req-resp.String()", string(out))
 			}
-
 			gomiddleware.Produce(kafkaWriter, ctx, string(out))
 			i++
 		}
 	}
+}
+
+func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
+
+	_assembler := assemblerMap[vxlanID]
+	if _assembler == nil {
+		log.Println("creating assembler for vxlanID=", vxlanID)
+		// Set up assembly
+		streamFactory := &myFactory{bidiMap: make(map[key]*bidi), vxlanID: vxlanID}
+		streamPool := tcpassembly.NewStreamPool(streamFactory)
+		_assembler = tcpassembly.NewAssembler(streamPool)
+		// Limit memory usage by auto-flushing connection state if we get over 100K
+		// packets in memory, or over 1000 for a single stream.
+		_assembler.MaxBufferedPagesTotal = 100000
+		_assembler.MaxBufferedPagesPerConnection = 1000
+		
+		assemblerMap[vxlanID] = _assembler
+		log.Println("created assembler for vxlanID=", vxlanID)
+
+	}
+	return _assembler
+
 }
 
 var kafkaWriter *kafka.Writer
@@ -297,18 +322,8 @@ func main() {
 	} else if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
 	} else {
-		// Set up assembly
-		streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
-		streamPool := tcpassembly.NewStreamPool(streamFactory)
-		assembler := tcpassembly.NewAssembler(streamPool)
-		// Limit memory usage by auto-flushing connection state if we get over 100K
-		// packets in memory, or over 1000 for a single stream.
-		assembler.MaxBufferedPagesTotal = 100000
-		assembler.MaxBufferedPagesPerConnection = 1000
-
 		log.Println("reading in packets")
 		// Read in packets, pass to assembler.
-
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
 
@@ -317,8 +332,9 @@ func main() {
 			}
 
 			udpContent := packet.TransportLayer().(*layers.UDP)
-			// log.Println("%v", udpContent.Payload)
 
+			vxlanIDbyteArr := udpContent.Payload[4:7]
+			vxlanID := int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
 			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
 
 			// log.Println("%v", innerPacket)
@@ -328,6 +344,7 @@ func main() {
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
+				assembler := createAndGetAssembler(vxlanID)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
 		}
