@@ -254,7 +254,7 @@ func (bd *bidi) maybeFinish() {
 				"type":            string(req.Proto),
 				"status":          resp.Status,
 				"akto_account_id": fmt.Sprint(1000000),
-				"vxlanID":         fmt.Sprint(bd.vxlanID),
+				"akto_vxlanID":         fmt.Sprint(bd.vxlanID),
 			}
 
 			out, _ := json.Marshal(value)
