@@ -241,7 +241,7 @@ func (bd *bidi) maybeFinish() {
 			reqHeaderString, _ := json.Marshal(reqHeader)
 			respHeaderString, _ := json.Marshal(respHeader)
 
-			value := map[string]string{
+			value := map[string]string {
 				"path":            req.URL.String(),
 				"requestHeaders":  string(reqHeaderString),
 				"responseHeaders": string(respHeaderString),
@@ -254,7 +254,7 @@ func (bd *bidi) maybeFinish() {
 				"type":            string(req.Proto),
 				"status":          resp.Status,
 				"akto_account_id": fmt.Sprint(1000000),
-				"akto_vxlanID":         fmt.Sprint(bd.vxlanID),
+				"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
 			}
 
 			out, _ := json.Marshal(value)
