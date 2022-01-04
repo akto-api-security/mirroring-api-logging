@@ -12,9 +12,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"context"
-	"os"
-	"strconv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,15 +20,13 @@ import (
 	"log"
 	"net/http"
 	"time"
-
+	"strings"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/examples/util"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 
-	"github.com/akto-api-security/gomiddleware"
-	"github.com/segmentio/kafka-go"
 )
 
 var iface = flag.String("i", "eth0", "Interface to get packets from")
@@ -174,11 +169,13 @@ func (bd *bidi) maybeFinish() {
 				break
 			} else if err != nil {
 				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+				return
 			}
 			body, err := ioutil.ReadAll(req.Body)
 			req.Body.Close()
 			if err != nil {
 				log.Println("HTTP-request-body", "Got body err: %s\n", err)
+				return
 			}
 
 			requests = append(requests, *req)
@@ -189,7 +186,6 @@ func (bd *bidi) maybeFinish() {
 
 		reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
 		i = 0
-		log.Println("len(req)", len(requests))
 		for {
 			if len(requests) < i+1 {
 				break
@@ -200,10 +196,12 @@ func (bd *bidi) maybeFinish() {
 				break
 			} else if err != nil {
 				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+				return
 			}
 			body, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				log.Println("HTTP-request-body", "Got body err: %s\n", err)
+				return
 			}
 			encoding := resp.Header["Content-Encoding"]
 			var r io.Reader
@@ -212,6 +210,7 @@ func (bd *bidi) maybeFinish() {
 				r, err = gzip.NewReader(r)
 				if err != nil {
 					log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
+					return
 				}
 			}
 			if err == nil {
@@ -258,12 +257,12 @@ func (bd *bidi) maybeFinish() {
 			}
 
 			out, _ := json.Marshal(value)
-			ctx := context.Background()
 			if printCounter > 0 {
 				printCounter--
-				log.Println("req-resp.String()", string(out))
+				if(strings.Index(string(out), "ELB") < 0) {
+					log.Println(string(out))
+				}
 			}
-			gomiddleware.Produce(kafkaWriter, ctx, string(out))
 			i++
 		}
 	}
@@ -280,8 +279,8 @@ func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 		_assembler = tcpassembly.NewAssembler(streamPool)
 		// Limit memory usage by auto-flushing connection state if we get over 100K
 		// packets in memory, or over 1000 for a single stream.
-		_assembler.MaxBufferedPagesTotal = 100000
-		_assembler.MaxBufferedPagesPerConnection = 1000
+		_assembler.MaxBufferedPagesTotal = 1000000
+		_assembler.MaxBufferedPagesPerConnection = 100000
 		
 		assemblerMap[vxlanID] = _assembler
 		log.Println("created assembler for vxlanID=", vxlanID)
@@ -291,25 +290,8 @@ func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 
 }
 
-var kafkaWriter *kafka.Writer
 
 func main() {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
-	}
-
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
-	}
-
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
-
-	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 
 	defer util.Run()()
 	log.Printf("starting capture on interface %q", *iface)
@@ -325,17 +307,25 @@ func main() {
 		log.Println("reading in packets")
 		// Read in packets, pass to assembler.
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-		for packet := range packetSource.Packets() {
+		packets := packetSource.Packets() 
+
+                for {
+
+		select {
+                       case packet := <-packets {	
 
 			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
 				continue;
 			}
+
+			
 
 			udpContent := packet.TransportLayer().(*layers.UDP)
 
 			vxlanIDbyteArr := udpContent.Payload[4:7]
 			vxlanID := int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
 			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+
 
 			// log.Println("%v", innerPacket)
 
@@ -344,9 +334,16 @@ func main() {
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
+				//log.Println(vxlanID)
+				//log.Println(innerPacket.NetworkLayer().NetworkFlow())
+				
+				tcpLayer := innerPacket.Layer(layers.LayerTypeTCP)
+				tcp11, _ := tcpLayer.(*layers.TCP)
+				if (len(tcp11.Payload) > 50) {
+				log.Println(string(tcp11.Payload[:20])) }
 				assembler := createAndGetAssembler(vxlanID)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
-		}
+		} } 
 	}
 }
