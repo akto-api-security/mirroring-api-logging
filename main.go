@@ -76,6 +76,7 @@ type bidi struct {
 	key            key       // Key of the first stream, mostly for logging.
 	a, b           *myStream // the two bidirectional streams.
 	lastPacketSeen time.Time // last time we saw a packet from either stream.
+	lastProcessedTime time.Time
 	vxlanID        int
 }
 
@@ -108,6 +109,7 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 		delete(f.bidiMap, k)
 	}
 	s.bidi = bd
+	bd.lastProcessedTime = time.Now()
 	return s
 }
 
@@ -142,6 +144,8 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 			s.bidi.lastPacketSeen = r.Seen
 		}
 	}
+
+	s.bidi.maybeFinish()
 }
 
 // ReassemblyComplete marks this stream as finished.
@@ -150,122 +154,136 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
+
+func tryReadFromBD(bd *bidi, isPending bool) {
+	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
+	i := 0
+	requests := []http.Request{}
+	requestsContent := []string{}
+
+	for {
+		req, err := http.ReadRequest(reader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			return
+		}
+		body, err := ioutil.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			return
+		}
+
+		requests = append(requests, *req)
+		requestsContent = append(requestsContent, string(body))
+		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
+		i++
+	}
+
+	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
+	i = 0
+	log.Println("len(req)", len(requests))
+	for {
+		if len(requests) < i+1 {
+			break
+		}
+		req := &requests[i]
+		resp, err := http.ReadResponse(reader, req)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			return
+		}
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			return
+		}
+		encoding := resp.Header["Content-Encoding"]
+		var r io.Reader
+		r = bytes.NewBuffer(body)
+		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
+			r, err = gzip.NewReader(r)
+			if err != nil {
+				log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
+				return
+			}
+		}
+		if err == nil {
+			body, err = ioutil.ReadAll(r)
+			if _, ok := r.(*gzip.Reader); ok {
+				r.(*gzip.Reader).Close()
+			}
+
+		}
+
+		reqHeader := make(map[string]string)
+		for name, values := range req.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				reqHeader[name] = value
+			}
+		}
+
+		respHeader := make(map[string]string)
+		for name, values := range resp.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				respHeader[name] = value
+			}
+		}
+
+		reqHeaderString, _ := json.Marshal(reqHeader)
+		respHeaderString, _ := json.Marshal(respHeader)
+
+		value := map[string]string {
+			"path":            req.URL.String(),
+			"requestHeaders":  string(reqHeaderString),
+			"responseHeaders": string(respHeaderString),
+			"method":          req.Method,
+			"requestPayload":  requestsContent[i],
+			"responsePayload": string(body),
+			"ip":              bd.key.net.Src().String(),
+			"time":            fmt.Sprint(time.Now().Unix()),
+			"statusCode":      fmt.Sprint(resp.StatusCode),
+			"type":            string(req.Proto),
+			"status":          resp.Status,
+			"akto_account_id": fmt.Sprint(1000000),
+			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
+			"is_pending": 	   fmt.Sprint(isPending),
+		}
+
+		out, _ := json.Marshal(value)
+		ctx := context.Background()
+
+		if printCounter > 0 {
+			printCounter--
+			log.Println("req-resp.String()", string(out))
+		}
+		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		i++
+	}	
+}
+
 // maybeFinish will wait until both directions are complete, then print out
 // stats.
 func (bd *bidi) maybeFinish() {
+	timeNow := time.Now()
 	switch {
 	case bd.a == nil:
 		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
-	case !bd.a.done:
-		//log.Printf("[%v] still waiting on first stream", bd.key)
 	case bd.b == nil:
 		//log.Printf("[%v] no second stream yet", bd.key)
-	case !bd.b.done:
-		//log.Printf("[%v] still waiting on second stream", bd.key)
 	default:
-		reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
-		i := 0
-		requests := []http.Request{}
-		requestsContent := []string{}
-
-		for {
-			req, err := http.ReadRequest(reader)
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			} else if err != nil {
-				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
-			}
-			body, err := ioutil.ReadAll(req.Body)
-			req.Body.Close()
-			if err != nil {
-				log.Println("HTTP-request-body", "Got body err: %s\n", err)
-			}
-
-			requests = append(requests, *req)
-			requestsContent = append(requestsContent, string(body))
-			// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
-			i++
-		}
-
-		reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
-		i = 0
-		log.Println("len(req)", len(requests))
-		for {
-			if len(requests) < i+1 {
-				break
-			}
-			req := &requests[i]
-			resp, err := http.ReadResponse(reader, req)
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			} else if err != nil {
-				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
-			}
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				log.Println("HTTP-request-body", "Got body err: %s\n", err)
-			}
-			encoding := resp.Header["Content-Encoding"]
-			var r io.Reader
-			r = bytes.NewBuffer(body)
-			if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
-				r, err = gzip.NewReader(r)
-				if err != nil {
-					log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
-				}
-			}
-			if err == nil {
-				body, err = ioutil.ReadAll(r)
-				if _, ok := r.(*gzip.Reader); ok {
-					r.(*gzip.Reader).Close()
-				}
-
-			}
-
-			reqHeader := make(map[string]string)
-			for name, values := range req.Header {
-				// Loop over all values for the name.
-				for _, value := range values {
-					reqHeader[name] = value
-				}
-			}
-
-			respHeader := make(map[string]string)
-			for name, values := range resp.Header {
-				// Loop over all values for the name.
-				for _, value := range values {
-					respHeader[name] = value
-				}
-			}
-
-			reqHeaderString, _ := json.Marshal(reqHeader)
-			respHeaderString, _ := json.Marshal(respHeader)
-
-			value := map[string]string {
-				"path":            req.URL.String(),
-				"requestHeaders":  string(reqHeaderString),
-				"responseHeaders": string(respHeaderString),
-				"method":          req.Method,
-				"requestPayload":  requestsContent[i],
-				"responsePayload": string(body),
-				"ip":              bd.key.net.Src().String(),
-				"time":            fmt.Sprint(time.Now().Unix()),
-				"statusCode":      fmt.Sprint(resp.StatusCode),
-				"type":            string(req.Proto),
-				"status":          resp.Status,
-				"akto_account_id": fmt.Sprint(1000000),
-				"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
-			}
-
-			out, _ := json.Marshal(value)
-			ctx := context.Background()
-			if printCounter > 0 {
-				printCounter--
-				log.Println("req-resp.String()", string(out))
-			}
-			gomiddleware.Produce(kafkaWriter, ctx, string(out))
-			i++
-		}
+		if(bd.a.done && bd.b.done) {
+			tryReadFromBD(bd, false)
+		} else if (timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60) {
+			tryReadFromBD(bd, true)
+			bd.lastProcessedTime = timeNow
+		} 	
 	}
 }
 
