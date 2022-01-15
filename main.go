@@ -7,6 +7,7 @@
 // This binary provides an example of connecting up bidirectional streams from
 // the unidirectional streams provided by gopacket/tcpassembly.
 package main
+import "C"
 
 import (
 	"bufio"
@@ -311,7 +312,7 @@ func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 
 var kafkaWriter *kafka.Writer
 
-func main() {
+func run(handle *pcap.Handle) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
@@ -335,9 +336,7 @@ func main() {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
-		log.Fatal(err)
-	} else if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
 	} else {
 		log.Println("reading in packets")
@@ -366,5 +365,23 @@ func main() {
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
 		}
+	}
+}
+
+//export readTcpDumpFile
+func readTcpDumpFile(filepath string) {
+	if handle, err := pcap.OpenOffline(filepath); err != nil {
+		log.Fatal(err)
+	} else {
+		run(handle)
+	}
+}
+
+
+func main() {
+	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+		log.Fatal(err)
+	} else {
+		run(handle)
 	}
 }
