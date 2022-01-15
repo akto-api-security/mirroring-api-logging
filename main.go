@@ -369,7 +369,11 @@ func run(handle *pcap.Handle) {
 }
 
 //export readTcpDumpFile
-func readTcpDumpFile(filepath string) {
+func readTcpDumpFile(filepath string, kafkaURL string) {
+	os.Setenv("AKTO_KAFKA_BROKER_URL", kafkaURL)
+	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
+	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
+
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
 		log.Fatal(err)
 	} else {
