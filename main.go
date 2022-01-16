@@ -41,7 +41,6 @@ var filter = flag.String("f", "tcp", "BPF filter for pcap")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 var printCounter = 500
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
-
 var (
 	handle *pcap.Handle
 	err    error
@@ -312,7 +311,7 @@ func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 
 var kafkaWriter *kafka.Writer
 
-func run(handle *pcap.Handle) {
+func run(handle *pcap.Handle, apiCollectionId int) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
@@ -343,19 +342,21 @@ func run(handle *pcap.Handle) {
 		// Read in packets, pass to assembler.
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
+			innerPacket := packet
+			vxlanID := apiCollectionId
+			if (apiCollectionId <= 0) {
 
-			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
-				continue;
+				if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
+					continue;
+				}
+
+				udpContent := packet.TransportLayer().(*layers.UDP)
+
+				vxlanIDbyteArr := udpContent.Payload[4:7]
+				vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
+				innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+				// log.Println("%v", innerPacket)
 			}
-
-			udpContent := packet.TransportLayer().(*layers.UDP)
-
-			vxlanIDbyteArr := udpContent.Payload[4:7]
-			vxlanID := int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
-			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-
-			// log.Println("%v", innerPacket)
-
 			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
 				// log.Println("not a tcp payload")
 				continue
@@ -369,7 +370,7 @@ func run(handle *pcap.Handle) {
 }
 
 //export readTcpDumpFile
-func readTcpDumpFile(filepath string, kafkaURL string) {
+func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	os.Setenv("AKTO_KAFKA_BROKER_URL", kafkaURL)
 	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
 	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
@@ -377,7 +378,7 @@ func readTcpDumpFile(filepath string, kafkaURL string) {
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
 		log.Fatal(err)
 	} else {
-		run(handle)
+		run(handle, apiCollectionId)
 	}
 }
 
@@ -386,6 +387,6 @@ func main() {
 	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
-		run(handle)
+		run(handle, -1)
 	}
 }
