@@ -38,6 +38,8 @@ jobs:
       - uses: actions/setup-go@v2
         with:
           go-version: '^1.16.1' # The Go version to download (if necessary) and use.
+      - name: install required packages
+        run: sudo apt install libpcap-dev expect
       - run: go build -o /mirroring-api-logging
 
       - name: Configure AWS credentials
