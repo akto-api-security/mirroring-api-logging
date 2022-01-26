@@ -72,7 +72,7 @@ type bidi struct {
 	lastPacketSeen    time.Time // last time we saw a packet from either stream.
 	lastProcessedTime time.Time
 	vxlanID           int
-	source            string
+	source			  string
 }
 
 // myFactory implements tcpassmebly.StreamFactory
@@ -80,7 +80,7 @@ type myFactory struct {
 	// bidiMap maps keys to bidirectional stream pairs.
 	bidiMap map[key]*bidi
 	vxlanID int
-	source  string
+	source string
 }
 
 // New handles creating a new tcpassembly.Stream.
