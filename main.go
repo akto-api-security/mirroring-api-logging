@@ -73,6 +73,7 @@ type bidi struct {
 	lastPacketSeen    time.Time // last time we saw a packet from either stream.
 	lastProcessedTime time.Time
 	vxlanID           int
+	source			  string
 }
 
 // myFactory implements tcpassmebly.StreamFactory
@@ -80,6 +81,7 @@ type myFactory struct {
 	// bidiMap maps keys to bidirectional stream pairs.
 	bidiMap map[key]*bidi
 	vxlanID int
+	source string
 }
 
 // New handles creating a new tcpassembly.Stream.
@@ -92,7 +94,7 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 	k := key{netFlow, tcpFlow}
 	bd := f.bidiMap[k]
 	if bd == nil {
-		bd = &bidi{a: s, key: k, vxlanID: f.vxlanID}
+		bd = &bidi{a: s, key: k, vxlanID: f.vxlanID, source: f.source}
 		//log.Printf("[%v] created first side of bidirectional stream", bd.key)
 		// Register bidirectional with the reverse key, so the matching stream going
 		// the other direction will find it.
@@ -248,6 +250,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"akto_account_id": fmt.Sprint(1000000),
 			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
 			"is_pending":      fmt.Sprint(isPending),
+			"source": 		   bd.source,	
 		}
 
 		out, _ := json.Marshal(value)
@@ -281,13 +284,13 @@ func (bd *bidi) maybeFinish() {
 	}
 }
 
-func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
+func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 	_assembler := assemblerMap[vxlanID]
 	if _assembler == nil {
 		log.Println("creating assembler for vxlanID=", vxlanID)
 		// Set up assembly
-		streamFactory := &myFactory{bidiMap: make(map[key]*bidi), vxlanID: vxlanID}
+		streamFactory := &myFactory{bidiMap: make(map[key]*bidi), vxlanID: vxlanID, source: source}
 		streamPool := tcpassembly.NewStreamPool(streamFactory)
 		_assembler = tcpassembly.NewAssembler(streamPool)
 		// Limit memory usage by auto-flushing connection state if we get over 100K
@@ -305,7 +308,7 @@ func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 
 var kafkaWriter *kafka.Writer
 
-func run(handle *pcap.Handle, apiCollectionId int) {
+func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
@@ -352,7 +355,7 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
-				assembler := createAndGetAssembler(vxlanID)
+				assembler := createAndGetAssembler(vxlanID, source)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
 		}
@@ -368,7 +371,7 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
 		log.Fatal(err)
 	} else {
-		run(handle, apiCollectionId)
+		run(handle, apiCollectionId, "PCAP")
 	}
 }
 
@@ -376,6 +379,6 @@ func main() {
 	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
-		run(handle, -1)
+		run(handle, -1, "MIRRORING")
 	}
 }
