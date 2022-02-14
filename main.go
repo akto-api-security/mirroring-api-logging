@@ -14,7 +14,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,16 +21,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
-
-	"github.com/akto-api-security/gomiddleware"
-	"github.com/segmentio/kafka-go"
 )
 
 var printCounter = 500
@@ -134,12 +129,17 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 	for _, r := range rs {
 		// For now, we'll simply count the bytes on each side of the TCP stream.
 		s.bytes = append(s.bytes, r.Bytes...)
+		log.Println("Reassembling - ", r.Bytes)
 		// Mark that we've received new packet data.
 		// We could just use time.Now, but by using r.Seen we handle the case
 		// where packets are being read from a file and could be very old.
 		if s.bidi.lastPacketSeen.Before(r.Seen) {
 			s.bidi.lastPacketSeen = r.Seen
 		}
+
+		log.Println("started force execution: ")
+		s.bidi.maybeFinish()
+		log.Println("completed force execution")
 	}
 
 	s.bidi.maybeFinish()
@@ -147,6 +147,7 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 
 // ReassemblyComplete marks this stream as finished.
 func (s *myStream) ReassemblyComplete() {
+	log.Println("ReassemblyComplete - ")
 	s.done = true
 	s.bidi.maybeFinish()
 }
@@ -174,8 +175,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		requests = append(requests, *req)
 		requestsContent = append(requestsContent, string(body))
-		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
+		log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
 		i++
+	}
+
+	if (bd.b == nil) {
+		return;
 	}
 
 	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
@@ -254,13 +259,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
 
 		if printCounter > 0 {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
 		}
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -272,12 +275,12 @@ func (bd *bidi) maybeFinish() {
 	switch {
 	case bd.a == nil:
 		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
-	case bd.b == nil:
+	// case bd.b == nil:
 		//log.Printf("[%v] no second stream yet", bd.key)
 	default:
-		if bd.a.done && bd.b.done {
+		if bd.a.done && (bd.b != nil && bd.b.done) {
 			tryReadFromBD(bd, false)
-		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
+		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 0 {
 			tryReadFromBD(bd, true)
 			bd.lastProcessedTime = timeNow
 		}
@@ -302,31 +305,12 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 		log.Println("created assembler for vxlanID=", vxlanID)
 
 	}
+	log.Println("returning assembler for vxlanID=", vxlanID)
 	return _assembler
 
 }
 
-var kafkaWriter *kafka.Writer
-
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
-	}
-
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
-	}
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
-
-	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
-	// Set up pcap packet capture
-	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
-	// if err != nil {  }
 
 	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
@@ -348,14 +332,15 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				vxlanIDbyteArr := udpContent.Payload[4:7]
 				vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
 				innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-				// log.Println("%v", innerPacket)
+				log.Println("found innerPacket: ", innerPacket)
 			}
 			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-				// log.Println("not a tcp payload")
+				log.Println("not a tcp payload")
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
 				assembler := createAndGetAssembler(vxlanID, source)
+				log.Println("found assembler for innerpacket", innerPacket)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
 		}
@@ -376,7 +361,8 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+	// if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+	if handle, err := pcap.OpenOffline("./dump.pcap"); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
