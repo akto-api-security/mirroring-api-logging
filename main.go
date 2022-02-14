@@ -361,8 +361,8 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	// if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
-	if handle, err := pcap.OpenOffline("./dump.pcap"); err != nil {
+	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+	// if handle, err := pcap.OpenOffline("./dump.pcap"); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
