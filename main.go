@@ -137,9 +137,9 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 			s.bidi.lastPacketSeen = r.Seen
 		}
 
-		log.Println("started force execution: ")
-		s.bidi.maybeFinish()
-		log.Println("completed force execution")
+		// log.Println("started force execution: ")
+		// s.bidi.maybeFinish()
+		// log.Println("completed force execution")
 	}
 
 	s.bidi.maybeFinish()
