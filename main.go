@@ -129,7 +129,7 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 	for _, r := range rs {
 		// For now, we'll simply count the bytes on each side of the TCP stream.
 		s.bytes = append(s.bytes, r.Bytes...)
-		log.Println("Reassembling - ", r.Bytes)
+		// log.Println("Reassembling - ", r.Bytes)
 		// Mark that we've received new packet data.
 		// We could just use time.Now, but by using r.Seen we handle the case
 		// where packets are being read from a file and could be very old.
