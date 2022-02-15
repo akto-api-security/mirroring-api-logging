@@ -305,7 +305,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 		log.Println("created assembler for vxlanID=", vxlanID)
 
 	}
-	log.Println("returning assembler for vxlanID=", vxlanID)
+	// log.Println("returning assembler for vxlanID=", vxlanID)
 	return _assembler
 
 }
@@ -332,7 +332,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				vxlanIDbyteArr := udpContent.Payload[4:7]
 				vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
 				innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-				log.Println("found innerPacket: ", innerPacket)
+				// log.Println("found innerPacket: ", innerPacket)
 			}
 			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
 				log.Println("not a tcp payload")
@@ -340,7 +340,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
 				assembler := createAndGetAssembler(vxlanID, source)
-				log.Println("found assembler for innerpacket", innerPacket)
+				// log.Println("found assembler for innerpacket", innerPacket)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
 		}
