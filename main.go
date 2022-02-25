@@ -8,33 +8,38 @@
 // the unidirectional streams provided by gopacket/tcpassembly.
 package main
 
+import "C"
 
 import (
-	"flag"
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	// "context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	// "strconv"
+	"time"
+
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/examples/util"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
-	"net/http"
-	"io/ioutil"
-	"bufio"
-	"bytes"
-	"log"
-	"time"
-	"io"
-	"compress/gzip"
-	"encoding/json"
+
+	// "github.com/akto-api-security/gomiddleware"
+	// "github.com/segmentio/kafka-go"
 )
 
-var iface = flag.String("i", "eth0", "Interface to get packets from")
-var snaplen = flag.Int("s", 16<<10, "SnapLen for pcap packet capture")
-var filter = flag.String("f", "tcp", "BPF filter for pcap")
-var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
+var printCounter = 500000
+var assemblerMap = make(map[int]*tcpassembly.Assembler)
+var force = false
 var (
-    handle   *pcap.Handle
-    err      error	
+	handle *pcap.Handle
+	err    error
 )
 
 // key is used to map bidirectional streams to each other.
@@ -54,8 +59,8 @@ const timeout time.Duration = time.Minute * 5
 // myStream implements tcpassembly.Stream
 type myStream struct {
 	bytes []byte // total bytes seen on this stream.
-	bidi  *bidi // maps to my bidirectional twin.
-	done  bool  // if true, we've seen the last packet we're going to for this stream.
+	bidi  *bidi  // maps to my bidirectional twin.
+	done  bool   // if true, we've seen the last packet we're going to for this stream.
 }
 
 // bidi stores each unidirectional side of a bidirectional stream.
@@ -64,15 +69,20 @@ type myStream struct {
 // created with 'a' set to the new stream.  If we DO have an opposite stream,
 // 'b' is set to the new stream.
 type bidi struct {
-	key            key       // Key of the first stream, mostly for logging.
-	a, b           *myStream // the two bidirectional streams.
-	lastPacketSeen time.Time // last time we saw a packet from either stream.
+	key               key       // Key of the first stream, mostly for logging.
+	a, b              *myStream // the two bidirectional streams.
+	lastPacketSeen    time.Time // last time we saw a packet from either stream.
+	lastProcessedTime time.Time
+	vxlanID           int
+	source			  string
 }
 
 // myFactory implements tcpassmebly.StreamFactory
 type myFactory struct {
 	// bidiMap maps keys to bidirectional stream pairs.
 	bidiMap map[key]*bidi
+	vxlanID int
+	source string
 }
 
 // New handles creating a new tcpassembly.Stream.
@@ -85,7 +95,7 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 	k := key{netFlow, tcpFlow}
 	bd := f.bidiMap[k]
 	if bd == nil {
-		bd = &bidi{a: s, key: k}
+		bd = &bidi{a: s, key: k, vxlanID: f.vxlanID, source: f.source}
 		//log.Printf("[%v] created first side of bidirectional stream", bd.key)
 		// Register bidirectional with the reverse key, so the matching stream going
 		// the other direction will find it.
@@ -97,6 +107,7 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 		delete(f.bidiMap, k)
 	}
 	s.bidi = bd
+	bd.lastProcessedTime = time.Now()
 	return s
 }
 
@@ -131,6 +142,8 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 			s.bidi.lastPacketSeen = r.Seen
 		}
 	}
+
+	s.bidi.maybeFinish()
 }
 
 // ReassemblyComplete marks this stream as finished.
@@ -139,157 +152,258 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
+func tryReadFromBD(bd *bidi, isPending bool) {
+	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
+	i := 0
+	requests := []http.Request{}
+	requestsContent := []string{}
+
+	for {
+		req, err := http.ReadRequest(reader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			return
+		}
+		body, err := ioutil.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			return
+		}
+
+		requests = append(requests, *req)
+		requestsContent = append(requestsContent, string(body))
+		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
+		i++
+	}
+	log.Println("len(req)", len(requests))
+
+	if (bd.b== nil) {
+		return
+	}
+
+	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
+	i = 0
+	for {
+		if len(requests) < i+1 {
+			break
+		}
+		req := &requests[i]
+		resp, err := http.ReadResponse(reader, req)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			return
+		}
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			return
+		}
+		encoding := resp.Header["Content-Encoding"]
+		var r io.Reader
+		r = bytes.NewBuffer(body)
+		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
+			r, err = gzip.NewReader(r)
+			if err != nil {
+				log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
+				return
+			}
+		}
+		if err == nil {
+			body, err = ioutil.ReadAll(r)
+			if _, ok := r.(*gzip.Reader); ok {
+				r.(*gzip.Reader).Close()
+			}
+
+		}
+
+		reqHeader := make(map[string]string)
+		for name, values := range req.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				reqHeader[name] = value
+			}
+		}
+
+		respHeader := make(map[string]string)
+		for name, values := range resp.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				respHeader[name] = value
+			}
+		}
+
+		reqHeaderString, _ := json.Marshal(reqHeader)
+		respHeaderString, _ := json.Marshal(respHeader)
+
+		value := map[string]string{
+			"path":            req.URL.String(),
+			"requestHeaders":  string(reqHeaderString),
+			"responseHeaders": string(respHeaderString),
+			"method":          req.Method,
+			"requestPayload":  requestsContent[i],
+			"responsePayload": string(body),
+			"ip":              bd.key.net.Src().String(),
+			"time":            fmt.Sprint(time.Now().Unix()),
+			"statusCode":      fmt.Sprint(resp.StatusCode),
+			"type":            string(req.Proto),
+			"status":          resp.Status,
+			"akto_account_id": fmt.Sprint(1000000),
+			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
+			"is_pending":      fmt.Sprint(isPending),
+			"source": 		   bd.source,	
+		}
+
+		out, _ := json.Marshal(value)
+		// ctx := context.Background()
+
+		if printCounter > 0 {
+			printCounter--
+			log.Println("req-resp.String()", string(out))
+		}
+		// go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		i++
+	}
+}
+
 // maybeFinish will wait until both directions are complete, then print out
 // stats.
 func (bd *bidi) maybeFinish() {
+	timeNow := time.Now()
 	switch {
-		case bd.a == nil:
-			//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
-		case !bd.a.done:
-			//log.Printf("[%v] still waiting on first stream", bd.key)
-		case bd.b == nil:
-			//log.Printf("[%v] no second stream yet", bd.key)
-		case !bd.b.done:
-			//log.Printf("[%v] still waiting on second stream", bd.key)
-		default: 
-		reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
-		i := 0
-		requests := []http.Request{}
-		requestsContent := []string{}
-
-		for {
-			req, err := http.ReadRequest(reader)
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			} else if err != nil {
-				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
-			}
-			body, err := ioutil.ReadAll(req.Body)
-			req.Body.Close()
-			if err != nil {
-				log.Println("HTTP-request-body", "Got body err: %s\n", err)
-			}
-
-			requests = append(requests, *req)
-			requestsContent = append(requestsContent, string(body))
-			// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
-			i++
-		}
-
-		reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
-		i = 0
-		log.Println("len(req)", len(requests))
-		for {
-			if (len(requests) < i+1) {
-				break
-			}
-			req := &requests[i]
-			resp, err := http.ReadResponse(reader, req)
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
-			} else if err != nil {
-				log.Println("HTTP-request", "HTTP Request error: %s\n", err)
-			}
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				log.Println("HTTP-request-body", "Got body err: %s\n", err)
-			}
-			encoding := resp.Header["Content-Encoding"]
-			var r io.Reader
-			r = bytes.NewBuffer(body)
-			if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
-				r, err = gzip.NewReader(r)
-				if err != nil {
-					log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
-				}
-			}
-			if err == nil {
-				body, err = ioutil.ReadAll(r)
-				if _, ok := r.(*gzip.Reader); ok {
-					r.(*gzip.Reader).Close()
-				}
-
-			}
-
-			reqHeader := ""
-			for name, values := range req.Header {
-				// Loop over all values for the name.
-				for _, value := range values {
-					reqHeader += (name + ":" + value + "\r\n")
-				}
-			}
-			
-			respHeader := ""
-			for name, values := range resp.Header {
-				// Loop over all values for the name.
-				for _, value := range values {
-					respHeader += (name + ":" + value + "\r\n")
-				}
-			}
-			
-
-			value := map[string]string{
-				"path": req.URL.String(),
-				"requestHeaders": reqHeader,
-				"responseHeaders":respHeader,
-				"method": req.Method,
-				"requestPayload": requestsContent[i],
-				"responsePayload": string(body),
-				"ip": bd.key.net.Src().String(),
-				"time": fmt.Sprint(time.Now().Unix()),
-				"statusCode": fmt.Sprint(resp.StatusCode),
-				"type": string(req.Proto),
-				"status": resp.Status,
-				"akto_account_id": fmt.Sprint(1000000),
-			}
-
-			out, _ := json.Marshal(value)
-			log.Println("req-resp.String()", string(out))
-			i++
+	case bd.a == nil && !force:
+		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
+	case bd.b == nil && !force:
+		//log.Printf("[%v] no second stream yet", bd.key)
+	default:
+		if bd.a.done && bd.b != nil && bd.b.done {
+			tryReadFromBD(bd, false)
+		} else if (timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 || force) {
+			tryReadFromBD(bd, true)
+			bd.lastProcessedTime = timeNow
 		}
 	}
 }
 
-func main() {
-	defer util.Run()()
-	log.Printf("starting capture on interface %q", *iface)
-	// Set up pcap packet capture
-    // handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
-    // if err != nil {  }
+func createAndGetAssembler(vxlanID int, source string, shouldCreate bool) *tcpassembly.Assembler {
 
-	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
-		log.Fatal(err)
-	  } else if err := handle.SetBPFFilter("udp and port 4789"); err != nil {  // optional
-		log.Fatal(err)
-	  }  else {
+	_assembler := assemblerMap[vxlanID]
+	if _assembler == nil && shouldCreate {
+		log.Println("creating assembler for vxlanID=", vxlanID)
 		// Set up assembly
-		streamFactory := &myFactory{bidiMap: make(map[key]*bidi)}
+		streamFactory := &myFactory{bidiMap: make(map[key]*bidi), vxlanID: vxlanID, source: source}
 		streamPool := tcpassembly.NewStreamPool(streamFactory)
-		assembler := tcpassembly.NewAssembler(streamPool)
+		_assembler = tcpassembly.NewAssembler(streamPool)
 		// Limit memory usage by auto-flushing connection state if we get over 100K
 		// packets in memory, or over 1000 for a single stream.
-		assembler.MaxBufferedPagesTotal = 100000
-		assembler.MaxBufferedPagesPerConnection = 1000
+		_assembler.MaxBufferedPagesTotal = 100000
+		_assembler.MaxBufferedPagesPerConnection = 1000
 
-		log.Println("reading in packets")
-		// Read in packets, pass to assembler.
+		assemblerMap[vxlanID] = _assembler
+		log.Println("created assembler for vxlanID=", vxlanID)
 
-		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-		for packet := range packetSource.Packets() {
-			udpContent := packet.TransportLayer().(*layers.UDP)
-			// log.Println("%v", udpContent.Payload)
-	
-			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-	
-			// log.Println("%v", innerPacket)
-	
-			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-				// log.Println("not a tcp payload")
+	}
+	return _assembler
+
+}
+
+// var kafkaWriter *kafka.Writer
+
+func producer(link chan<- gopacket.Packet, handle *pcap.Handle) {
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+
+	for {
+		packet, err := packetSource.NextPacket() 
+		if (err != nil) {
+			close(link)
+			return;
+		} else {
+			// log.Println("adding packet: " + packet.NetworkLayer().NetworkFlow().String())
+			link <- packet
+		}
+	}
+
+}
+
+func consumer(link <-chan gopacket.Packet, done chan<- bool, apiCollectionId int, source string) {
+	for packet := range link {
+		innerPacket := packet
+		vxlanID := apiCollectionId
+		if apiCollectionId <= 0 {
+
+			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
 				continue
-			} else {
-				tcp := innerPacket.TransportLayer().(*layers.TCP)
+			}
+
+			udpContent := packet.TransportLayer().(*layers.UDP)
+
+			vxlanIDbyteArr := udpContent.Payload[4:7]
+			vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
+			innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+			// log.Println("%v", innerPacket)
+
+		}
+		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
+			continue
+		} else {
+			tcp := innerPacket.TransportLayer().(*layers.TCP)
+
+			shouldCreate := true
+			if (apiCollectionId <= 0) {
+				shouldCreate = innerPacket.NetworkLayer().NetworkFlow().Src().String() != packet.NetworkLayer().NetworkFlow().Src().String()
+			}
+			assembler := createAndGetAssembler(vxlanID, source, shouldCreate)
+			if (assembler != nil) {
+
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
-		}
+		}	
+	}
+	done <- true
+}
+
+func run(handle *pcap.Handle, apiCollectionId int, source string) {
+	link := make(chan gopacket.Packet, 10000)
+	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+		log.Fatal(err)
+	} else {
+		log.Println("reading in packets")
+		// Read in packets, pass to assembler.
+		// link := make(chan gopacket.Packet)
+		done := make(chan bool)
+		go producer(link, handle)
+		go consumer(link, done, apiCollectionId, source)
+		<- done
+		// time.Sleep(time.Minute)
+	}
+}
+
+//export readTcpDumpFile
+func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
+	os.Setenv("AKTO_KAFKA_BROKER_URL", kafkaURL)
+	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
+	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
+
+	if handle, err := pcap.OpenOffline(filepath); err != nil {
+		log.Fatal(err)
+	} else {
+		run(handle, apiCollectionId, "PCAP")
+	}
+}
+
+func main() {
+	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+		log.Fatal(err)
+	} else {
+		run(handle, -1, "MIRRORING")
+	}
+
+	force = true
+	for _, v := range assemblerMap {
+		v.FlushAll()
 	}
 }
