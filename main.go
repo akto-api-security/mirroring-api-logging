@@ -54,7 +54,7 @@ func (k key) String() string {
 
 // timeout is the length of time to wait befor flushing connections and
 // bidirectional stream pairs.
-const timeout time.Duration = time.Minute * 5
+const timeout time.Duration = time.Minute * 1
 
 // myStream implements tcpassembly.Stream
 type myStream struct {
@@ -275,17 +275,17 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 func (bd *bidi) maybeFinish() {
 	timeNow := time.Now()
 	switch {
-	case bd.a == nil && !force:
-		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
-	case bd.b == nil && !force:
-		//log.Printf("[%v] no second stream yet", bd.key)
-	default:
-		if bd.a.done && bd.b != nil && bd.b.done {
-			tryReadFromBD(bd, false)
-		} else if (timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 || force) {
-			tryReadFromBD(bd, true)
-			bd.lastProcessedTime = timeNow
-		}
+		case bd.a == nil && !force:
+			//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
+		case bd.b == nil && !force:
+			//log.Printf("[%v] no second stream yet", bd.key)
+		default:
+			if bd.a.done && bd.b != nil && bd.b.done {
+				tryReadFromBD(bd, false)
+			} else if (timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 || force) {
+				tryReadFromBD(bd, true)
+				bd.lastProcessedTime = timeNow
+			}
 	}
 }
 
@@ -313,24 +313,42 @@ func createAndGetAssembler(vxlanID int, source string, shouldCreate bool) *tcpas
 
 // var kafkaWriter *kafka.Writer
 
-func producer(link chan<- gopacket.Packet, handle *pcap.Handle) {
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+func producer(link chan<- []byte, handle *pcap.Handle) {
 
 	for {
-		packet, err := packetSource.NextPacket() 
+		packet, _, err := handle.ReadPacketData()
 		if (err != nil) {
 			close(link)
 			return;
 		} else {
-			// log.Println("adding packet: " + packet.NetworkLayer().NetworkFlow().String())
 			link <- packet
 		}
 	}
 
 }
 
-func consumer(link <-chan gopacket.Packet, done chan<- bool, apiCollectionId int, source string) {
-	for packet := range link {
+
+func flushAll() {
+	force = true
+	for _, v := range assemblerMap {
+		v.FlushOlderThan(time.Now().Add(-timeout))
+	}
+	force = false
+
+}
+
+
+
+func consumer(link <-chan []byte, done chan<- bool, apiCollectionId int, source string) {
+	go func() {
+		for {
+			flushAll()
+			time.Sleep(timeout)
+		}
+	}()
+	
+	for packetArr := range link {
+		packet := gopacket.NewPacket(packetArr, layers.LayerTypeEthernet, gopacket.NoCopy)
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if apiCollectionId <= 0 {
@@ -363,11 +381,13 @@ func consumer(link <-chan gopacket.Packet, done chan<- bool, apiCollectionId int
 			}
 		}	
 	}
+
+	flushAll()
 	done <- true
 }
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
-	link := make(chan gopacket.Packet, 10000)
+	link := make(chan []byte, 1000000)
 	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
 	} else {
@@ -396,14 +416,10 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+	if handle, err := pcap.OpenLive("eth0", 132000, true, pcap.BlockForever); err != nil {
+	// if handle, err := pcap.OpenOffline("/Users/ankushjain/Downloads/a100x8000.pcap"); err != nil {		
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
-	}
-
-	force = true
-	for _, v := range assemblerMap {
-		v.FlushAll()
 	}
 }
