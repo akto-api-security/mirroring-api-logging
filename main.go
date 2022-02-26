@@ -282,9 +282,16 @@ func (bd *bidi) maybeFinish() {
 		default:
 			if bd.a.done && bd.b != nil && bd.b.done {
 				tryReadFromBD(bd, false)
+				bd.a = emptyStream
+				bd.b = emptyStream
+								
 			} else if (timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 || force) {
 				tryReadFromBD(bd, true)
 				bd.lastProcessedTime = timeNow
+				if (force) {
+					bd.a = emptyStream
+					bd.b = emptyStream	
+				}
 			}
 	}
 }
