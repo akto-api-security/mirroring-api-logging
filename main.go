@@ -310,6 +310,13 @@ var kafkaWriter *kafka.Writer
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
+	log.Println("kafka_url", kafka_url)
+
+	if (len(kafka_url) == 0) {
+		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_MAL")
+	}
+	log.Println("kafka_url", kafka_url)
+
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
 		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
