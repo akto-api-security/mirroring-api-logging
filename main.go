@@ -309,11 +309,11 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 var kafkaWriter *kafka.Writer
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
+	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 	log.Println("kafka_url", kafka_url)
 
 	if (len(kafka_url) == 0) {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_MAL")
+		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
 	log.Println("kafka_url", kafka_url)
 
