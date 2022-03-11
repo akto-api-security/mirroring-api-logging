@@ -14,7 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	// "context"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +22,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	// "strconv"
+	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -30,8 +30,8 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 
-	// "github.com/akto-api-security/gomiddleware"
-	// "github.com/segmentio/kafka-go"
+	"github.com/akto-api-security/gomiddleware"
+	"github.com/segmentio/kafka-go"
 )
 
 var printCounter = 500000
@@ -259,13 +259,13 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		// ctx := context.Background()
+		ctx := context.Background()
 
 		if printCounter > 0 {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
 		}
-		// go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -318,7 +318,7 @@ func createAndGetAssembler(vxlanID int, source string, shouldCreate bool) *tcpas
 
 }
 
-// var kafkaWriter *kafka.Writer
+var kafkaWriter *kafka.Writer
 
 func producer(link chan<- []byte, handle *pcap.Handle) {
 
@@ -394,6 +394,22 @@ func consumer(link <-chan []byte, done chan<- bool, apiCollectionId int, source 
 }
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
+	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_URL")
+	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
+	if e != nil {
+		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+		return
+	}
+
+	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
+	if e != nil {
+		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+		return
+	}
+	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+
+	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+
 	link := make(chan []byte, 1000000)
 	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
