@@ -14,7 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"context"
+	// "context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -259,13 +259,13 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
+		// ctx := context.Background()
 
 		if printCounter > 0 {
 			printCounter--
-			log.Println("req-resp.String()", string(out))
+			log.Println("req-resp.String()", req.URL.String(), len(out))
 		}
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		// go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -307,8 +307,8 @@ func createAndGetAssembler(vxlanID int, source string, shouldCreate bool) *tcpas
 		_assembler = tcpassembly.NewAssembler(streamPool)
 		// Limit memory usage by auto-flushing connection state if we get over 100K
 		// packets in memory, or over 1000 for a single stream.
-		_assembler.MaxBufferedPagesTotal = 100000
-		_assembler.MaxBufferedPagesPerConnection = 1000
+		_assembler.MaxBufferedPagesTotal = 10000000
+		_assembler.MaxBufferedPagesPerConnection = 100000
 
 		assemblerMap[vxlanID] = _assembler
 		log.Println("created assembler for vxlanID=", vxlanID)
