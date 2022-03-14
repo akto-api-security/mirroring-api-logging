@@ -308,7 +308,17 @@ func createAndGetAssembler(vxlanID int, source string, shouldCreate bool) *tcpas
 		// Limit memory usage by auto-flushing connection state if we get over 100K
 		// packets in memory, or over 1000 for a single stream.
 		_assembler.MaxBufferedPagesTotal = 10000000
+
+		if (len(os.Getenv("MAX_BUFFERED_PAGES")) > 0) {
+			_assembler.MaxBufferedPagesTotal, _ = strconv.Atoi(os.Getenv("MAX_BUFFERED_PAGES"))
+		}
+
 		_assembler.MaxBufferedPagesPerConnection = 100000
+
+		if (len(os.Getenv("MAX_BUFFERED_PAGES_PER_CONN")) > 0) {
+			_assembler.MaxBufferedPagesPerConnection, _ = strconv.Atoi(os.Getenv("MAX_BUFFERED_PAGES_PER_CONN"))
+		}
+
 
 		assemblerMap[vxlanID] = _assembler
 		log.Println("created assembler for vxlanID=", vxlanID)
@@ -321,13 +331,18 @@ func createAndGetAssembler(vxlanID int, source string, shouldCreate bool) *tcpas
 var kafkaWriter *kafka.Writer
 
 func producer(link chan<- []byte, handle *pcap.Handle) {
-
+	var ii = 0
 	for {
 		packet, _, err := handle.ReadPacketData()
 		if (err != nil) {
+			log.Println("error in reading packet data. Closing", err)
 			close(link)
 			return;
 		} else {
+			ii++
+			if (ii % 1000 == 0) {
+				log.Println("producer: ", ii);
+			}
 			link <- packet
 		}
 	}
@@ -354,7 +369,13 @@ func consumer(link <-chan []byte, done chan<- bool, apiCollectionId int, source 
 		}
 	}()
 	
+	var ii = 0
+
 	for packetArr := range link {
+		ii ++
+		if (ii % 1000 == 0) {
+			log.Println("consumer: ", ii);
+		}
 		packet := gopacket.NewPacket(packetArr, layers.LayerTypeEthernet, gopacket.NoCopy)
 		innerPacket := packet
 		vxlanID := apiCollectionId
@@ -417,7 +438,13 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 
-	link := make(chan []byte, 1000000)
+	var chanLen = 1000000
+
+	if (len(os.Getenv("CHAN_LEN")) > 0) {
+		chanLen, _ = strconv.Atoi(os.Getenv("CHAN_LEN"))
+	}
+
+	link := make(chan []byte, chanLen)
 	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
 	} else {
