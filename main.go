@@ -388,6 +388,8 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 				bytesIn += len(tcp.Payload)
 				if (bytesIn > bytesInThreshold) {
+					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
+					log.Println("sleeping for: ", bytesInSleepDuration);
 					time.Sleep(bytesInSleepDuration)
 					bytesIn = 0
 					flushAll()
