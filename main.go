@@ -361,6 +361,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		log.Println("reading in packets")
 		// Read in packets, pass to assembler.
 		var bytesIn = 0
+		var bytesInEpoch = time.Now()
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
 			innerPacket := packet
@@ -388,11 +389,15 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 				bytesIn += len(tcp.Payload)
 				if (bytesIn > bytesInThreshold) {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
-					log.Println("sleeping for: ", bytesInSleepDuration);
-					time.Sleep(bytesInSleepDuration)
+					if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
+						log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
+						log.Println("sleeping for: ", bytesInSleepDuration);
+						flushAll()
+						time.Sleep(bytesInSleepDuration)
+					}
+
 					bytesIn = 0
-					flushAll()
+					bytesInEpoch = time.Now()
 				}
 			}
 		}
