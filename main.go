@@ -35,6 +35,8 @@ import (
 )
 
 var printCounter = 500
+var bytesInThreshold = 200 * 1024 * 1024
+var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var (
 	handle *pcap.Handle
@@ -53,7 +55,7 @@ func (k key) String() string {
 
 // timeout is the length of time to wait befor flushing connections and
 // bidirectional stream pairs.
-const timeout time.Duration = time.Minute * 5
+const timeout time.Duration = time.Minute * 1
 
 // myStream implements tcpassembly.Stream
 type myStream struct {
@@ -284,6 +286,12 @@ func (bd *bidi) maybeFinish() {
 	}
 }
 
+func flushAll() {
+	for _, v := range assemblerMap {
+		v.FlushAll()
+	}
+}
+
 func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 	_assembler := assemblerMap[vxlanID]
@@ -317,6 +325,18 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	}
 	log.Println("kafka_url", kafka_url)
 
+	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
+	if len(bytesInThresholdInput) > 0 {
+		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
+		if err != nil {
+			log.Println("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found ", bytesInThresholdInput)
+			return
+		} else {
+			log.Println("Setting bytes in threshold at ", bytesInThreshold)
+		}
+	
+	}
+
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
 		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
@@ -340,6 +360,8 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	} else {
 		log.Println("reading in packets")
 		// Read in packets, pass to assembler.
+		var bytesIn = 0
+		var bytesInEpoch = time.Now()
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
 			innerPacket := packet
@@ -364,6 +386,19 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
 				assembler := createAndGetAssembler(vxlanID, source)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+
+				bytesIn += len(tcp.Payload)
+				if (bytesIn > bytesInThreshold) {
+					if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
+						log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
+						log.Println("sleeping for: ", bytesInSleepDuration);
+						flushAll()
+						time.Sleep(bytesInSleepDuration)
+					}
+
+					bytesIn = 0
+					bytesInEpoch = time.Now()
+				}
 			}
 		}
 	}
@@ -383,7 +418,7 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
+	if handle, err := pcap.OpenLive("eth0", 128 * 1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
