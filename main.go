@@ -75,7 +75,7 @@ type bidi struct {
 	lastPacketSeen    time.Time // last time we saw a packet from either stream.
 	lastProcessedTime time.Time
 	vxlanID           int
-	source			  string
+	source            string
 }
 
 // myFactory implements tcpassmebly.StreamFactory
@@ -83,7 +83,7 @@ type myFactory struct {
 	// bidiMap maps keys to bidirectional stream pairs.
 	bidiMap map[key]*bidi
 	vxlanID int
-	source string
+	source  string
 }
 
 // New handles creating a new tcpassembly.Stream.
@@ -226,6 +226,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			}
 		}
 
+		reqHeader["host"] = req.Host
+
 		respHeader := make(map[string]string)
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
@@ -252,7 +254,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"akto_account_id": fmt.Sprint(1000000),
 			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
 			"is_pending":      fmt.Sprint(isPending),
-			"source": 		   bd.source,	
+			"source":          bd.source,
 		}
 
 		out, _ := json.Marshal(value)
@@ -320,7 +322,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 	log.Println("kafka_url", kafka_url)
 
-	if (len(kafka_url) == 0) {
+	if len(kafka_url) == 0 {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
 	log.Println("kafka_url", kafka_url)
@@ -334,7 +336,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		} else {
 			log.Println("Setting bytes in threshold at ", bytesInThreshold)
 		}
-	
+
 	}
 
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
@@ -388,10 +390,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 				bytesIn += len(tcp.Payload)
-				if (bytesIn > bytesInThreshold) {
+				if bytesIn > bytesInThreshold {
 					if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-						log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
-						log.Println("sleeping for: ", bytesInSleepDuration);
+						log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+						log.Println("sleeping for: ", bytesInSleepDuration)
 						flushAll()
 						time.Sleep(bytesInSleepDuration)
 					}
@@ -418,7 +420,7 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	if handle, err := pcap.OpenLive("eth0", 128 * 1024, true, pcap.BlockForever); err != nil {
+	if handle, err := pcap.OpenLive("eth0", 128*1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
