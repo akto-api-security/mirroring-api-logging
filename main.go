@@ -34,6 +34,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+var isGcp = false
 var printCounter = 500
 var bytesInThreshold = 200 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
@@ -357,48 +358,53 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 		log.Fatal(err)
-	} else {
-		log.Println("reading in packets")
-		// Read in packets, pass to assembler.
-		var bytesIn = 0
-		var bytesInEpoch = time.Now()
-		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-		for packet := range packetSource.Packets() {
-			innerPacket := packet
-			vxlanID := apiCollectionId
-			if apiCollectionId <= 0 {
+		return 
+	} 
 
-				if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
-					continue
-				}
+	log.Println("reading in packets")
+	// Read in packets, pass to assembler.
+	var bytesIn = 0
+	var bytesInEpoch = time.Now()
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	for packet := range packetSource.Packets() {
+		innerPacket := packet
+		vxlanID := apiCollectionId
+		if apiCollectionId <= 0 && !isGcp {
 
-				udpContent := packet.TransportLayer().(*layers.UDP)
-
-				vxlanIDbyteArr := udpContent.Payload[4:7]
-				vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
-				innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-				// log.Println("%v", innerPacket)
-			}
-			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-				// log.Println("not a tcp payload")
+			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
 				continue
-			} else {
-				tcp := innerPacket.TransportLayer().(*layers.TCP)
-				assembler := createAndGetAssembler(vxlanID, source)
-				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+			}
 
-				bytesIn += len(tcp.Payload)
-				if (bytesIn > bytesInThreshold) {
-					if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-						log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
-						log.Println("sleeping for: ", bytesInSleepDuration);
-						flushAll()
-						time.Sleep(bytesInSleepDuration)
-					}
+			udpContent := packet.TransportLayer().(*layers.UDP)
 
-					bytesIn = 0
-					bytesInEpoch = time.Now()
+			vxlanIDbyteArr := udpContent.Payload[4:7]
+			vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
+			innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+			// log.Println("%v", innerPacket)
+		}
+		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
+			// log.Println("not a tcp payload")
+			continue
+		} else {
+			if isGcp {
+				vxlanID = 0
+			}
+			
+			tcp := innerPacket.TransportLayer().(*layers.TCP)
+			assembler := createAndGetAssembler(vxlanID, source)
+			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
+
+			bytesIn += len(tcp.Payload)
+			if (bytesIn > bytesInThreshold) {
+				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
+					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
+					log.Println("sleeping for: ", bytesInSleepDuration);
+					flushAll()
+					time.Sleep(bytesInSleepDuration)
 				}
+
+				bytesIn = 0
+				bytesInEpoch = time.Now()
 			}
 		}
 	}
@@ -418,7 +424,20 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	if handle, err := pcap.OpenLive("eth0", 128 * 1024, true, pcap.BlockForever); err != nil {
+
+	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
+
+	if len(infra_mirroring_mode_input) > 0 {
+		isGcp = (infra_mirroring_mode_input == "gcp")
+	}
+
+	interfaceName := "eth0"
+
+	if (isGcp) {
+		interfaceName = "ens4"
+	}
+	
+	if handle, err := pcap.OpenLive(interfaceName, 128 * 1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
