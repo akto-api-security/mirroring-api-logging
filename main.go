@@ -356,10 +356,12 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
-		log.Fatal(err)
-		return 
-	} 
+	if (!isGcp) {
+		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+			log.Fatal(err)
+			return 
+		} 
+	}
 
 	log.Println("reading in packets")
 	// Read in packets, pass to assembler.
