@@ -134,8 +134,15 @@ func (f *myFactory) collectOldStreams() {
 
 // Reassembled handles reassembled TCP stream data.
 func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
+	if (s.done) {
+		return;
+	}
 	for _, r := range rs {
 		// For now, we'll simply count the bytes on each side of the TCP stream.
+		if (r.Skip > 0) {
+			s.done = true;
+			return;
+		}
 		s.bytes = append(s.bytes, r.Bytes...)
 		// Mark that we've received new packet data.
 		// We could just use time.Now, but by using r.Seen we handle the case
