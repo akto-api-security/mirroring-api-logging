@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -407,6 +408,13 @@ func main() {
 			}
 
 			log.Println("file: ", file.Name())
+			fileCreationTs, _ := strconv.Atoi(file.Name())
+			timeNow := time.Now().Unix()
+
+			if timeNow-int64(fileCreationTs) < 120 {
+				continue
+			}
+
 			fileName := "/app/files/" + file.Name()
 			if handle, err := pcap.OpenOffline(fileName); err != nil {
 				log.Fatal(err)
