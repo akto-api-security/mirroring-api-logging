@@ -399,40 +399,13 @@ func main() {
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(10 * time.Second)
 
-	// Run the scheduler loop
-	for range ticker.C {
-		fmt.Println("Hi time is now : " + time.Now().String())
-		fmt.Println("CountMap size: " + strconv.Itoa(len(countMap)))
-		fmt.Println("***")
-
-		// Insert the document into the MongoDB collection
-		trafficMetricsCollection := db.TrafficMetricsInstance()
-
-		operations := []mongo.WriteModel{}
-
-		for key, value := range countMap {
-			filter := bson.M{"_id": key}
-			update := bson.M{"$inc": bson.M{"count": value}}
-			countMap[key] = 0
-
-			operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
-			operations = append(operations, operation)
+	go func() {
+		for range ticker.C {
+			dbUpdates()
 		}
+	}()
 
-		// Execute the update operation
-		if len(operations) > 0 {
-			result, err := trafficMetricsCollection.BulkWrite(context.Background(), operations)
-
-			if err != nil {
-				log.Printf("Error while updating collection: %d", err.Error())
-			} else {
-				log.Printf("Successfully updated: %d", result.ModifiedCount)
-			}
-		} else {
-			log.Println("Skipping updates because nothing in list")
-		}
-
-	}
+	log.Println("Running main function!!!!!")
 
 	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
@@ -445,4 +418,38 @@ func main() {
 			// Handle error
 		}
 	}()
+}
+
+func dbUpdates() {
+	fmt.Println("Hi time is now : " + time.Now().String())
+	fmt.Println("CountMap size: " + strconv.Itoa(len(countMap)))
+	fmt.Println("***")
+
+	// Insert the document into the MongoDB collection
+	trafficMetricsCollection := db.TrafficMetricsInstance()
+
+	operations := []mongo.WriteModel{}
+
+	for key, value := range countMap {
+		filter := bson.M{"_id": key}
+		update := bson.M{"$inc": bson.M{"count": value}}
+		countMap[key] = 0
+
+		operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
+		operations = append(operations, operation)
+	}
+
+	// Execute the update operation
+	if len(operations) > 0 {
+		result, err := trafficMetricsCollection.BulkWrite(context.Background(), operations)
+
+		if err != nil {
+			log.Printf("Error while updating collection: %d", err.Error())
+		} else {
+			log.Printf("Successfully updated: %d", result.ModifiedCount)
+		}
+	} else {
+		log.Println("Skipping updates because nothing in list")
+	}
+
 }
