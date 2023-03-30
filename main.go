@@ -17,6 +17,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"io"
 	"io/ioutil"
 	"log"
@@ -36,6 +39,7 @@ import (
 
 var printCounter = 500
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
+var countMap = make(map[string]int)
 var (
 	handle *pcap.Handle
 	err    error
@@ -259,6 +263,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
+
+		// isPending = false ???
+		// ip := bd.key.net.Src().String()
+		// vxlanId := fmt.Sprint(bd.vxlanID)
+		// host := reqHeader['host']
 	}
 }
 
@@ -352,9 +361,17 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
+
+				payloadLength := len(tcp.Payload)
+				ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
+				fmt.Println("ip: " + ip)
+				sourceKey := strconv.Itoa(vxlanID) + "_" + ip
+				countMap[sourceKey] += payloadLength
+
 				assembler := createAndGetAssembler(vxlanID)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 			}
+
 		}
 	}
 }
@@ -373,9 +390,59 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
+
+	client, err := db.GetMongoClient()
+	if err != nil {
+		// Handle error
+	}
+
+	// Set up a ticker to run every 2 minutes
+	ticker := time.NewTicker(10 * time.Second)
+
+	// Run the scheduler loop
+	for range ticker.C {
+		fmt.Println("Hi time is now : " + time.Now().String())
+		fmt.Println("CountMap size: " + strconv.Itoa(len(countMap)))
+		fmt.Println("***")
+
+		// Insert the document into the MongoDB collection
+		trafficMetricsCollection := db.TrafficMetricsInstance()
+
+		operations := []mongo.WriteModel{}
+
+		for key, value := range countMap {
+			filter := bson.M{"_id": key}
+			update := bson.M{"$inc": bson.M{"count": value}}
+			countMap[key] = 0
+
+			operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
+			operations = append(operations, operation)
+		}
+
+		// Execute the update operation
+		if len(operations) > 0 {
+			result, err := trafficMetricsCollection.BulkWrite(context.Background(), operations)
+
+			if err != nil {
+				log.Printf("Error while updating collection: %d", err.Error())
+			} else {
+				log.Printf("Successfully updated: %d", result.ModifiedCount)
+			}
+		} else {
+			log.Println("Skipping updates because nothing in list")
+		}
+
+	}
+
 	if handle, err := pcap.OpenLive("eth0", 33554392, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1)
 	}
+
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
 }
