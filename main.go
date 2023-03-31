@@ -105,6 +105,11 @@ func (o outgoingCounter) outgoingCounterKey() string {
 	return strconv.Itoa(o.vxlanID) + "_" + o.ip + "_" + o.host + "_" + strconv.Itoa(o.bucketStartEpoch) + "_" + strconv.Itoa(o.bucketEndEpoch)
 }
 
+func generateOutgoingCounter(vxlanID int, ip string, host string) outgoingCounter {
+	d, u := epochDays()
+	return outgoingCounter{vxlanID: vxlanID, ip: ip, host: host, bucketStartEpoch: d, bucketEndEpoch: u, packetHoursToCountMap: hoursToCountMap{}, requestsHoursToCountMap: hoursToCountMap{}}
+}
+
 func (o outgoingCounter) inc(packetValue int, requestValue int) {
 	roundedDown, _ := epochHours()
 	_, exists1 := o.packetHoursToCountMap[roundedDown]
@@ -342,6 +347,16 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
 
+		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
+		oc := generateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), reqHeader["host"])
+
+		_, exists := outgoingCountMap[oc.outgoingCounterKey()]
+		if !exists {
+			outgoingCountMap[oc.outgoingCounterKey()] = oc
+		}
+
+		outgoingCountMap[oc.outgoingCounterKey()].inc(outgoingBytes, 1)
+
 		if printCounter > 0 {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
@@ -510,39 +525,56 @@ func main() {
 }
 
 func dbUpdates() {
-	fmt.Println("Hi time is now : " + time.Now().String())
-	fmt.Println("CountMap size: " + strconv.Itoa(len(incomingCountMap)))
-
 	// Insert the document into the MongoDB collection
 	trafficMetricsCollection := db.TrafficMetricsInstance()
+	var incomingOperations []mongo.WriteModel
 
-	var operations []mongo.WriteModel
+	fmt.Printf("incoming count map: %d", len(incomingCountMap))
+	fmt.Printf("outgoing count map: %d", len(outgoingCountMap))
 
 	for _, value := range incomingCountMap {
-		filter := bson.M{
-			"$and": []interface{}{
-				bson.M{"_id.vxlanID": value.vxlanID},
-				bson.M{"_id.ip": value.ip},
-				bson.M{"_id.bucketStartEpoch": value.bucketStartEpoch},
-				bson.M{"_id.bucketEndEpoch": value.bucketEndEpoch},
-			},
-		}
+		filter := buildFilter(value.vxlanID, value.ip, "", "INCOMING_PACKETS_MIRRORING", value.bucketStartEpoch, value.bucketEndEpoch)
+		operation := buildOperation(filter, value.packetHoursToCountMap)
+		incomingOperations = append(incomingOperations, operation)
+	}
 
-		fields := make(map[string]int)
-		for k, v := range value.packetHoursToCountMap {
-			fields["packetHoursToCountMap."+strconv.Itoa(k)] = v
-		}
+	var outgoingPacketOperations []mongo.WriteModel
+	var outgoingRequestOperations []mongo.WriteModel
+	for _, value := range outgoingCountMap {
+		filter := buildFilter(value.vxlanID, value.ip, value.host, "OUTGOING_PACKETS_MIRRORING", value.bucketStartEpoch, value.bucketEndEpoch)
 
-		update := bson.M{"$inc": fields}
-		value.reset()
+		outgoingPacketOperation := buildOperation(filter, value.packetHoursToCountMap)
+		outgoingPacketOperations = append(outgoingPacketOperations, outgoingPacketOperation)
 
-		operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
-		operations = append(operations, operation)
+		outgoingRequestOperation := buildOperation(filter, value.packetHoursToCountMap)
+		outgoingRequestOperations = append(outgoingRequestOperations, outgoingRequestOperation)
 	}
 
 	// Execute the update operation
+	executeBulkUpdateOperation(incomingOperations, trafficMetricsCollection)
+	executeBulkUpdateOperation(outgoingPacketOperations, trafficMetricsCollection)
+	executeBulkUpdateOperation(outgoingRequestOperations, trafficMetricsCollection)
+}
+
+func buildFilter(vxlanID int, ip string, host string, name string, bucketStartEpoch int, bucketEndEpoch int) bson.M {
+	filter := []interface{}{
+		bson.M{"_id.vxlanID": vxlanID},
+		bson.M{"_id.ip": ip},
+		bson.M{"_id.name": name},
+		bson.M{"_id.bucketStartEpoch": bucketStartEpoch},
+		bson.M{"_id.bucketEndEpoch": bucketEndEpoch},
+	}
+
+	if len(host) > 0 {
+		filter = append(filter, bson.M{"_id.host": host})
+	}
+
+	return bson.M{"$and": filter}
+}
+
+func executeBulkUpdateOperation(operations []mongo.WriteModel, collection *mongo.Collection) {
 	if len(operations) > 0 {
-		result, err := trafficMetricsCollection.BulkWrite(context.Background(), operations)
+		result, err := collection.BulkWrite(context.Background(), operations)
 
 		if err != nil {
 			log.Printf("Error while updating collection: %s", err.Error())
@@ -552,5 +584,16 @@ func dbUpdates() {
 	} else {
 		log.Println("Skipping updates because nothing in list")
 	}
+}
 
+func buildOperation(filter bson.M, countMap hoursToCountMap) *mongo.UpdateOneModel {
+	fields := make(map[string]int)
+	for k, v := range countMap {
+		fields["countMap."+strconv.Itoa(k)] = v
+	}
+
+	update := bson.M{"$inc": fields}
+
+	operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
+	return operation
 }
