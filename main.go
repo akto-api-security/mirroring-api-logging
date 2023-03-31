@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -39,7 +40,91 @@ import (
 
 var printCounter = 500
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
-var countMap = make(map[string]int)
+var incomingCountMap = make(map[string]incomingCounter)
+var outgoingCountMap = make(map[string]outgoingCounter)
+
+type incomingCounter struct {
+	vxlanID               int
+	ip                    string
+	bucketStartEpoch      int
+	bucketEndEpoch        int
+	packetHoursToCountMap hoursToCountMap
+}
+
+type hoursToCountMap map[int]int
+
+func (i incomingCounter) incomingCounterKey() string {
+	return strconv.Itoa(i.vxlanID) + "_" + i.ip + "_" + strconv.Itoa(i.bucketStartEpoch) + "_" + strconv.Itoa(i.bucketEndEpoch)
+}
+
+func generateIncomingCounter(vxlanID int, ip string) incomingCounter {
+	d, u := epochDays()
+	return incomingCounter{vxlanID: vxlanID, ip: ip, bucketStartEpoch: d, bucketEndEpoch: u, packetHoursToCountMap: hoursToCountMap{}}
+}
+
+func epochHours() (int, int) {
+	now := time.Now().Unix()
+	hours := float64(now) / 3600.0
+	roundedUp := math.Ceil(hours)
+	roundedDown := math.Floor(hours)
+	return int(roundedDown), int(roundedUp)
+}
+
+func epochDays() (int, int) {
+	now := time.Now().Unix()
+	hours := float64(now) / 86400.0
+	roundedUp := math.Ceil(hours)
+	roundedDown := math.Floor(hours)
+	return int(roundedDown), int(roundedUp)
+}
+
+func (i incomingCounter) inc(value int) {
+	roundedDown, _ := epochHours()
+	_, exists := i.packetHoursToCountMap[roundedDown]
+	if !exists {
+		i.packetHoursToCountMap[roundedDown] = 0
+	}
+	i.packetHoursToCountMap[roundedDown] += value
+}
+
+func (i incomingCounter) reset() {
+	i.packetHoursToCountMap = hoursToCountMap{}
+}
+
+type outgoingCounter struct {
+	vxlanID                 int
+	ip                      string
+	host                    string
+	bucketStartEpoch        int
+	bucketEndEpoch          int
+	packetHoursToCountMap   hoursToCountMap
+	requestsHoursToCountMap hoursToCountMap
+}
+
+func (o outgoingCounter) outgoingCounterKey() string {
+	return strconv.Itoa(o.vxlanID) + "_" + o.ip + "_" + o.host + "_" + strconv.Itoa(o.bucketStartEpoch) + "_" + strconv.Itoa(o.bucketEndEpoch)
+}
+
+func (o outgoingCounter) inc(packetValue int, requestValue int) {
+	roundedDown, _ := epochHours()
+	_, exists1 := o.packetHoursToCountMap[roundedDown]
+	if !exists1 {
+		o.packetHoursToCountMap[roundedDown] = 0
+	}
+	o.packetHoursToCountMap[roundedDown] += packetValue
+
+	_, exists2 := o.requestsHoursToCountMap[roundedDown]
+	if !exists2 {
+		o.requestsHoursToCountMap[roundedDown] = 0
+	}
+	o.requestsHoursToCountMap[roundedDown] += requestValue
+}
+
+func (o outgoingCounter) reset() {
+	o.packetHoursToCountMap = hoursToCountMap{}
+	o.requestsHoursToCountMap = hoursToCountMap{}
+}
+
 var (
 	handle *pcap.Handle
 	err    error
@@ -364,9 +449,13 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 
 				payloadLength := len(tcp.Payload)
 				ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
-				fmt.Println("ip: " + ip)
-				sourceKey := strconv.Itoa(vxlanID) + "_" + ip
-				countMap[sourceKey] += payloadLength
+
+				ic := generateIncomingCounter(vxlanID, ip)
+				ic, exists := incomingCountMap[ic.incomingCounterKey()]
+				if !exists {
+					incomingCountMap[ic.incomingCounterKey()] = ic
+				}
+				ic.inc(payloadLength)
 
 				assembler := createAndGetAssembler(vxlanID)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
@@ -422,18 +511,30 @@ func main() {
 
 func dbUpdates() {
 	fmt.Println("Hi time is now : " + time.Now().String())
-	fmt.Println("CountMap size: " + strconv.Itoa(len(countMap)))
-	fmt.Println("***")
+	fmt.Println("CountMap size: " + strconv.Itoa(len(incomingCountMap)))
 
 	// Insert the document into the MongoDB collection
 	trafficMetricsCollection := db.TrafficMetricsInstance()
 
-	operations := []mongo.WriteModel{}
+	var operations []mongo.WriteModel
 
-	for key, value := range countMap {
-		filter := bson.M{"_id": key}
-		update := bson.M{"$inc": bson.M{"count": value}}
-		countMap[key] = 0
+	for _, value := range incomingCountMap {
+		filter := bson.M{
+			"$and": []interface{}{
+				bson.M{"_id.vxlanID": value.vxlanID},
+				bson.M{"_id.ip": value.ip},
+				bson.M{"_id.bucketStartEpoch": value.bucketStartEpoch},
+				bson.M{"_id.bucketEndEpoch": value.bucketEndEpoch},
+			},
+		}
+
+		fields := make(map[string]int)
+		for k, v := range value.packetHoursToCountMap {
+			fields["packetHoursToCountMap."+strconv.Itoa(k)] = v
+		}
+
+		update := bson.M{"$inc": fields}
+		value.reset()
 
 		operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update).SetUpsert(true)
 		operations = append(operations, operation)
@@ -444,9 +545,9 @@ func dbUpdates() {
 		result, err := trafficMetricsCollection.BulkWrite(context.Background(), operations)
 
 		if err != nil {
-			log.Printf("Error while updating collection: %d", err.Error())
+			log.Printf("Error while updating collection: %s", err.Error())
 		} else {
-			log.Printf("Successfully updated: %d", result.ModifiedCount)
+			log.Printf("Successfully updated: %d; inserted: %d; deleted: %d; upserted: %d", result.ModifiedCount, result.InsertedCount, result.DeletedCount, result.UpsertedCount)
 		}
 	} else {
 		log.Println("Skipping updates because nothing in list")
