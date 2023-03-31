@@ -59,7 +59,7 @@ func (i incomingCounter) incomingCounterKey() string {
 
 func generateIncomingCounter(vxlanID int, ip string) incomingCounter {
 	d, u := epochDays()
-	return incomingCounter{vxlanID: vxlanID, ip: ip, bucketStartEpoch: d, bucketEndEpoch: u, packetHoursToCountMap: hoursToCountMap{}}
+	return incomingCounter{vxlanID: vxlanID, ip: ip, bucketStartEpoch: d, bucketEndEpoch: u, packetHoursToCountMap: make(hoursToCountMap)}
 }
 
 func epochHours() (int, int) {
@@ -451,11 +451,11 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 				ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
 
 				ic := generateIncomingCounter(vxlanID, ip)
-				ic, exists := incomingCountMap[ic.incomingCounterKey()]
+				_, exists := incomingCountMap[ic.incomingCounterKey()]
 				if !exists {
 					incomingCountMap[ic.incomingCounterKey()] = ic
 				}
-				ic.inc(payloadLength)
+				incomingCountMap[ic.incomingCounterKey()].inc(payloadLength)
 
 				assembler := createAndGetAssembler(vxlanID)
 				assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
