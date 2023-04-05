@@ -5,6 +5,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"os"
+	"strconv"
 	"sync"
 )
 
@@ -13,6 +14,9 @@ var (
 	clientInstanceError error
 	once                sync.Once
 )
+
+var AccountID = strconv.Itoa(1_000_000)
+var TrafficMetricsCollectionName = "traffic_metrics"
 
 func GetMongoClient() (*mongo.Client, error) {
 	once.Do(func() {
