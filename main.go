@@ -139,14 +139,14 @@ func (f *myFactory) collectOldStreams() {
 
 // Reassembled handles reassembled TCP stream data.
 func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
-	if (s.done) {
-		return;
+	if s.done {
+		return
 	}
 	for _, r := range rs {
 		// For now, we'll simply count the bytes on each side of the TCP stream.
-		if (r.Skip > 0) {
-			s.done = true;
-			return;
+		if r.Skip > 0 {
+			s.done = true
+			return
 		}
 		s.bytes = append(s.bytes, r.Bytes...)
 		// Mark that we've received new packet data.
@@ -381,11 +381,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if (!isGcp) {
+	if !isGcp {
 		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 			log.Fatal(err)
-			return 
-		} 
+			return
+		}
 	}
 
 	log.Println("reading in packets")
@@ -433,10 +433,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
-			if (bytesIn > bytesInThreshold) {
+			if bytesIn > bytesInThreshold {
 				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
-					log.Println("sleeping for: ", bytesInSleepDuration);
+					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+					log.Println("sleeping for: ", bytesInSleepDuration)
 					flushAll()
 					time.Sleep(bytesInSleepDuration)
 				}
@@ -464,14 +464,13 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 
 func main() {
 
-
 	client, err := db.GetMongoClient()
 	if err != nil {
 		// Handle error
 	}
 
 	// Set up a ticker to run every 2 minutes
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(2 * time.Minute)
 
 	go func() {
 		for range ticker.C {
@@ -487,11 +486,11 @@ func main() {
 
 	interfaceName := "eth0"
 
-	if (isGcp) {
+	if isGcp {
 		interfaceName = "ens4"
 	}
-	
-	if handle, err := pcap.OpenLive(interfaceName, 128 * 1024, true, pcap.BlockForever); err != nil {
+
+	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")

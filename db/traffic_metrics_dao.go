@@ -36,6 +36,8 @@ func TrafficMetricsDbUpdates(incomingCountMap map[string]utils.IncomingCounter, 
 		filter := buildFilter(value.VxlanID, value.Ip, "", "INCOMING_PACKETS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)
 		operation := buildOperation(filter, value.PacketHoursToCountMap)
 		incomingOperations = append(incomingOperations, operation)
+
+		value.Reset()
 	}
 
 	var outgoingPacketOperations []mongo.WriteModel
@@ -49,6 +51,8 @@ func TrafficMetricsDbUpdates(incomingCountMap map[string]utils.IncomingCounter, 
 		filter2 := buildFilter(value.VxlanID, value.Ip, value.Host, "OUTGOING_REQUESTS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)
 		outgoingRequestOperation := buildOperation(filter2, value.RequestsHoursToCountMap)
 		outgoingRequestOperations = append(outgoingRequestOperations, outgoingRequestOperation)
+
+		value.Reset()
 	}
 
 	// Execute the update operation
