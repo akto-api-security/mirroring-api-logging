@@ -526,7 +526,10 @@ func main() {
 
 func dbUpdates() {
 	// Insert the document into the MongoDB collection
-	trafficMetricsCollection := db.TrafficMetricsInstance()
+	trafficMetricsCollection, err := db.TrafficMetricsInstance()
+	if err != nil {
+		return
+	}
 	var incomingOperations []mongo.WriteModel
 
 	fmt.Printf("incoming count map: %d", len(incomingCountMap))
