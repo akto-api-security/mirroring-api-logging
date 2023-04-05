@@ -374,10 +374,10 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 				ic := utils.GenerateIncomingCounter(vxlanID, ip)
 				existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
 				if ok {
+					existingIC.Inc(payloadLength)
+				} else {
 					ic.Inc(payloadLength)
 					incomingCountMap[ic.IncomingCounterKey()] = ic
-				} else {
-					existingIC.Inc(payloadLength)
 				}
 
 				assembler := createAndGetAssembler(vxlanID)
