@@ -475,6 +475,8 @@ func main() {
 	go func() {
 		for range ticker.C {
 			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
 		}
 	}()
 
