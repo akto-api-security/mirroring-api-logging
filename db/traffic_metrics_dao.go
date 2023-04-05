@@ -41,12 +41,13 @@ func TrafficMetricsDbUpdates(incomingCountMap map[string]utils.IncomingCounter, 
 	var outgoingPacketOperations []mongo.WriteModel
 	var outgoingRequestOperations []mongo.WriteModel
 	for _, value := range outgoingCountMap {
-		filter := buildFilter(value.VxlanID, value.Ip, value.Host, "OUTGOING_PACKETS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)
+		filter1 := buildFilter(value.VxlanID, value.Ip, value.Host, "OUTGOING_PACKETS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)
 
-		outgoingPacketOperation := buildOperation(filter, value.PacketHoursToCountMap)
+		outgoingPacketOperation := buildOperation(filter1, value.PacketHoursToCountMap)
 		outgoingPacketOperations = append(outgoingPacketOperations, outgoingPacketOperation)
 
-		outgoingRequestOperation := buildOperation(filter, value.PacketHoursToCountMap)
+		filter2 := buildFilter(value.VxlanID, value.Ip, value.Host, "OUTGOING_REQUESTS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)
+		outgoingRequestOperation := buildOperation(filter2, value.RequestsHoursToCountMap)
 		outgoingRequestOperations = append(outgoingRequestOperations, outgoingRequestOperation)
 	}
 
