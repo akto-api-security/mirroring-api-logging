@@ -275,7 +275,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
-		oc := utils.GenerateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), reqHeader["host"])
+		hostString := reqHeader["host"]
+		if utils.CheckIfIpHost(hostString) {
+			hostString = "ip-host"
+		}
+		oc := utils.GenerateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), hostString)
 		existingOc, ok := outgoingCountMap[oc.OutgoingCounterKey()]
 		if ok {
 			existingOc.Inc(outgoingBytes, 1)
