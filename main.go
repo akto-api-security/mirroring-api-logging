@@ -498,11 +498,11 @@ func main() {
 
 	for {
 
-		files, err := ioutil.ReadDir("/app/files/")
+		files, _ := os.ReadDir("/app/files/")
 		log.Println("reading files...")
-		if err != nil {
-			log.Fatal(err)
-		}
+		//if err != nil {
+		//	log.Fatal(err)
+		//}
 
 		for _, file := range files {
 
@@ -511,23 +511,32 @@ func main() {
 			}
 
 			log.Println("file: ", file.Name())
-			fileCreationTs, _ := strconv.Atoi(file.Name())
-			timeNow := time.Now().Unix()
-
-			if timeNow-int64(fileCreationTs) < 120 {
-				continue
-			}
+			//fileCreationTs, _ := strconv.Atoi(file.Name())
+			//timeNow := time.Now().Unix()
+			//
+			//if timeNow-int64(fileCreationTs) < 120 {
+			//	continue
+			//}
 
 			fileName := "/app/files/" + file.Name()
 			if handle, err := pcap.OpenOffline(fileName); err != nil {
 				log.Fatal(err)
 			} else {
+
+				epochTime := time.Now().Unix()
+				message := fmt.Sprintf("start %d", epochTime)
+				fmt.Println(message)
+
 				run(handle, -1, "MIRRORING")
 				flushAll()
 				e := os.Remove(fileName)
 				if e != nil {
 					log.Fatal(e)
 				}
+
+				epochTime = time.Now().Unix()
+				message = fmt.Sprintf("end %d", epochTime)
+				fmt.Println(message)
 			}
 
 		}
