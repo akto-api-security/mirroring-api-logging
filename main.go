@@ -17,6 +17,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"io"
 	"io/ioutil"
 	"log"
@@ -39,6 +41,9 @@ var printCounter = 500
 var bytesInThreshold = 200 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
+var incomingCountMap = make(map[string]utils.IncomingCounter)
+var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+
 var (
 	handle *pcap.Handle
 	err    error
@@ -268,6 +273,21 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
 
+		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
+		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
+		hostString := reqHeader["host"]
+		if utils.CheckIfIpHost(hostString) {
+			hostString = "ip-host"
+		}
+		oc := utils.GenerateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), hostString)
+		existingOc, ok := outgoingCountMap[oc.OutgoingCounterKey()]
+		if ok {
+			existingOc.Inc(outgoingBytes, 1)
+		} else {
+			oc.Inc(outgoingBytes, 1)
+			outgoingCountMap[oc.OutgoingCounterKey()] = oc
+		}
+
 		if printCounter > 0 {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
@@ -401,6 +421,18 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				vxlanID = 0
 			}
 			tcp := innerPacket.TransportLayer().(*layers.TCP)
+
+			payloadLength := len(tcp.Payload)
+			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
+			ic := utils.GenerateIncomingCounter(vxlanID, ip)
+			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
+			if ok {
+				existingIC.Inc(payloadLength)
+			} else {
+				ic.Inc(payloadLength)
+				incomingCountMap[ic.IncomingCounterKey()] = ic
+			}
+
 			assembler := createAndGetAssembler(vxlanID, source)
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
@@ -416,6 +448,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 			}
+
 		}
 	}
 }
@@ -434,6 +467,22 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
+
+	client, err := db.GetMongoClient()
+	if err != nil {
+		// Handle error
+	}
+
+	// Set up a ticker to run every 2 minutes
+	ticker := time.NewTicker(2 * time.Minute)
+
+	go func() {
+		for range ticker.C {
+			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+		}
+	}()
 
 	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
 
@@ -491,4 +540,10 @@ func main() {
 	} else {
 		run(handle, -1, "MIRRORING")
 	}
+
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
 }
