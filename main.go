@@ -387,7 +387,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	if !isGcp {
 		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
-			log.Fatal(err)
+			log.Printf("SetBPFFilter error: %v", err)
 			return
 		}
 	}
@@ -473,6 +473,12 @@ func main() {
 		// Handle error
 	}
 
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
+
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
 
@@ -496,15 +502,53 @@ func main() {
 		interfaceName = "ens4"
 	}
 
+	for {
+
+		files, err := ioutil.ReadDir("/app/files/")
+		log.Println("reading files...")
+		if err != nil {
+			log.Printf("Error reading files from directory : %v", err)
+			continue
+		}
+
+		for _, file := range files {
+
+			if file.IsDir() {
+				continue
+			}
+
+			fileCreationTs, _ := strconv.Atoi(file.Name())
+			timeNow := time.Now().Unix()
+			if timeNow-int64(fileCreationTs) < 35 {
+				continue
+			}
+			fileName := "/app/files/" + file.Name()
+
+			log.Println("file: ", file.Name())
+
+			if handle, err := pcap.OpenOffline(fileName); err != nil {
+				log.Printf("Error while creating pcap handle %v", err)
+			} else {
+				run(handle, -1, "MIRRORING")
+				flushAll()
+			}
+
+			e := os.Remove(fileName)
+			if e != nil {
+				log.Printf("Error while deleting file (%s) : %v", fileName, e)
+			} else {
+				log.Printf("Deleted file: %s successfully", fileName)
+			}
+
+		}
+
+		time.Sleep(time.Second * 2)
+	}
+
 	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
 	}
 
-	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			// Handle error
-		}
-	}()
 }
