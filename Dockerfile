@@ -12,9 +12,13 @@ RUN go mod download
 COPY *.go ./
 COPY db ./db
 COPY utils ./utils
+COPY tcpdump.sh ./
+COPY cleanup.sh ./
 
 RUN go build -o /mirroring-api-logging
+RUN chmod +x tcpdump.sh;
+RUN chmod +x cleanup.sh
 
 EXPOSE 4789/udp
 
-CMD ["/bin/sh", "-c", "mkdir /app/files | /mirroring-api-logging | tcpdump -i eth0 udp port 4789 -w /app/files/%s  -W 720  -G 120 -K -n"]
+CMD ["/bin/sh", "-c", "mkdir /app/files | /mirroring-api-logging | /app/tcpdump.sh | /app/cleanup.sh"]
