@@ -17,6 +17,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"io"
 	"io/ioutil"
 	"log"
@@ -39,6 +41,9 @@ var printCounter = 500
 var bytesInThreshold = 200 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
+var incomingCountMap = make(map[string]utils.IncomingCounter)
+var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+
 var (
 	handle *pcap.Handle
 	err    error
@@ -134,14 +139,14 @@ func (f *myFactory) collectOldStreams() {
 
 // Reassembled handles reassembled TCP stream data.
 func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
-	if (s.done) {
-		return;
+	if s.done {
+		return
 	}
 	for _, r := range rs {
 		// For now, we'll simply count the bytes on each side of the TCP stream.
-		if (r.Skip > 0) {
-			s.done = true;
-			return;
+		if r.Skip > 0 {
+			s.done = true
+			return
 		}
 		s.bytes = append(s.bytes, r.Bytes...)
 		// Mark that we've received new packet data.
@@ -268,6 +273,21 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
 
+		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
+		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
+		hostString := reqHeader["host"]
+		if utils.CheckIfIpHost(hostString) {
+			hostString = "ip-host"
+		}
+		oc := utils.GenerateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), hostString)
+		existingOc, ok := outgoingCountMap[oc.OutgoingCounterKey()]
+		if ok {
+			existingOc.Inc(outgoingBytes, 1)
+		} else {
+			oc.Inc(outgoingBytes, 1)
+			outgoingCountMap[oc.OutgoingCounterKey()] = oc
+		}
+
 		if printCounter > 0 {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
@@ -365,11 +385,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if (!isGcp) {
+	if !isGcp {
 		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
 			log.Fatal(err)
-			return 
-		} 
+			return
+		}
 	}
 
 	log.Println("reading in packets")
@@ -401,14 +421,26 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				vxlanID = 0
 			}
 			tcp := innerPacket.TransportLayer().(*layers.TCP)
+
+			payloadLength := len(tcp.Payload)
+			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
+			ic := utils.GenerateIncomingCounter(vxlanID, ip)
+			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
+			if ok {
+				existingIC.Inc(payloadLength)
+			} else {
+				ic.Inc(payloadLength)
+				incomingCountMap[ic.IncomingCounterKey()] = ic
+			}
+
 			assembler := createAndGetAssembler(vxlanID, source)
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
-			if (bytesIn > bytesInThreshold) {
+			if bytesIn > bytesInThreshold {
 				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn);
-					log.Println("sleeping for: ", bytesInSleepDuration);
+					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+					log.Println("sleeping for: ", bytesInSleepDuration)
 					flushAll()
 					time.Sleep(bytesInSleepDuration)
 				}
@@ -416,6 +448,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 			}
+
 		}
 	}
 }
@@ -435,6 +468,22 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 
 func main() {
 
+	client, err := db.GetMongoClient()
+	if err != nil {
+		// Handle error
+	}
+
+	// Set up a ticker to run every 2 minutes
+	ticker := time.NewTicker(2 * time.Minute)
+
+	go func() {
+		for range ticker.C {
+			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+		}
+	}()
+
 	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
 
 	if len(infra_mirroring_mode_input) > 0 {
@@ -443,13 +492,19 @@ func main() {
 
 	interfaceName := "eth0"
 
-	if (isGcp) {
+	if isGcp {
 		interfaceName = "ens4"
 	}
-	
-	if handle, err := pcap.OpenLive(interfaceName, 128 * 1024, true, pcap.BlockForever); err != nil {
+
+	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
 	} else {
 		run(handle, -1, "MIRRORING")
 	}
+
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
 }
