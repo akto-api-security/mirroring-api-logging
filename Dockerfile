@@ -17,4 +17,4 @@ RUN go build -o /mirroring-api-logging
 
 EXPOSE 4789/udp
 
-CMD ["/bin/sh", "-c", "mkdir /app/files | /mirroring-api-logging | tcpdump -i eth0 udp port 4789 -w /app/files/file_ -W 720 -C 1m -K -n"]
+CMD ["/bin/sh", "-c", "mkdir /app/files | /mirroring-api-logging | tcpdump -i eth0 udp port 4789 -w /app/files/%s  -W 720  -G 120 -K -n"]
