@@ -44,6 +44,8 @@ var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 
+var readFiles = make(map[string]bool)
+
 var (
 	handle *pcap.Handle
 	err    error
@@ -524,6 +526,13 @@ func main() {
 			}
 			fileName := "/app/files/" + file.Name()
 
+			_, ok := readFiles[file.Name()]
+			if ok {
+				continue
+			} else {
+				readFiles[file.Name()] = true
+			}
+
 			log.Println("file: ", file.Name())
 
 			if handle, err := pcap.OpenOffline(fileName); err != nil {
@@ -531,14 +540,15 @@ func main() {
 			} else {
 				run(handle, -1, "MIRRORING")
 				flushAll()
+				handle.Close()
 			}
 
-			e := os.Remove(fileName)
-			if e != nil {
-				log.Printf("Error while deleting file (%s) : %v", fileName, e)
-			} else {
-				log.Printf("Deleted file: %s successfully", fileName)
-			}
+			//e := os.Remove(fileName)
+			//if e != nil {
+			//	log.Printf("Error while deleting file (%s) : %v", fileName, e)
+			//} else {
+			//	log.Printf("Deleted file: %s successfully", fileName)
+			//}
 
 		}
 
