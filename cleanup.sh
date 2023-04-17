@@ -1,6 +1,6 @@
 #!/bin/sh
 
-max=80
+max=90
 DIR="/app/files"
 
 while true
