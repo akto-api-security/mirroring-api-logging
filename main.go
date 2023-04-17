@@ -504,6 +504,13 @@ func main() {
 		interfaceName = "ens4"
 	}
 
+	interfaceNameValue, found := os.LookupEnv("interface_name")
+	if found && interfaceNameValue != "" {
+		interfaceName = interfaceNameValue
+	}
+
+	log.Printf("Interface name: %s", interfaceName)
+
 	for {
 
 		files, err := ioutil.ReadDir("/app/files/")
