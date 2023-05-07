@@ -386,7 +386,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// if err != nil {  }
 
 	if !isGcp {
-		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+		if err := handle.SetBPFFilter("not (tcp and port 9092)"); err != nil { // optional
 			log.Fatal(err)
 			return
 		}
