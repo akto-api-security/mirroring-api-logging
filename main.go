@@ -386,10 +386,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// if err != nil {  }
 
 	if !isGcp {
-		if err := handle.SetBPFFilter("not port 9092"); err != nil { // optional
-			log.Fatal(err)
-			return
-		}
+		//if err := handle.SetBPFFilter("not port 9092"); err != nil { // optional
+		//	log.Fatal(err)
+		//	return
+		//}
 	}
 
 	log.Println("reading in packets")
