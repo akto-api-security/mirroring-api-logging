@@ -386,10 +386,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// if err != nil {  }
 
 	if !isGcp {
-		//if err := handle.SetBPFFilter("not port 9092"); err != nil { // optional
-		//	log.Fatal(err)
-		//	return
-		//}
+		if err := handle.SetBPFFilter("not (port 9092 or port 22)"); err != nil { // optional
+			log.Fatal(err)
+			return
+		}
 	}
 
 	log.Println("reading in packets")
@@ -491,10 +491,6 @@ func main() {
 	}
 
 	interfaceName := "any"
-
-	//if isGcp {
-	//	interfaceName = "ens4"
-	//}
 
 	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 		log.Fatal(err)
