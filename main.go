@@ -36,7 +36,6 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-var isGcp = false
 var printCounter = 500
 var bytesInThreshold = 200 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
@@ -385,11 +384,9 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if !isGcp {
-		if err := handle.SetBPFFilter("not (port 9092 or port 22)"); err != nil { // optional
-			log.Fatal(err)
-			return
-		}
+	if err := handle.SetBPFFilter("not (port 9092 or port 22)"); err != nil { // optional
+		log.Fatal(err)
+		return
 	}
 
 	log.Println("reading in packets")
@@ -400,26 +397,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	for packet := range packetSource.Packets() {
 		innerPacket := packet
 		vxlanID := apiCollectionId
-		if apiCollectionId <= 0 && !isGcp {
-
-			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
-				continue
-			}
-
-			udpContent := packet.TransportLayer().(*layers.UDP)
-
-			vxlanIDbyteArr := udpContent.Payload[4:7]
-			vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
-			innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
-			// log.Println("%v", innerPacket)
-		}
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
 			// log.Println("not a tcp payload")
 			continue
 		} else {
-			if isGcp {
-				vxlanID = 0
-			}
 			tcp := innerPacket.TransportLayer().(*layers.TCP)
 
 			payloadLength := len(tcp.Payload)
@@ -483,12 +464,6 @@ func main() {
 			outgoingCountMap = make(map[string]utils.OutgoingCounter)
 		}
 	}()
-
-	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
-
-	if len(infra_mirroring_mode_input) > 0 {
-		isGcp = (infra_mirroring_mode_input == "gcp")
-	}
 
 	interfaceName := "any"
 
