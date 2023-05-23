@@ -439,6 +439,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
+
+			if bytesIn%1_000_000 == 0 {
+				log.Println("Bytes in: ", bytesIn)
+			}
+
 			if bytesIn > bytesInThreshold {
 				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
 					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
@@ -540,7 +545,7 @@ func main() {
 				readFiles[file.Name()] = true
 			}
 
-			log.Println("file: ", file.Name())
+			log.Println("file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
 
 			if handle, err := pcap.OpenOffline(fileName); err != nil {
 				log.Printf("Error while creating pcap handle %v", err)
