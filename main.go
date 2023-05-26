@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -236,11 +237,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = value
+				reqHeader[name] = strings.ToLower(value)
 			}
 		}
 
-		reqHeader["host"] = req.Host
+		reqHeader["host"] = strings.ToLower(req.Host)
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
 		if !passes {

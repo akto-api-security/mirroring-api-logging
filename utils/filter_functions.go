@@ -1,6 +1,9 @@
 package utils
 
-import "log"
+import (
+	"log"
+	"strings"
+)
 
 func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]string) bool {
 
@@ -12,9 +15,12 @@ func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]
 
 	flag := true
 	for filterKey, filterVal := range filterHeaderValueMap {
-		headerVal, ok := reqHeaders[filterKey]
+		filterKeyLower := strings.ToLower(filterKey)
+		filterValLower := strings.ToLower(filterVal)
+
+		headerVal, ok := reqHeaders[filterKeyLower]
 		if ok {
-			flag = flag && filterVal == headerVal
+			flag = flag && filterValLower == headerVal
 		} else {
 			flag = false
 		}
