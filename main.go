@@ -237,11 +237,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = strings.ToLower(value)
+				reqHeader[strings.ToLower(name)] = value
 			}
 		}
 
-		reqHeader["host"] = strings.ToLower(req.Host)
+		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
 		if !passes {
