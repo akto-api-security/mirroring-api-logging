@@ -461,6 +461,7 @@ func main() {
 
 	client, err := db.GetMongoClient()
 	if err != nil {
+		log.Println("Failed connecting to mongo")
 		// Handle error
 	}
 
