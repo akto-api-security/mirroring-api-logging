@@ -11,10 +11,12 @@ func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]
 	}
 
 	flag := true
-	for k, v := range reqHeaders {
-		filterVal, ok := filterHeaderValueMap[k]
+	for filterKey, filterVal := range filterHeaderValueMap {
+		headerVal, ok := reqHeaders[filterKey]
 		if ok {
-			flag = flag && filterVal == v
+			flag = flag && filterVal == headerVal
+		} else {
+			flag = false
 		}
 	}
 
