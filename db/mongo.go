@@ -17,11 +17,12 @@ var (
 
 var AccountID = strconv.Itoa(1_000_000)
 var TrafficMetricsCollectionName = "traffic_metrics"
+var AccountSettingsCollectionName = "accounts_settings"
 
 func GetMongoClient() (*mongo.Client, error) {
 	once.Do(func() {
 
-		//os.Setenv("AKTO_MONGO_CONN", "mongodb://localhost:27017/admini")
+		os.Setenv("AKTO_MONGO_CONN", "mongodb://localhost:27017/admini")
 		mongoUrl := os.Getenv("AKTO_MONGO_CONN")
 
 		// Define MongoDB client options

@@ -43,6 +43,8 @@ var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 
+var filterHeaderValueMap = make(map[string]string)
+
 var (
 	handle *pcap.Handle
 	err    error
@@ -239,6 +241,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		reqHeader["host"] = req.Host
+
+		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
+		if !passes {
+			i++
+			continue
+		}
 
 		respHeader := make(map[string]string)
 		for name, values := range resp.Header {
@@ -454,14 +462,22 @@ func main() {
 		// Handle error
 	}
 
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
+
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
 
 	go func() {
 		for range ticker.C {
+			log.Println("Running ticker")
 			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
 			incomingCountMap = make(map[string]utils.IncomingCounter)
 			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			filterHeaderValueMap = db.FetchFilterHeaderMap()
 		}
 	}()
 
@@ -472,10 +488,4 @@ func main() {
 	} else {
 		run(handle, -1, "MIRRORING")
 	}
-
-	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			// Handle error
-		}
-	}()
 }
