@@ -244,6 +244,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
+		log.Printf("passes %t", passes)
 		if !passes {
 			i++
 			continue
