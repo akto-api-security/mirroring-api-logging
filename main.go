@@ -462,11 +462,18 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
+	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
+	disableOnDbFlag := disableOnDb == "true"
+
+	log.Printf("Disable flag : %t", disableOnDbFlag)
 
 	client, err := db.GetMongoClient()
 	if err != nil {
-		log.Println("Failed connecting to mongo")
-		// Handle error
+		log.Printf("Failed connecting to mongo %s", err)
+		if disableOnDbFlag {
+			log.Println("Exiting....")
+			panic("Failed connecting to mongo") // this will get restarted by docker
+		}
 	}
 
 	defer func() {
