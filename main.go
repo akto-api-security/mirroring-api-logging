@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"io"
 	"io/ioutil"
 	"log"
@@ -468,7 +469,8 @@ func main() {
 	log.Printf("Disable flag : %t", disableOnDbFlag)
 
 	client, err := db.GetMongoClient()
-	if err != nil {
+	mongoPingErr := client.Ping(context.Background(), readpref.Primary())
+	if err != nil || mongoPingErr != nil {
 		log.Printf("Failed connecting to mongo %s", err)
 		if disableOnDbFlag {
 			log.Println("Exiting....")
