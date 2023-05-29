@@ -472,6 +472,7 @@ func main() {
 		log.Printf("Failed connecting to mongo %s", err)
 		if disableOnDbFlag {
 			log.Println("Exiting....")
+			time.Sleep(time.Second * 60)
 			panic("Failed connecting to mongo") // this will get restarted by docker
 		}
 	}
