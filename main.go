@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -237,14 +236,19 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[strings.ToLower(name)] = value
+				reqHeader[name] = value
 			}
 		}
 
 		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
-		log.Printf("passes %t", passes)
+		if printCounter > 0 {
+			log.Println(reqHeader)
+			log.Printf("passes %t", passes)
+			// not doing printCounter-- because it is being decreased somewhere else. So instead of 500 logs it will print only 250 if we decrease here.
+		}
+
 		if !passes {
 			i++
 			continue

@@ -1,13 +1,10 @@
 package utils
 
 import (
-	"log"
 	"strings"
 )
 
 func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]string) bool {
-
-	log.Println(reqHeaders)
 
 	if filterHeaderValueMap == nil || len(filterHeaderValueMap) == 0 {
 		return true
@@ -15,8 +12,7 @@ func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]
 
 	flag := true
 	for filterKey, filterVal := range filterHeaderValueMap {
-		filterKeyLower := strings.ToLower(filterKey)
-		headerVal, ok := reqHeaders[filterKeyLower]
+		headerVal, ok := reqHeaders[filterKey]
 		if ok {
 			flag = flag && strings.EqualFold(filterVal, headerVal)
 		} else {
