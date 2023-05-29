@@ -478,13 +478,10 @@ func main() {
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
 
+	tickerCode() // to run this immediately
 	go func() {
 		for range ticker.C {
-			log.Println("Running ticker")
-			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
-			incomingCountMap = make(map[string]utils.IncomingCounter)
-			outgoingCountMap = make(map[string]utils.OutgoingCounter)
-			filterHeaderValueMap = db.FetchFilterHeaderMap()
+			tickerCode()
 		}
 	}()
 
@@ -495,4 +492,12 @@ func main() {
 	} else {
 		run(handle, -1, "MIRRORING")
 	}
+}
+
+func tickerCode() {
+	log.Println("Running ticker")
+	db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+	incomingCountMap = make(map[string]utils.IncomingCounter)
+	outgoingCountMap = make(map[string]utils.OutgoingCounter)
+	filterHeaderValueMap = db.FetchFilterHeaderMap()
 }
