@@ -20,6 +20,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -494,6 +495,7 @@ func main() {
 			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
 			incomingCountMap = make(map[string]utils.IncomingCounter)
 			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			cleanupReadFilesMap()
 		}
 	}()
 
@@ -526,51 +528,59 @@ func main() {
 		}
 
 		for _, file := range files {
-
-			if file.IsDir() {
-				continue
-			}
-
-			fileCreationTs, _ := strconv.Atoi(file.Name())
-			timeNow := time.Now().Unix()
-			if timeNow-int64(fileCreationTs) < 35 {
-				continue
-			}
-			fileName := "/app/files/" + file.Name()
-
-			_, ok := readFiles[file.Name()]
-			if ok {
-				continue
-			} else {
-				readFiles[file.Name()] = true
-			}
-
-			log.Println("file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
-
-			if handle, err := pcap.OpenOffline(fileName); err != nil {
-				log.Printf("Error while creating pcap handle %v", err)
-			} else {
-				run(handle, -1, "MIRRORING")
-				flushAll()
-				handle.Close()
-			}
-
-			//e := os.Remove(fileName)
-			//if e != nil {
-			//	log.Printf("Error while deleting file (%s) : %v", fileName, e)
-			//} else {
-			//	log.Printf("Deleted file: %s successfully", fileName)
-			//}
-
+			readTCPFileAndProcess(file)
 		}
 
 		time.Sleep(time.Second * 2)
 	}
 
-	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
-		log.Fatal(err)
-	} else {
-		run(handle, -1, "MIRRORING")
+}
+
+func cleanupReadFilesMap() {
+	timeNow := time.Now().Unix()
+	for k, _ := range readFiles {
+		fileCreationTs, _ := strconv.Atoi(k)
+		if timeNow-int64(fileCreationTs) > 600 {
+			delete(readFiles, k)
+		}
+	}
+}
+
+func readTCPFileAndProcess(file fs.FileInfo) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("Recovering from panic : %v \n", r)
+			return
+		}
+	}()
+
+	if file.IsDir() {
+		return
 	}
 
+	fileCreationTs, _ := strconv.Atoi(file.Name())
+	timeNow := time.Now().Unix()
+	if timeNow-int64(fileCreationTs) < 35 {
+		return
+	}
+	fileName := "/app/files/" + file.Name()
+
+	_, ok := readFiles[file.Name()]
+	if ok {
+		return
+	} else {
+		readFiles[file.Name()] = true
+	}
+
+	log.Println("file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
+
+	assemblerMap = make(map[int]*tcpassembly.Assembler)
+
+	if handle, err := pcap.OpenOffline(fileName); err != nil {
+		log.Printf("Error while creating pcap handle %v", err)
+	} else {
+		run(handle, -1, "MIRRORING")
+		flushAll()
+		handle.Close()
+	}
 }
