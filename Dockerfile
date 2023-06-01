@@ -21,4 +21,4 @@ RUN chmod +x cleanup.sh
 
 EXPOSE 4789/udp
 
-CMD ["/bin/sh", "-c", "mkdir /app/files | /mirroring-api-logging | /app/tcpdump.sh | /app/cleanup.sh"]
+CMD ["/bin/sh", "-c", "mkdir -p /app/files && (nohup /app/tcpdump.sh &) && (nohup /app/cleanup.sh &) && /mirroring-api-logging"]
