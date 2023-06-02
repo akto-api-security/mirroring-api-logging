@@ -179,25 +179,24 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			printLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			return
 		}
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
-			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			printLog(fmt.Sprintf("Got body err: %s\n", err))
 			return
 		}
 
 		requests = append(requests, *req)
 		requestsContent = append(requestsContent, string(body))
-		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
 		i++
 	}
 
 	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
 	i = 0
-	log.Println("len(req)", len(requests))
+	printLog(fmt.Sprintf("len(req) %d", len(requests)))
 	for {
 		if len(requests) < i+1 {
 			break
@@ -207,12 +206,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			printLog(fmt.Sprintf("HTTP Request error: %s\n", err))
 			return
 		}
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			printLog(fmt.Sprintf("Got body err: %s\n", err))
 			return
 		}
 		encoding := resp.Header["Content-Encoding"]
@@ -221,7 +220,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
 			r, err = gzip.NewReader(r)
 			if err != nil {
-				log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
+				printLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
 				return
 			}
 		}
@@ -244,11 +243,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
-		if printCounter > 0 {
-			log.Println(reqHeader)
-			log.Printf("passes %t", passes)
-			// not doing printCounter-- because it is being decreased somewhere else. So instead of 500 logs it will print only 250 if we decrease here.
-		}
+		printLog("Req header: " + mapToString(reqHeader))
+		printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
 			i++
@@ -302,10 +298,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		if printCounter > 0 {
-			printCounter--
-			log.Println("req-resp.String()", string(out))
-		}
+		printLog("req-resp.String() " + string(out))
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -362,34 +355,33 @@ var kafkaWriter *kafka.Writer
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-	log.Println("kafka_url", kafka_url)
 
 	if len(kafka_url) == 0 {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
-	log.Println("kafka_url", kafka_url)
+	printLog("kafka_url: " + kafka_url)
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
 		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
 		if err != nil {
-			log.Println("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found ", bytesInThresholdInput)
+			printLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
 			return
 		} else {
-			log.Println("Setting bytes in threshold at ", bytesInThreshold)
+			printLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
 		}
 
 	}
 
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+		printLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
 		return
 	}
 
 	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
 	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+		printLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
 		return
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
@@ -404,7 +396,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		return
 	}
 
-	log.Println("reading in packets")
+	printLog("reading in packets")
 	// Read in packets, pass to assembler.
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
@@ -413,7 +405,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-			// log.Println("not a tcp payload")
+			printLog("not a tcp payload")
 			continue
 		} else {
 			tcp := innerPacket.TransportLayer().(*layers.TCP)
@@ -435,8 +427,8 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			bytesIn += len(tcp.Payload)
 			if bytesIn > bytesInThreshold {
 				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("sleeping for: ", bytesInSleepDuration)
+					printLog("exceeded bytesInThreshold: " + strconv.Itoa(bytesInThreshold) + " with curr: " + strconv.Itoa(bytesIn))
+					printLog("sleeping for: " + strconv.Itoa(int(bytesInSleepDuration)))
 					flushAll()
 					time.Sleep(bytesInSleepDuration)
 				}
@@ -510,4 +502,19 @@ func tickerCode() {
 	incomingCountMap = make(map[string]utils.IncomingCounter)
 	outgoingCountMap = make(map[string]utils.OutgoingCounter)
 	filterHeaderValueMap = db.FetchFilterHeaderMap()
+}
+
+func printLog(val string) {
+	if printCounter > 0 {
+		log.Println(val)
+		printCounter--
+	}
+}
+
+func mapToString(m map[string]string) string {
+	jsonBytes, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(jsonBytes)
 }
