@@ -35,10 +35,11 @@ func FetchFilterHeaderMap() map[string]string {
 		return filterHeaderValueMap
 	}
 
-	rawFilterHeaderValueMap := result["filterHeaderValueMap"].(primitive.M)
-
-	for k, v := range rawFilterHeaderValueMap {
-		filterHeaderValueMap[k] = v.(string)
+	if result["filterHeaderValueMap"] != nil {
+		rawFilterHeaderValueMap := result["filterHeaderValueMap"].(primitive.M)
+		for k, v := range rawFilterHeaderValueMap {
+			filterHeaderValueMap[k] = v.(string)
+		}
 	}
 
 	fmt.Println("********************************")
