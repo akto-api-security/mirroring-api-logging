@@ -17,15 +17,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/db"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -42,6 +44,7 @@ var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+var ignoreCloudMetadataCalls = false
 
 var (
 	handle *pcap.Handle
@@ -239,9 +242,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		reqHeader["host"] = req.Host
-		log.Println("host", req.Host)
-		if len(req.Host) == 0 {
-			log.Println("host is empty, skipping")
+		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
+			log.Println("host is metadata call, skipping")
 			continue
 		}
 
@@ -457,6 +459,11 @@ func main() {
 	client, err := db.GetMongoClient()
 	if err != nil {
 		// Handle error
+	}
+
+	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
+	if len(ignoreCloudMetadataCallsVar) > 0 {
+		ignoreCloudMetadataCalls = strings.ToLower(ignoreCloudMetadataCallsVar) == "true"
 	}
 
 	// Set up a ticker to run every 2 minutes
