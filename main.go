@@ -243,7 +243,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		reqHeader["host"] = req.Host
 		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
-			log.Println("host is metadata call, skipping")
 			continue
 		}
 
@@ -464,6 +463,9 @@ func main() {
 	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
 	if len(ignoreCloudMetadataCallsVar) > 0 {
 		ignoreCloudMetadataCalls = strings.ToLower(ignoreCloudMetadataCallsVar) == "true"
+		log.Println("ignoreCloudMetadataCalls: ", ignoreCloudMetadataCalls)
+	} else {
+		log.Println("ignoreCloudMetadataCalls: missing. defaulting to false")
 	}
 
 	// Set up a ticker to run every 2 minutes
