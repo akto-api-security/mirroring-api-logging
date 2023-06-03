@@ -240,6 +240,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		reqHeader["host"] = req.Host
+		log.Println("host", req.Host)
+		if len(req.Host) == 0 {
+			log.Println("host is empty, skipping")
+			continue
+		}
 
 		respHeader := make(map[string]string)
 		for name, values := range resp.Header {
