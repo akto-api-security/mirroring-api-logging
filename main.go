@@ -411,7 +411,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			payloadLength := len(tcp.Payload)
 			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
-			log.Println("innerPacket", innerPacket)
+			log.Println("ip: ", ip, " payloadLength: ", payloadLength, " vxlanID: ", vxlanID, " source: ", source)
 			if ip == "" || len(ip) == 0 {
 				log.Println("ip is empty")
 				continue
