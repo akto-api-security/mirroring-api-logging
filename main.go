@@ -17,8 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/db"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"io"
 	"io/ioutil"
 	"log"
@@ -26,6 +24,9 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -405,6 +406,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			payloadLength := len(tcp.Payload)
 			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
+			log.Println("ip: ", ip, " payloadLength: ", payloadLength, " vxlanID: ", vxlanID, " source: ", source)
+			if ip == "" || len(ip) == 0 {
+				log.Println("ip is empty")
+				continue
+			}
 			ic := utils.GenerateIncomingCounter(vxlanID, ip)
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
 			if ok {
