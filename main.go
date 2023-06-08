@@ -170,6 +170,14 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
+func checkIfIp(ip string) bool {
+	chunks := strings.Split(ip, ":")
+	if len(chunks) > 1 {
+		return net.ParseIP(chunks[0]) != nil
+	}
+	return net.ParseIP(ip) != nil
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
@@ -244,7 +252,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		reqHeader["host"] = req.Host
-		if ignoreIpCalls && net.ParseIP(req.Host) != nil {
+		if ignoreIpCalls && checkIfIp(req.Host) {
 			log.Println("HTTP-request", "Ignoring IP call: %s\n", req.Host)
 			continue
 		} else {
