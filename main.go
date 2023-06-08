@@ -173,9 +173,12 @@ func (s *myStream) ReassemblyComplete() {
 func checkIfIp(ip string) bool {
 	chunks := strings.Split(ip, ":")
 	if len(chunks) > 1 {
-		return net.ParseIP(chunks[0]) != nil
+		ans := net.ParseIP(chunks[0]) != nil
+		log.Println("IP", ip, ans)
 	}
-	return net.ParseIP(ip) != nil
+	ans := net.ParseIP(ip) != nil
+	log.Println("IP", ip, ans)
+	return ans
 }
 
 func tryReadFromBD(bd *bidi, isPending bool) {
