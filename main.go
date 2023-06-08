@@ -20,6 +20,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -45,6 +46,7 @@ var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 var ignoreCloudMetadataCalls = false
+var ignoreIpCalls = false
 
 var (
 	handle *pcap.Handle
@@ -242,6 +244,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		reqHeader["host"] = req.Host
+		if ignoreIpCalls && net.ParseIP(req.Host) != nil {
+			continue
+		}
 		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
 			continue
 		}
@@ -460,6 +465,13 @@ func main() {
 		// Handle error
 	}
 
+	ignoreIpCallsVar := os.Getenv("AKTO_IGNORE_IP_CALLS")
+	if len(ignoreIpCallsVar) > 0 {
+		ignoreIpCalls = strings.ToLower(ignoreIpCallsVar) == "true"
+		log.Println("ignoreIpCalls: ", ignoreIpCalls)
+	} else {
+		log.Println("ignoreIpCalls: missing. defaulting to false")
+	}
 	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
 	if len(ignoreCloudMetadataCallsVar) > 0 {
 		ignoreCloudMetadataCalls = strings.ToLower(ignoreCloudMetadataCallsVar) == "true"
