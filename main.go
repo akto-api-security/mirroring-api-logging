@@ -245,7 +245,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		reqHeader["host"] = req.Host
 		if ignoreIpCalls && net.ParseIP(req.Host) != nil {
+			log.Println("HTTP-request", "Ignoring IP call: %s\n", req.Host)
 			continue
+		} else {
+			log.Println("HTTP-request", "Got request: %s\n", req.Host)
 		}
 		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
 			continue
