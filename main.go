@@ -34,6 +34,8 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 
+	"net"
+
 	"github.com/akto-api-security/gomiddleware"
 	"github.com/segmentio/kafka-go"
 )
@@ -45,7 +47,7 @@ var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 var ignoreCloudMetadataCalls = false
-
+var ignoreIpTraffic = false
 var (
 	handle *pcap.Handle
 	err    error
@@ -168,6 +170,11 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
+func checkIfIp(host string) bool {
+	chunks := strings.Split(host, ":")
+	return net.ParseIP(chunks[0]) != nil
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
@@ -242,6 +249,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		reqHeader["host"] = req.Host
+
+		if ignoreIpTraffic && checkIfIp(req.Host) {
+			continue
+		}
+
 		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
 			continue
 		}
@@ -458,6 +470,14 @@ func main() {
 	client, err := db.GetMongoClient()
 	if err != nil {
 		// Handle error
+	}
+
+	ignoreIpTrafficVar := os.Getenv("AKTO_IGNORE_IP_TRAFFIC")
+	if len(ignoreIpTrafficVar) > 0 {
+		ignoreIpTraffic = strings.ToLower(ignoreIpTrafficVar) == "true"
+		log.Println("ignoreIpTraffic: ", ignoreIpTraffic)
+	} else {
+		log.Println("ignoreIpTraffic: missing. defaulting to false")
 	}
 
 	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
