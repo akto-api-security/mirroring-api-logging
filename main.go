@@ -175,9 +175,7 @@ func checkIfIp(host string) bool {
 		return true
 	}
 	chunks := strings.Split(host, ":")
-	ans := net.ParseIP(chunks[0]) != nil
-	log.Println("checkIfIp", "host: ", host, ",ans: ", ans)
-	return ans
+	return net.ParseIP(chunks[0]) != nil
 }
 
 func tryReadFromBD(bd *bidi, isPending bool) {
