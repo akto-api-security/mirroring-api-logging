@@ -171,6 +171,9 @@ func (s *myStream) ReassemblyComplete() {
 }
 
 func checkIfIp(host string) bool {
+	if len(host) == 0 {
+		return false
+	}
 	chunks := strings.Split(host, ":")
 	ans := net.ParseIP(chunks[0]) != nil
 	log.Println("checkIfIp", "host: ", host, ",ans: ", ans)
