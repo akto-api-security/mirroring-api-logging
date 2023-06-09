@@ -174,7 +174,8 @@ func checkIfIp(ip string) bool {
 	chunks := strings.Split(ip, ":")
 	if len(chunks) > 1 {
 		ans := net.ParseIP(chunks[0]) != nil
-		log.Println("IP", ip, ans)
+		log.Println("Port", ip, ans)
+		return ans
 	}
 	ans := net.ParseIP(ip) != nil
 	log.Println("IP", ip, ans)
