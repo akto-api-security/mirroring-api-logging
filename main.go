@@ -253,10 +253,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeader["host"] = req.Host
 
 		if ignoreIpTraffic && checkIfIp(req.Host) {
+			i++
 			continue
 		}
 
 		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
+			i++
 			continue
 		}
 
