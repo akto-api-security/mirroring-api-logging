@@ -41,7 +41,7 @@ import (
 )
 
 var printCounter = 500
-var bytesInThreshold = 200 * 1024 * 1024
+var bytesInThreshold = 10 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -161,7 +161,7 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 		}
 	}
 
-	s.bidi.maybeFinish()
+	//s.bidi.maybeFinish()
 }
 
 // ReassemblyComplete marks this stream as finished.
@@ -208,18 +208,36 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
 	i = 0
 	log.Println("len(req)", len(requests))
+
+	responses := []http.Response{}
+
 	for {
-		if len(requests) < i+1 {
-			break
-		}
-		req := &requests[i]
-		resp, err := http.ReadResponse(reader, req)
+		resp, err := http.ReadResponse(reader, nil)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
 			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
 			return
 		}
+
+		responses = append(responses, *resp)
+		i++
+	}
+	log.Println("len(resp)", len(responses))
+
+	if len(requests) != len(responses) {
+		return
+	}
+
+	i = 0
+	for {
+		if len(requests) < i+1 {
+			break
+		}
+
+		req := &requests[i]
+		resp := &responses[i]
+
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			log.Println("HTTP-request-body", "Got body err: %s\n", err)
@@ -338,11 +356,13 @@ func (bd *bidi) maybeFinish() {
 	}
 }
 
-func flushAll() {
+func wipeOut() {
 	for _, v := range assemblerMap {
 		v.FlushAll()
 	}
 }
+
+var factoryMap = make(map[int]*myFactory)
 
 func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
@@ -358,6 +378,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 		_assembler.MaxBufferedPagesTotal = 100000
 		_assembler.MaxBufferedPagesPerConnection = 1000
 
+		factoryMap[vxlanID] = streamFactory
 		assemblerMap[vxlanID] = _assembler
 		log.Println("created assembler for vxlanID=", vxlanID)
 
@@ -367,6 +388,16 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 }
 
 var kafkaWriter *kafka.Writer
+
+func flushAll() {
+	for k, v := range assemblerMap {
+		r, _ := v.FlushOlderThan(time.Now().Add(time.Second * -5))
+		log.Println("num flushed/closed:", r, k)
+		log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
+		//factoryMap[k].collectOldStreams()
+		log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
+	}
+}
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
@@ -441,16 +472,16 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
-			if bytesIn > bytesInThreshold {
-				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("sleeping for: ", bytesInSleepDuration)
-					flushAll()
-					time.Sleep(bytesInSleepDuration)
-				}
 
-				bytesIn = 0
+			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
 				bytesInEpoch = time.Now()
+				flushAll()
+				if bytesIn > bytesInThreshold {
+					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+					log.Println("limit reached")
+					wipeOut()
+				}
+				bytesIn = 0
 			}
 
 		}
