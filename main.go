@@ -207,11 +207,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 	for {
 
-		if i >= len(requests) {
-			return
-		}
-
-		resp, err := http.ReadResponse(reader, &requests[i])
+		resp, err := http.ReadResponse(reader, nil)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
