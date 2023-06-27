@@ -194,6 +194,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		i++
 	}
 
+	if len(requests) == 0 {
+		return
+	}
+
 	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
 	i = 0
 	log.Println("len(req)", len(requests))
@@ -201,7 +205,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	responses := []http.Response{}
 
 	for {
-		resp, err := http.ReadResponse(reader, nil)
+		resp, err := http.ReadResponse(reader, &requests[0])
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
