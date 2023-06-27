@@ -203,6 +203,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	log.Println("len(req)", len(requests))
 
 	responses := []http.Response{}
+	responsesContent := []string{}
 
 	for {
 
@@ -217,24 +218,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			printLog(fmt.Sprintf("HTTP Request error: %s\n", err))
 			return
 		}
-
-		responses = append(responses, *resp)
-		i++
-	}
-	log.Println("len(resp)", len(responses))
-
-	if len(requests) != len(responses) {
-		return
-	}
-
-	i = 0
-	for {
-		if len(requests) < i+1 {
-			break
-		}
-
-		req := &requests[i]
-		resp := &responses[i]
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
@@ -258,6 +241,26 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			}
 
 		}
+
+		responses = append(responses, *resp)
+		responsesContent = append(responsesContent, string(body))
+
+		i++
+	}
+	log.Println("len(resp)", len(responses))
+
+	if len(requests) != len(responses) {
+		return
+	}
+
+	i = 0
+	for {
+		if len(requests) < i+1 {
+			break
+		}
+
+		req := &requests[i]
+		resp := &responses[i]
 
 		reqHeader := make(map[string]string)
 		for name, values := range req.Header {
@@ -295,7 +298,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"responseHeaders": string(respHeaderString),
 			"method":          req.Method,
 			"requestPayload":  requestsContent[i],
-			"responsePayload": string(body),
+			"responsePayload": responsesContent[i],
 			"ip":              bd.key.net.Src().String(),
 			"time":            fmt.Sprint(time.Now().Unix()),
 			"statusCode":      fmt.Sprint(resp.StatusCode),
