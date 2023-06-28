@@ -200,7 +200,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
 	i = 0
-	log.Println("len(req)", len(requests))
 
 	responses := []http.Response{}
 	responsesContent := []string{}
@@ -243,7 +242,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		i++
 	}
-	log.Println("len(resp)", len(responses))
 
 	if len(requests) != len(responses) {
 		return
@@ -383,12 +381,12 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 var kafkaWriter *kafka.Writer
 
 func flushAll() {
-	for k, v := range assemblerMap {
-		r, _ := v.FlushOlderThan(time.Now().Add(time.Second * -5))
-		log.Println("num flushed/closed:", r, k)
-		log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
+	for _, v := range assemblerMap {
+		v.FlushOlderThan(time.Now().Add(time.Second * -5))
+		//log.Println("num flushed/closed:", r, k)
+		//log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
 		//factoryMap[k].collectOldStreams()
-		log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
+		//log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
 	}
 }
 
@@ -472,6 +470,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
 					log.Println("limit reached")
 					wipeOut()
+					time.Sleep(20 * time.Second)
 				}
 				bytesIn = 0
 			}
