@@ -463,16 +463,20 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			bytesIn += len(tcp.Payload)
 
+			if bytesIn > bytesInThreshold {
+				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+				log.Println("limit reached")
+				wipeOut()
+				bytesIn = 0
+				bytesInEpoch = time.Now()
+				time.Sleep(20 * time.Second)
+			}
+
 			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
 				bytesInEpoch = time.Now()
 				flushAll()
-				if bytesIn > bytesInThreshold {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("limit reached")
-					wipeOut()
-					time.Sleep(20 * time.Second)
-				}
 				bytesIn = 0
+				bytesInEpoch = time.Now()
 			}
 
 		}
