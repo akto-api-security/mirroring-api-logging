@@ -247,6 +247,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		return
 	}
 
+	log.Println("len(requests): ", len(requests))
+
 	i = 0
 	for {
 		if len(requests) < i+1 {
