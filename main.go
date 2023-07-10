@@ -38,7 +38,7 @@ import (
 )
 
 var printCounter = 500
-var bytesInThreshold = 30 * 1024 * 1024
+var bytesInThreshold = 75 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -269,8 +269,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
-		printLog("Req header: " + mapToString(reqHeader))
-		printLog(fmt.Sprintf("passes %t", passes))
+		//printLog("Req header: " + mapToString(reqHeader))
+		//printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
 			i++
@@ -324,7 +324,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		printLog("req-resp.String() " + string(out))
+		//printLog("req-resp.String() " + string(out))
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -440,7 +440,13 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	i := 0
 	for packet := range packetSource.Packets() {
+		i++
+		if i%100 == 0 {
+			log.Println("packet time: ", packet.Metadata().Timestamp)
+		}
+
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
@@ -471,7 +477,9 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				wipeOut()
 				bytesIn = 0
 				bytesInEpoch = time.Now()
+				log.Println("sleep time: ", time.Now())
 				time.Sleep(20 * time.Second)
+				break
 			}
 
 			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
