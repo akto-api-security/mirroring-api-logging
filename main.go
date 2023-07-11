@@ -449,7 +449,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				break
 			}
 
-			if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
+			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
 				bytesInEpoch = time.Now()
 				flushAll()
 				bytesIn = 0
