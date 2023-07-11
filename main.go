@@ -38,7 +38,7 @@ import (
 )
 
 var printCounter = 500
-var bytesInThreshold = 20 * 1024 * 1024
+var bytesInThreshold = 10 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -246,8 +246,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	if len(requests) != len(responses) {
 		return
 	}
-
-	log.Println("len(requests): ", len(requests))
 
 	i = 0
 	for {
@@ -472,7 +470,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				wipeOut()
 				bytesIn = 0
 				bytesInEpoch = time.Now()
-				time.Sleep(20 * time.Second)
+				time.Sleep(10 * time.Second)
 				kafkaWriter.Close()
 				break
 			}
