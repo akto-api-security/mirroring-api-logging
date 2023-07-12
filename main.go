@@ -167,6 +167,7 @@ func (s *myStream) ReassemblyComplete() {
 }
 
 var mismatchCounter = 0
+var matchCounter = 0
 
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
@@ -300,6 +301,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			mismatchCounter++
 			log.Println("index mismatch for url :"+req.URL.String()+" and value: ", value)
 			log.Println("mismatchCounter: ", mismatchCounter)
+		} else if len(reqHeader["X-Amzn-Trace-Id"]) > 0 {
+			matchCounter++
+			log.Println("matchCounter: ", matchCounter)
 		}
 
 		out, _ := json.Marshal(value)
