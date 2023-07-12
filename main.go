@@ -296,7 +296,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		isMatch := reqHeader["X-Amzn-Trace-Id"] == respHeader["X-Amzn-Trace-Id"]
-		if req.URL.String() == "/login" && !isMatch {
+		if len(reqHeader["X-Amzn-Trace-Id"]) > 0 && req.URL.String() == "/login" && !isMatch {
 			mismatchCounter++
 			log.Println("index mismatch for url :"+req.URL.String()+" and value: ", value)
 			log.Println("mismatchCounter: ", mismatchCounter)
