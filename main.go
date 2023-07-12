@@ -38,7 +38,7 @@ import (
 
 var isGcp = false
 var printCounter = 500
-var bytesInThreshold = 200 * 1024 * 1024
+var bytesInThreshold = 10 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -157,7 +157,7 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 		}
 	}
 
-	s.bidi.maybeFinish()
+	// s.bidi.maybeFinish()
 }
 
 // ReassemblyComplete marks this stream as finished.
@@ -177,40 +177,43 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			printLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			return
 		}
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
-			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			printLog(fmt.Sprintf("Got body err: %s\n", err))
 			return
 		}
 
 		requests = append(requests, *req)
 		requestsContent = append(requestsContent, string(body))
-		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
 		i++
+	}
+
+	if len(requests) == 0 {
+		return
 	}
 
 	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
 	i = 0
-	log.Println("len(req)", len(requests))
+
+	responses := []http.Response{}
+	responsesContent := []string{}
+
 	for {
-		if len(requests) < i+1 {
-			break
-		}
-		req := &requests[i]
-		resp, err := http.ReadResponse(reader, req)
+		resp, err := http.ReadResponse(reader, nil)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
+			printLog(fmt.Sprintf("HTTP Request error: %s\n", err))
 			return
 		}
+
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			log.Println("HTTP-request-body", "Got body err: %s\n", err)
+			printLog(fmt.Sprintf("Got body err: %s\n", err))
 			return
 		}
 		encoding := resp.Header["Content-Encoding"]
@@ -219,17 +222,37 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
 			r, err = gzip.NewReader(r)
 			if err != nil {
-				log.Println("HTTP-gunzip", "Failed to gzip decode: %s", err)
+				printLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
 				return
 			}
 		}
+
 		if err == nil {
 			body, err = ioutil.ReadAll(r)
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()
 			}
-
 		}
+
+		responses = append(responses, *resp)
+		responsesContent = append(responsesContent, string(body))
+
+		i++
+	}
+
+	if len(requests) != len(responses) {
+		return
+	}
+
+	i = 0
+
+	for {
+		if len(requests) < i+1 {
+			break
+		}
+
+		req := &requests[i]
+		resp := &responses[i]
 
 		reqHeader := make(map[string]string)
 		for name, values := range req.Header {
@@ -258,7 +281,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"responseHeaders": string(respHeaderString),
 			"method":          req.Method,
 			"requestPayload":  requestsContent[i],
-			"responsePayload": string(body),
+			"responsePayload": responsesContent[i],
 			"ip":              bd.key.net.Src().String(),
 			"time":            fmt.Sprint(time.Now().Unix()),
 			"statusCode":      fmt.Sprint(resp.StatusCode),
@@ -288,10 +311,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		if printCounter > 0 {
-			printCounter--
-			log.Println("req-resp.String()", string(out))
-		}
+		printLog("req-resp.String() " + string(out))
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -316,11 +336,13 @@ func (bd *bidi) maybeFinish() {
 	}
 }
 
-func flushAll() {
+func wipeOut() {
 	for _, v := range assemblerMap {
 		v.FlushAll()
 	}
 }
+
+var factoryMap = make(map[int]*myFactory)
 
 func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
@@ -336,6 +358,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 		_assembler.MaxBufferedPagesTotal = 100000
 		_assembler.MaxBufferedPagesPerConnection = 1000
 
+		factoryMap[vxlanID] = streamFactory
 		assemblerMap[vxlanID] = _assembler
 		log.Println("created assembler for vxlanID=", vxlanID)
 
@@ -346,6 +369,16 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 var kafkaWriter *kafka.Writer
 
+func flushAll() {
+	for _, v := range assemblerMap {
+		v.FlushOlderThan(time.Now().Add(time.Second * -5))
+		//log.Println("num flushed/closed:", r, k)
+		//log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
+		//factoryMap[k].collectOldStreams()
+		//log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
+	}
+}
+
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 	log.Println("kafka_url", kafka_url)
@@ -353,29 +386,29 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	if len(kafka_url) == 0 {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
-	log.Println("kafka_url", kafka_url)
+	printLog("kafka_url: " + kafka_url)
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
 		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
 		if err != nil {
-			log.Println("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found ", bytesInThresholdInput)
+			printLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
 			return
 		} else {
-			log.Println("Setting bytes in threshold at ", bytesInThreshold)
+			printLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
 		}
 
 	}
 
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+		printLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
 		return
 	}
 
 	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
 	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+		printLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
 		return
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
@@ -392,7 +425,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		}
 	}
 
-	log.Println("reading in packets")
+	printLog("reading in packets")
 	// Read in packets, pass to assembler.
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
@@ -437,16 +470,22 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
-			if bytesIn > bytesInThreshold {
-				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("sleeping for: ", bytesInSleepDuration)
-					flushAll()
-					time.Sleep(bytesInSleepDuration)
-				}
 
+			if bytesIn > bytesInThreshold {
+				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+				log.Println("limit reached, sleeping", time.Now())
+				wipeOut()
 				bytesIn = 0
 				bytesInEpoch = time.Now()
+				time.Sleep(10 * time.Second)
+				kafkaWriter.Close()
+				break
+			}
+
+			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
+				flushAll()
+				bytesInEpoch = time.Now()
+				bytesIn = 0
 			}
 
 		}
@@ -473,6 +512,12 @@ func main() {
 		// Handle error
 	}
 
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
+
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
 
@@ -496,15 +541,26 @@ func main() {
 		interfaceName = "ens4"
 	}
 
-	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
-		log.Fatal(err)
-	} else {
-		run(handle, -1, "MIRRORING")
-	}
-
-	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			// Handle error
+	for {
+		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
+			log.Fatal(err)
+		} else {
+			run(handle, -1, "MIRRORING")
+			log.Println("closing pcap connection....")
+			handle.Close()
+			log.Println("sleeping....")
+			assemblerMap = make(map[int]*tcpassembly.Assembler)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			time.Sleep(10 * time.Second)
+			log.Println("SLEPT")
 		}
-	}()
+	}
+}
+
+func printLog(val string) {
+	if printCounter > 0 {
+		log.Println(val)
+		printCounter--
+	}
 }
