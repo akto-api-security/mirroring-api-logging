@@ -301,9 +301,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			mismatchCounter++
 			log.Println("index mismatch for url :"+req.URL.String()+" and value: ", value)
 			log.Println("mismatchCounter: ", mismatchCounter)
-		} else if len(reqHeader["X-Amzn-Trace-Id"]) > 0 {
-			matchCounter++
-			log.Println("matchCounter: ", matchCounter)
+			log.Println("stream a: ", bd.a.bytes)
+			log.Println("stream b: ", bd.b.bytes)
+
+			break
 		}
 
 		out, _ := json.Marshal(value)
