@@ -281,8 +281,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
-		printLog("Req header: " + mapToString(reqHeader))
-		printLog(fmt.Sprintf("passes %t", passes))
+		//printLog("Req header: " + mapToString(reqHeader))
+		//printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
 			i++
@@ -346,7 +346,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		printLog("req-resp.String() " + string(out))
+		//printLog("req-resp.String() " + string(out))
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -463,6 +463,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	var bytesInEpoch = time.Now()
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
+
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
@@ -487,16 +488,22 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			bytesIn += len(tcp.Payload)
 
+			if bytesIn > bytesInThreshold {
+				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+				log.Println("limit reached, sleeping", time.Now())
+				wipeOut()
+				bytesIn = 0
+				bytesInEpoch = time.Now()
+				time.Sleep(10 * time.Second)
+				kafkaWriter.Close()
+				break
+			}
+
 			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
 				bytesInEpoch = time.Now()
 				flushAll()
-				if bytesIn > bytesInThreshold {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("limit reached")
-					wipeOut()
-					time.Sleep(20 * time.Second)
-				}
 				bytesIn = 0
+				bytesInEpoch = time.Now()
 			}
 
 		}
@@ -565,12 +572,22 @@ func main() {
 	}()
 
 	interfaceName := "any"
-
-	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
-		log.Fatal(err)
-	} else {
-		run(handle, -1, "MIRRORING")
+	for {
+		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
+			log.Fatal(err)
+		} else {
+			run(handle, -1, "MIRRORING")
+			log.Println("closing pcap connection....")
+			handle.Close()
+			log.Println("sleeping....")
+			assemblerMap = make(map[int]*tcpassembly.Assembler)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			time.Sleep(10 * time.Second)
+			log.Println("SLEPT")
+		}
 	}
+
 }
 
 func tickerCode() {
