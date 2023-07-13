@@ -17,21 +17,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/db"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
+
+	"net"
 
 	"github.com/akto-api-security/gomiddleware"
 	"github.com/segmentio/kafka-go"
@@ -46,6 +50,8 @@ var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 
 var filterHeaderValueMap = make(map[string]string)
 
+var ignoreCloudMetadataCalls = false
+var ignoreIpTraffic = false
 var (
 	handle *pcap.Handle
 	err    error
@@ -168,6 +174,14 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
+func checkIfIp(host string) bool {
+	if len(host) == 0 {
+		return true
+	}
+	chunks := strings.Split(host, ":")
+	return net.ParseIP(chunks[0]) != nil
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
@@ -271,6 +285,16 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
+			i++
+			continue
+		}
+
+		if ignoreIpTraffic && checkIfIp(req.Host) {
+			i++
+			continue
+		}
+
+		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
 			i++
 			continue
 		}
@@ -514,6 +538,21 @@ func main() {
 			// Handle error
 		}
 	}()
+	ignoreIpTrafficVar := os.Getenv("AKTO_IGNORE_IP_TRAFFIC")
+	if len(ignoreIpTrafficVar) > 0 {
+		ignoreIpTraffic = strings.ToLower(ignoreIpTrafficVar) == "true"
+		log.Println("ignoreIpTraffic: ", ignoreIpTraffic)
+	} else {
+		log.Println("ignoreIpTraffic: missing. defaulting to false")
+	}
+
+	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
+	if len(ignoreCloudMetadataCallsVar) > 0 {
+		ignoreCloudMetadataCalls = strings.ToLower(ignoreCloudMetadataCallsVar) == "true"
+		log.Println("ignoreCloudMetadataCalls: ", ignoreCloudMetadataCalls)
+	} else {
+		log.Println("ignoreCloudMetadataCalls: missing. defaulting to false")
+	}
 
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
