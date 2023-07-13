@@ -17,21 +17,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/db"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/akto-api-security/mirroring-api-logging/db"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
+
+	"net"
 
 	"github.com/akto-api-security/gomiddleware"
 	"github.com/segmentio/kafka-go"
@@ -46,6 +50,8 @@ var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 
 var filterHeaderValueMap = make(map[string]string)
 
+var ignoreCloudMetadataCalls = false
+var ignoreIpTraffic = false
 var (
 	handle *pcap.Handle
 	err    error
@@ -168,6 +174,14 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
+func checkIfIp(host string) bool {
+	if len(host) == 0 {
+		return true
+	}
+	chunks := strings.Split(host, ":")
+	return net.ParseIP(chunks[0]) != nil
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
@@ -267,10 +281,20 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeader["host"] = req.Host
 
 		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
-		printLog("Req header: " + mapToString(reqHeader))
-		printLog(fmt.Sprintf("passes %t", passes))
+		//printLog("Req header: " + mapToString(reqHeader))
+		//printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
+			i++
+			continue
+		}
+
+		if ignoreIpTraffic && checkIfIp(req.Host) {
+			i++
+			continue
+		}
+
+		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
 			i++
 			continue
 		}
@@ -322,7 +346,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		printLog("req-resp.String() " + string(out))
+		//printLog("req-resp.String() " + string(out))
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -439,6 +463,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	var bytesInEpoch = time.Now()
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
+
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
@@ -463,16 +488,22 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			bytesIn += len(tcp.Payload)
 
+			if bytesIn > bytesInThreshold {
+				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+				log.Println("limit reached, sleeping", time.Now())
+				wipeOut()
+				bytesIn = 0
+				bytesInEpoch = time.Now()
+				time.Sleep(10 * time.Second)
+				kafkaWriter.Close()
+				break
+			}
+
 			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
 				bytesInEpoch = time.Now()
 				flushAll()
-				if bytesIn > bytesInThreshold {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("limit reached")
-					wipeOut()
-					time.Sleep(20 * time.Second)
-				}
 				bytesIn = 0
+				bytesInEpoch = time.Now()
 			}
 
 		}
@@ -514,6 +545,21 @@ func main() {
 			// Handle error
 		}
 	}()
+	ignoreIpTrafficVar := os.Getenv("AKTO_IGNORE_IP_TRAFFIC")
+	if len(ignoreIpTrafficVar) > 0 {
+		ignoreIpTraffic = strings.ToLower(ignoreIpTrafficVar) == "true"
+		log.Println("ignoreIpTraffic: ", ignoreIpTraffic)
+	} else {
+		log.Println("ignoreIpTraffic: missing. defaulting to false")
+	}
+
+	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
+	if len(ignoreCloudMetadataCallsVar) > 0 {
+		ignoreCloudMetadataCalls = strings.ToLower(ignoreCloudMetadataCallsVar) == "true"
+		log.Println("ignoreCloudMetadataCalls: ", ignoreCloudMetadataCalls)
+	} else {
+		log.Println("ignoreCloudMetadataCalls: missing. defaulting to false")
+	}
 
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
@@ -526,12 +572,22 @@ func main() {
 	}()
 
 	interfaceName := "any"
-
-	if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
-		log.Fatal(err)
-	} else {
-		run(handle, -1, "MIRRORING")
+	for {
+		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
+			log.Fatal(err)
+		} else {
+			run(handle, -1, "MIRRORING")
+			log.Println("closing pcap connection....")
+			handle.Close()
+			log.Println("sleeping....")
+			assemblerMap = make(map[int]*tcpassembly.Assembler)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			time.Sleep(10 * time.Second)
+			log.Println("SLEPT")
+		}
 	}
+
 }
 
 func tickerCode() {
