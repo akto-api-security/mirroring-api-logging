@@ -38,7 +38,7 @@ import (
 
 var isGcp = false
 var printCounter = 500
-var bytesInThreshold = 2 * 1024 * 1024 * 1024
+var bytesInThreshold = 1 * 1024 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -167,6 +167,11 @@ func (s *myStream) ReassemblyComplete() {
 }
 
 func tryReadFromBD(bd *bidi, isPending bool) {
+	if !isPending {
+		bd.a.bytes = make([]byte, 0)
+		bd.b.bytes = make([]byte, 0)
+	}
+
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
 	requests := []http.Request{}
@@ -482,10 +487,9 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				break
 			}
 
-			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
+			if time.Now().Sub(bytesInEpoch).Seconds() > 1 {
 				flushAll()
 				bytesInEpoch = time.Now()
-				bytesIn = 0
 			}
 
 		}
