@@ -42,7 +42,7 @@ import (
 )
 
 var printCounter = 500
-var bytesInThreshold = 10 * 1024 * 1024
+var bytesInThreshold = 500 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -364,6 +364,8 @@ func (bd *bidi) maybeFinish() {
 	default:
 		if bd.a.done && bd.b.done {
 			tryReadFromBD(bd, false)
+			bd.a.bytes = make([]byte, 0)
+			bd.b.bytes = make([]byte, 0)
 		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
 			tryReadFromBD(bd, true)
 			bd.lastProcessedTime = timeNow
@@ -499,10 +501,9 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				break
 			}
 
-			if time.Now().Sub(bytesInEpoch).Seconds() > 10 {
+			if time.Now().Sub(bytesInEpoch).Seconds() > 3 {
 				bytesInEpoch = time.Now()
 				flushAll()
-				bytesIn = 0
 				bytesInEpoch = time.Now()
 			}
 
