@@ -42,7 +42,7 @@ import (
 )
 
 var printCounter = 500
-var bytesInThreshold = 2 * 1024 * 1024 * 1024
+var bytesInThreshold = 500 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
