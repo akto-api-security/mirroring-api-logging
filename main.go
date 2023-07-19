@@ -365,12 +365,12 @@ func (bd *bidi) maybeFinish() {
 	default:
 		if bd.a.done && bd.b.done {
 			tryReadFromBD(bd, false)
-			if bd.a != nil {
-				log.Println("clearing stream a", len(bd.a.bytes))
-			}
-			if bd.a != nil {
-				log.Println("clearing stream b", len(bd.b.bytes))
-			}
+			//if bd.a != nil {
+			//	log.Println("clearing stream a", len(bd.a.bytes))
+			//}
+			//if bd.b != nil {
+			//	log.Println("clearing stream b", len(bd.b.bytes))
+			//}
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
 		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
