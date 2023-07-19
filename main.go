@@ -22,6 +22,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -364,6 +365,12 @@ func (bd *bidi) maybeFinish() {
 	default:
 		if bd.a.done && bd.b.done {
 			tryReadFromBD(bd, false)
+			if bd.a != nil {
+				log.Println("clearing stream a", len(bd.a.bytes))
+			}
+			if bd.a != nil {
+				log.Println("clearing stream b", len(bd.b.bytes))
+			}
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
 		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
@@ -493,8 +500,13 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			if bytesIn > bytesInThreshold {
 				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
 				log.Println("limit reached, sleeping", time.Now())
+
+				log.Println("logging memory stats before wipeout", time.Now())
+				logMemoryStats()
 				wipeOut()
 				log.Println("wipeout done", time.Now())
+				log.Println("logging memory stats post wipeout", time.Now())
+				logMemoryStats()
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
@@ -510,6 +522,14 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 		}
 	}
+}
+
+func logMemoryStats() {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	log.Println("Alloc: ", m.Alloc/1024/1024)
+	log.Println("Sys: ", m.Sys/1024/1024)
 }
 
 //export readTcpDumpFile
