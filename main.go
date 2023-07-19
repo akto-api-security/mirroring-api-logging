@@ -494,6 +494,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
 				log.Println("limit reached, sleeping", time.Now())
 				wipeOut()
+				log.Println("wipeout done", time.Now())
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
