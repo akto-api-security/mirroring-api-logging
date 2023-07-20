@@ -547,7 +547,8 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 
 func main() {
 	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
-	os.Setenv("GODEBUG", "gctrace=1")
+	r := os.Getenv("GODEBUG")
+	log.Println("Debug trace flag: ", r)
 	disableOnDbFlag := disableOnDb == "true"
 
 	log.Printf("Disable flag : %t", disableOnDbFlag)
