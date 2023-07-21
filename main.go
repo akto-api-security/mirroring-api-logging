@@ -452,6 +452,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
+			log.Println("bytesIn: ", bytesIn)
 
 			if bytesIn > bytesInThreshold {
 				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
