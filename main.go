@@ -323,7 +323,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"source":          bd.source,
 		}
 
-		out, _ := json.Marshal(value)
+		_, _ = json.Marshal(value)
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
