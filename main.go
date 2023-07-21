@@ -17,28 +17,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/segmentio/kafka-go"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
-
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 
 	"net"
-
-	"github.com/akto-api-security/gomiddleware"
-	"github.com/segmentio/kafka-go"
 )
 
 var printCounter = 500
@@ -329,7 +324,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
@@ -347,7 +341,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		//printLog("req-resp.String() " + string(out))
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -417,39 +410,6 @@ func flushAll() {
 }
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
-	}
-	printLog("kafka_url: " + kafka_url)
-
-	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
-	if len(bytesInThresholdInput) > 0 {
-		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
-		if err != nil {
-			printLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
-			return
-		} else {
-			printLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
-		}
-
-	}
-
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		printLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
-	}
-
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		printLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
-	}
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
-
-	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 	// Set up pcap packet capture
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
@@ -498,7 +458,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
-				kafkaWriter.Close()
 				break
 			}
 
@@ -532,14 +491,14 @@ func main() {
 	log.Printf("Disable flag : %t", disableOnDbFlag)
 
 	client, err := db.GetMongoClient()
-	mongoPingErr := client.Ping(context.Background(), readpref.Primary())
-	if err != nil || mongoPingErr != nil {
+	//mongoPingErr := client.Ping(context.Background(), readpref.Primary())
+	if err != nil {
 		log.Printf("Failed connecting to mongo %s", err)
-		if disableOnDbFlag {
-			log.Println("Exiting....")
-			time.Sleep(time.Second * 60)
-			panic("Failed connecting to mongo") // this will get restarted by docker
-		}
+		//if disableOnDbFlag {
+		//	log.Println("Exiting....")
+		//	time.Sleep(time.Second * 60)
+		//	panic("Failed connecting to mongo") // this will get restarted by docker
+		//}
 	}
 
 	defer func() {
