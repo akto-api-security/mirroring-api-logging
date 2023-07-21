@@ -179,6 +179,9 @@ func checkIfIp(host string) bool {
 
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
+	if bd.a.bytes != nil {
+		log.Println("stream size a len", len(bd.a.bytes))
+	}
 	i := 0
 	requests := []http.Request{}
 	requestsContent := []string{}
