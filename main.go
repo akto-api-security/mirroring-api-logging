@@ -511,7 +511,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			if time.Now().Sub(bytesInEpoch).Seconds() > 3 {
 				bytesInEpoch = time.Now()
 				flushAll()
-				bytesInEpoch = time.Now()
+				logMemoryStats()
 			}
 
 		}
