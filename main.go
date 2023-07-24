@@ -347,7 +347,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		printLog("req-resp.String() " + string(out))
+		//printLog("req-resp.String() " + string(out))
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -512,10 +512,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			src, dst := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
 
 			dstEndpoint := dst.Raw()
-			fmt.Println("dstEndpoint ", len(dstEndpoint))
+			//fmt.Println("dstEndpoint ", len(dstEndpoint))
 
 			srcEndpoint := src.Raw()
-			fmt.Println("srcEndpoint ", len(srcEndpoint))
+			//fmt.Println("srcEndpoint ", len(srcEndpoint))
 
 			srcIp := getIpString(srcEndpoint)
 
