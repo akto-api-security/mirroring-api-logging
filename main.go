@@ -479,10 +479,13 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
 			ic := utils.GenerateIncomingCounter(vxlanID, ip)
 
-			src, _ := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
+			src, dst := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
 
 			srcEndpoint := src.Raw()
-			fmt.Println("srcEndpoint", srcEndpoint)
+			fmt.Println("srcEndpoint ", srcEndpoint)
+
+			dstEndpoint := dst.Raw()
+			fmt.Println("dstEndpoint ", dstEndpoint)
 			srcEndpointStr := string(srcEndpoint[:])
 
 			fmt.Println("srcEndpointStr", srcEndpointStr)
@@ -492,19 +495,31 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
 				return
 			}
+
+			if ifaces == nil || len(ifaces) == 0 {
+				fmt.Print(fmt.Errorf("address empty: %+v\n", err.Error()))
+				return
+			}
+
 			for _, i := range ifaces {
+				fmt.Println("iface st")
 				addrs, err := i.Addrs()
 				if err != nil {
 					fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
 					continue
 				}
+				fmt.Print("addr len", len(addrs))
 				for _, a := range addrs {
+					fmt.Println("st")
+					fmt.Println("addr ", a)
 					switch v := a.(type) {
 					case *net.IPAddr:
 						fmt.Printf("%v : %s (%s)\n", i.Name, v, v.IP.DefaultMask())
 					}
+					fmt.Println("end")
 
 				}
+				fmt.Println("iface end")
 			}
 
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
