@@ -478,6 +478,15 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			payloadLength := len(tcp.Payload)
 			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
 			ic := utils.GenerateIncomingCounter(vxlanID, ip)
+
+			src, _ := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
+
+			srcEndpoint := src.Raw()
+			fmt.Println("srcEndpoint", srcEndpoint)
+			srcEndpointStr := string(srcEndpoint[:])
+
+			fmt.Println("srcEndpointStr", srcEndpointStr)
+
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
 			if ok {
 				existingIC.Inc(payloadLength)
