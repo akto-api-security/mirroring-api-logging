@@ -468,7 +468,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	ifaces, err := net.Interfaces()
 	if err == nil && ifaces != nil {
 		for _, i := range ifaces {
-			fmt.Println("iface st")
 			addrs, err := i.Addrs()
 			if err != nil {
 				fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
@@ -480,14 +479,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 					// Check if it's an IPv4 address
 					if ipnet.IP.To4() != nil {
 						// Compare the address with the target address
-						fmt.Printf("IPv4 address %s\n", ipnet.IP.To4().String())
+						fmt.Printf("Interface addr %s\n", ipnet.IP.To4().String())
 						interfaceMap[ipnet.IP.To4().String()] = true
 					}
 				}
-				fmt.Println("end")
-
 			}
-			fmt.Println("iface end")
 		}
 	}
 
