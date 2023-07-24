@@ -529,6 +529,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 					incomingReqCountMap[srcIp] = 0
 				}
 				incomingReqCountMap[srcIp]++
+				log.Printf("source %s, dest %s", srcIp, dstIp)
 			}
 
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
