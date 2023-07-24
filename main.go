@@ -417,7 +417,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if err := handle.SetBPFFilter("not (port 9092 or port 22)"); err != nil { // optional
+	if err := handle.SetBPFFilter("tcp not (port 9092 or port 22)"); err != nil { // optional
 		log.Fatal(err)
 		return
 	}
