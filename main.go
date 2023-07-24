@@ -343,6 +343,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
+		out, _ := json.Marshal(value)
 		printLog("req-resp.String() " + string(out))
 		i++
 	}
