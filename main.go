@@ -522,8 +522,8 @@ func logMemoryStats() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	log.Println("Alloc: ", m.Alloc/1024/1024)
-	log.Println("Sys: ", m.Sys/1024/1024)
+	log.Println("Alloc in MB: ", m.Alloc/1024/1024)
+	log.Println("Sys in MB: ", m.Sys/1024/1024)
 }
 
 //export readTcpDumpFile
