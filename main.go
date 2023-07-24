@@ -365,12 +365,6 @@ func (bd *bidi) maybeFinish() {
 	default:
 		if bd.a.done && bd.b.done {
 			tryReadFromBD(bd, false)
-			//if bd.a != nil {
-			//	log.Println("clearing stream a", len(bd.a.bytes))
-			//}
-			//if bd.b != nil {
-			//	log.Println("clearing stream b", len(bd.b.bytes))
-			//}
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
 		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
@@ -461,7 +455,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if err := handle.SetBPFFilter("not (port 9092 or port 22)"); err != nil { // optional
+	if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
 		log.Fatal(err)
 		return
 	}
@@ -547,8 +541,6 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 
 func main() {
 	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
-	r := os.Getenv("GODEBUG")
-	log.Println("Debug trace flag: ", r)
 	disableOnDbFlag := disableOnDb == "true"
 
 	log.Printf("Disable flag : %t", disableOnDbFlag)
