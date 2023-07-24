@@ -461,6 +461,36 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	}
 
 	printLog("reading in packets")
+
+	interfaceMap := make(map[string]bool)
+	incomingReqCountMap := make(map[string]int)
+
+	ifaces, err := net.Interfaces()
+	if err == nil && ifaces != nil {
+		for _, i := range ifaces {
+			fmt.Println("iface st")
+			addrs, err := i.Addrs()
+			if err != nil {
+				fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
+				continue
+			}
+			for _, a := range addrs {
+
+				if ipnet, ok := a.(*net.IPNet); ok {
+					// Check if it's an IPv4 address
+					if ipnet.IP.To4() != nil {
+						// Compare the address with the target address
+						fmt.Printf("IPv4 address %s\n", ipnet.IP.To4().String())
+						interfaceMap[ipnet.IP.To4().String()] = true
+					}
+				}
+				fmt.Println("end")
+
+			}
+			fmt.Println("iface end")
+		}
+	}
+
 	// Read in packets, pass to assembler.
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
@@ -481,45 +511,24 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			src, dst := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
 
-			srcEndpoint := src.Raw()
-			fmt.Println("srcEndpoint ", srcEndpoint)
-
 			dstEndpoint := dst.Raw()
-			fmt.Println("dstEndpoint ", dstEndpoint)
-			srcEndpointStr := string(srcEndpoint[:])
+			fmt.Println("dstEndpoint ", len(dstEndpoint))
 
-			fmt.Println("srcEndpointStr", srcEndpointStr)
+			srcEndpoint := src.Raw()
+			fmt.Println("srcEndpoint ", len(srcEndpoint))
 
-			ifaces, err := net.Interfaces()
-			if err != nil {
-				fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
-				return
-			}
+			srcIp := getIpString(srcEndpoint)
 
-			if ifaces == nil || len(ifaces) == 0 {
-				fmt.Print(fmt.Errorf("address empty: %+v\n", err.Error()))
-				return
-			}
+			dstIp := getIpString(dstEndpoint)
 
-			for _, i := range ifaces {
-				fmt.Println("iface st")
-				addrs, err := i.Addrs()
-				if err != nil {
-					fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
-					continue
+			_, ok := interfaceMap[dstIp]
+			// If the key exists
+			if ok && len(srcIp) > 0 && len(dstIp) > 0 {
+				_, ok2 := incomingReqCountMap[srcIp]
+				if !ok2 {
+					incomingReqCountMap[srcIp] = 0
 				}
-				fmt.Print("addr len", len(addrs))
-				for _, a := range addrs {
-					fmt.Println("st")
-					fmt.Println("addr ", a)
-					switch v := a.(type) {
-					case *net.IPAddr:
-						fmt.Printf("%v : %s (%s)\n", i.Name, v, v.IP.DefaultMask())
-					}
-					fmt.Println("end")
-
-				}
-				fmt.Println("iface end")
+				incomingReqCountMap[srcIp]++
 			}
 
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
@@ -545,6 +554,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				log.Println("wipeout done", time.Now())
 				log.Println("logging memory stats post wipeout", time.Now())
 				logMemoryStats()
+
+				for k, v := range incomingReqCountMap {
+					log.Printf("srcIp %s, total req %d", k, v)
+				}
+
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
@@ -560,6 +574,22 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 		}
 	}
+}
+
+func getIpString(endpoint []byte) string {
+	ip := ""
+	if endpoint == nil {
+		return ""
+	}
+	for i := 0; i < len(endpoint); i++ {
+		r := strconv.Itoa(int(endpoint[i]))
+		if len(ip) > 0 {
+			ip = ip + "." + r
+		} else {
+			ip = ip + r
+		}
+	}
+	return ip
 }
 
 func logMemoryStats() {
