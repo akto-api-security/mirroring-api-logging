@@ -256,6 +256,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	}
 
 	if len(requests) != len(responses) {
+		log.Println("req obj ", requests)
 		return
 	}
 
