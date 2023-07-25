@@ -591,7 +591,7 @@ func initKafka() {
 		ctx := context.Background()
 		err := Produce(kafkaWriter, ctx, string(out))
 		if err != nil {
-			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", e)
+			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			time.Sleep(time.Second * 2)
 		} else {
 			log.Println("connection establishing with kafka successfully")
