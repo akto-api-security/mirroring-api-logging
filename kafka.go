@@ -8,7 +8,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-func Produce(kafkaWriter *kafka.Writer, ctx context.Context, message string) {
+func Produce(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {
 	// intialize the writer with the broker addresses, and the topic
 	msg := kafka.Message{
 		Value: []byte(message),
@@ -17,7 +17,10 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, message string) {
 
 	if err != nil {
 		log.Println("ERROR while writing messages: ", err)
+		return err
 	}
+
+	return nil
 
 }
 
@@ -30,6 +33,5 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		MaxAttempts:  1,
 		ReadTimeout:  batchTimeout,
 		WriteTimeout: batchTimeout,
-		Async:        true,
 	}
 }

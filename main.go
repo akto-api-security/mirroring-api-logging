@@ -423,42 +423,6 @@ func flushAll() {
 }
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
-	}
-	printLog("kafka_url: " + kafka_url)
-
-	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
-	if len(bytesInThresholdInput) > 0 {
-		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
-		if err != nil {
-			printLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
-			return
-		} else {
-			printLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
-		}
-
-	}
-
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		printLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
-	}
-
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		printLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
-	}
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
-
-	kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
-	// Set up pcap packet capture
-	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
-	// if err != nil {  }
 
 	if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
 		log.Fatal(err)
@@ -584,6 +548,57 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	}
 }
 
+func initKafka() {
+	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
+
+	if len(kafka_url) == 0 {
+		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
+	}
+	printLog("kafka_url: " + kafka_url)
+
+	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
+	if len(bytesInThresholdInput) > 0 {
+		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
+		if err != nil {
+			printLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
+			return
+		} else {
+			printLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
+		}
+
+	}
+
+	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
+	if e != nil {
+		printLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+		return
+	}
+
+	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
+	if e != nil {
+		printLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+		return
+	}
+	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+
+	kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+	for {
+		value := map[string]string{
+			"testConnectionString": "kafkaInit",
+		}
+
+		out, _ := json.Marshal(value)
+		ctx := context.Background()
+		err := Produce(kafkaWriter, ctx, string(out))
+		if err != nil {
+			log.Println("error establishing connection with kafka, sending message failed, retrying")
+		} else {
+			log.Println("connection establishing with kafka successfully")
+			break
+		}
+	}
+}
+
 func getIpString(endpoint []byte) string {
 	ip := ""
 	if endpoint == nil {
@@ -613,6 +628,8 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	os.Setenv("AKTO_KAFKA_BROKER_URL", kafkaURL)
 	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
 	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
+
+	initKafka()
 
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
 		log.Fatal(err)
@@ -674,6 +691,7 @@ func main() {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
 		} else {
+			initKafka()
 			run(handle, -1, "MIRRORING")
 			log.Println("closing pcap connection....")
 			handle.Close()
