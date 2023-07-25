@@ -47,6 +47,7 @@ var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+var kafkaMsgCnt = 0
 
 var filterHeaderValueMap = make(map[string]string)
 
@@ -347,8 +348,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		//printLog("req-resp.String() " + string(out))
+		kafkaMsgCnt++
 		go Produce(kafkaWriter, ctx, string(out))
 		i++
+		if i%10 == 0 {
+			fmt.Println("kafka message count ", kafkaMsgCnt)
+		}
 	}
 }
 
