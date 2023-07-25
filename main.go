@@ -38,7 +38,6 @@ import (
 
 	"net"
 
-	"github.com/akto-api-security/gomiddleware"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -348,7 +347,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		//printLog("req-resp.String() " + string(out))
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		go Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -451,7 +450,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
-	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+	kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 	// Set up pcap packet capture
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
