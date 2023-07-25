@@ -518,22 +518,17 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			dstIp := getIpString(dstEndpoint)
 
-			_, ok := interfaceMap[dstIp]
-			// If the key exists
-			if ok && len(srcIp) > 0 && len(dstIp) > 0 {
-				_, ok2 := incomingReqSrcIpCountMap[srcIp]
-				if !ok2 {
-					incomingReqSrcIpCountMap[srcIp] = 0
-				}
-				incomingReqSrcIpCountMap[srcIp] += len(tcp.Payload)
-
-				_, ok2 = incomingReqDstIpCountMap[dstIp]
-				if !ok2 {
-					incomingReqDstIpCountMap[dstIp] = 0
-				}
-				incomingReqDstIpCountMap[dstIp] += len(tcp.Payload)
-
+			_, ok2 := incomingReqSrcIpCountMap[srcIp]
+			if !ok2 {
+				incomingReqSrcIpCountMap[srcIp] = 0
 			}
+			incomingReqSrcIpCountMap[srcIp] += len(tcp.Payload)
+
+			_, ok2 = incomingReqDstIpCountMap[dstIp]
+			if !ok2 {
+				incomingReqDstIpCountMap[dstIp] = 0
+			}
+			incomingReqDstIpCountMap[dstIp] += len(tcp.Payload)
 
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
 			if ok {
