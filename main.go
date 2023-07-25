@@ -156,7 +156,7 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 			s.done = true
 			return
 		}
-		s.bytes = append(s.bytes, r.Bytes...)
+		//s.bytes = append(s.bytes, r.Bytes...)
 		// Mark that we've received new packet data.
 		// We could just use time.Now, but by using r.Seen we handle the case
 		// where packets are being read from a file and could be very old.
