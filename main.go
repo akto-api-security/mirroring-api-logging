@@ -355,7 +355,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 // maybeFinish will wait until both directions are complete, then print out
 // stats.
 func (bd *bidi) maybeFinish() {
-	//timeNow := time.Now()
+	timeNow := time.Now()
 	switch {
 	case bd.a == nil:
 		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
@@ -366,11 +366,10 @@ func (bd *bidi) maybeFinish() {
 			tryReadFromBD(bd, false)
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
+		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
+			tryReadFromBD(bd, true)
+			bd.lastProcessedTime = timeNow
 		}
-		//else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
-		//	tryReadFromBD(bd, true)
-		//	bd.lastProcessedTime = timeNow
-		//}
 	}
 }
 
