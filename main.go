@@ -363,7 +363,7 @@ func (bd *bidi) maybeFinish() {
 		//log.Printf("[%v] no second stream yet", bd.key)
 	default:
 		if bd.a.done && bd.b.done {
-			tryReadFromBD(bd, false)
+			//tryReadFromBD(bd, false)
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
 		}
