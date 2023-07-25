@@ -356,7 +356,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 // maybeFinish will wait until both directions are complete, then print out
 // stats.
 func (bd *bidi) maybeFinish() {
-	timeNow := time.Now()
+	//timeNow := time.Now()
 	switch {
 	case bd.a == nil:
 		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
@@ -367,10 +367,11 @@ func (bd *bidi) maybeFinish() {
 			tryReadFromBD(bd, false)
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
-		} else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
-			tryReadFromBD(bd, true)
-			bd.lastProcessedTime = timeNow
 		}
+		//else if timeNow.Sub(bd.lastProcessedTime).Seconds() >= 60 {
+		//	tryReadFromBD(bd, true)
+		//	bd.lastProcessedTime = timeNow
+		//}
 	}
 }
 
@@ -463,7 +464,8 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	printLog("reading in packets")
 
 	interfaceMap := make(map[string]bool)
-	incomingReqCountMap := make(map[string]int)
+	incomingReqSrcIpCountMap := make(map[string]int)
+	incomingReqDstIpCountMap := make(map[string]int)
 
 	ifaces, err := net.Interfaces()
 	if err == nil && ifaces != nil {
@@ -520,11 +522,18 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			_, ok := interfaceMap[dstIp]
 			// If the key exists
 			if ok && len(srcIp) > 0 && len(dstIp) > 0 {
-				_, ok2 := incomingReqCountMap[srcIp]
+				_, ok2 := incomingReqSrcIpCountMap[srcIp]
 				if !ok2 {
-					incomingReqCountMap[srcIp] = 0
+					incomingReqSrcIpCountMap[srcIp] = 0
 				}
-				incomingReqCountMap[srcIp]++
+				incomingReqSrcIpCountMap[srcIp] += len(tcp.Payload)
+
+				_, ok2 = incomingReqDstIpCountMap[dstIp]
+				if !ok2 {
+					incomingReqDstIpCountMap[dstIp] = 0
+				}
+				incomingReqDstIpCountMap[dstIp] += len(tcp.Payload)
+
 			}
 
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
@@ -551,8 +560,12 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				log.Println("logging memory stats post wipeout", time.Now())
 				logMemoryStats()
 
-				for k, v := range incomingReqCountMap {
+				for k, v := range incomingReqSrcIpCountMap {
 					log.Printf("srcIp %s, total req %d", k, v)
+				}
+
+				for k, v := range incomingReqDstIpCountMap {
+					log.Printf("dstIp %s, total req %d", k, v)
 				}
 
 				bytesIn = 0
