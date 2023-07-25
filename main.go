@@ -328,8 +328,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"source":          bd.source,
 		}
 
-		out, _ := json.Marshal(value)
-		ctx := context.Background()
+		_, _ = json.Marshal(value)
+		_ = context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
@@ -347,7 +347,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		//printLog("req-resp.String() " + string(out))
-		go Produce(kafkaWriter, ctx, string(out))
+		//go Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -363,7 +363,7 @@ func (bd *bidi) maybeFinish() {
 		//log.Printf("[%v] no second stream yet", bd.key)
 	default:
 		if bd.a.done && bd.b.done {
-			//tryReadFromBD(bd, false)
+			tryReadFromBD(bd, false)
 			bd.a.bytes = make([]byte, 0)
 			bd.b.bytes = make([]byte, 0)
 		}
