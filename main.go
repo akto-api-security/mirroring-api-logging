@@ -558,9 +558,9 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 	log.Println("init kafka completion")
 	return func(messages []kafka.Message, err error) {
 		if err != nil {
-			kafkaErrMsgCount++
+			kafkaErrMsgCount += len(messages)
 		}
-		log.Println("kafkaErrMsgCount : ", kafkaErrMsgCount)
+		log.Printf("kafkaErrMsgCount : %d, messagesCount %d", kafkaErrMsgCount, len(messages))
 	}
 }
 
