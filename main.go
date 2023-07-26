@@ -44,6 +44,8 @@ import (
 var printCounter = 500
 var bytesInThreshold = 500 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
+var kafkaErrMsgCount = 0
+var kafkaErrMsgEpoch = time.Now()
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
@@ -538,6 +540,26 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				logMemoryStats()
 			}
 
+			if time.Now().Sub(kafkaErrMsgEpoch).Seconds() >= 10 {
+
+				if kafkaErrMsgCount > 1000 {
+					log.Println("kafka error messages exceeded threshold, sleeping for 10 sec ", time.Now())
+					time.Sleep(10 * time.Second)
+				}
+				kafkaErrMsgCount = 0
+				kafkaErrMsgEpoch = time.Now()
+			}
+
+		}
+	}
+}
+
+func kafkaCompletion() func(messages []kafka.Message, err error) {
+	log.Println("init kafka completion")
+	return func(messages []kafka.Message, err error) {
+		if err != nil {
+			kafkaErrMsgCount++
+			log.Println("kafkaErrMsgCount: ", kafkaErrMsgCount)
 		}
 	}
 }
@@ -592,6 +614,7 @@ func initKafka() {
 			break
 		}
 	}
+	kafkaWriter.Completion = kafkaCompletion()
 }
 
 func getIpString(endpoint []byte) string {
