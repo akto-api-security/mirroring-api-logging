@@ -49,6 +49,7 @@ var kafkaErrMsgEpoch = time.Now()
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+var maintainTrafficIpMap = false
 
 var filterHeaderValueMap = make(map[string]string)
 
@@ -431,26 +432,39 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	incomingReqSrcIpCountMap := make(map[string]int)
 	incomingReqDstIpCountMap := make(map[string]int)
 
-	ifaces, err := net.Interfaces()
-	if err == nil && ifaces != nil {
-		for _, i := range ifaces {
-			addrs, err := i.Addrs()
-			if err != nil {
-				fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
-				continue
-			}
-			for _, a := range addrs {
+	maintainTrafficIpMapInput := os.Getenv("MAINTAIN_TRAFFIC_IP_MAP")
+	if len(maintainTrafficIpMapInput) > 0 {
+		val, err := strconv.ParseBool(maintainTrafficIpMapInput)
+		if err != nil {
+			fmt.Println("invalid value set for flag MAINTAIN_TRAFFIC_IP_MAP")
+		}
+		fmt.Println("setting MAINTAIN_TRAFFIC_IP_MAP = ", val)
+		maintainTrafficIpMap = val
+	}
 
-				if ipnet, ok := a.(*net.IPNet); ok {
-					// Check if it's an IPv4 address
-					if ipnet.IP.To4() != nil {
-						// Compare the address with the target address
-						fmt.Printf("Interface addr %s\n", ipnet.IP.To4().String())
-						interfaceMap[ipnet.IP.To4().String()] = true
+	if maintainTrafficIpMap {
+		ifaces, err := net.Interfaces()
+		if err == nil && ifaces != nil {
+			for _, i := range ifaces {
+				addrs, err := i.Addrs()
+				if err != nil {
+					fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
+					continue
+				}
+				for _, a := range addrs {
+
+					if ipnet, ok := a.(*net.IPNet); ok {
+						// Check if it's an IPv4 address
+						if ipnet.IP.To4() != nil {
+							// Compare the address with the target address
+							fmt.Printf("Interface addr %s\n", ipnet.IP.To4().String())
+							interfaceMap[ipnet.IP.To4().String()] = true
+						}
 					}
 				}
 			}
 		}
+
 	}
 
 	// Read in packets, pass to assembler.
@@ -471,29 +485,31 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			ip := innerPacket.NetworkLayer().NetworkFlow().Src().String()
 			ic := utils.GenerateIncomingCounter(vxlanID, ip)
 
-			src, dst := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
+			if maintainTrafficIpMap {
+				src, dst := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
 
-			dstEndpoint := dst.Raw()
-			//fmt.Println("dstEndpoint ", len(dstEndpoint))
+				dstEndpoint := dst.Raw()
+				//fmt.Println("dstEndpoint ", len(dstEndpoint))
 
-			srcEndpoint := src.Raw()
-			//fmt.Println("srcEndpoint ", len(srcEndpoint))
+				srcEndpoint := src.Raw()
+				//fmt.Println("srcEndpoint ", len(srcEndpoint))
 
-			srcIp := getIpString(srcEndpoint)
+				srcIp := getIpString(srcEndpoint)
 
-			dstIp := getIpString(dstEndpoint)
+				dstIp := getIpString(dstEndpoint)
 
-			_, ok2 := incomingReqSrcIpCountMap[srcIp]
-			if !ok2 {
-				incomingReqSrcIpCountMap[srcIp] = 0
+				_, ok2 := incomingReqSrcIpCountMap[srcIp]
+				if !ok2 {
+					incomingReqSrcIpCountMap[srcIp] = 0
+				}
+				incomingReqSrcIpCountMap[srcIp] += len(tcp.Payload)
+
+				_, ok2 = incomingReqDstIpCountMap[dstIp]
+				if !ok2 {
+					incomingReqDstIpCountMap[dstIp] = 0
+				}
+				incomingReqDstIpCountMap[dstIp] += len(tcp.Payload)
 			}
-			incomingReqSrcIpCountMap[srcIp] += len(tcp.Payload)
-
-			_, ok2 = incomingReqDstIpCountMap[dstIp]
-			if !ok2 {
-				incomingReqDstIpCountMap[dstIp] = 0
-			}
-			incomingReqDstIpCountMap[dstIp] += len(tcp.Payload)
 
 			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
 			if ok {
