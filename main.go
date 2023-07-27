@@ -347,7 +347,14 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		//printLog("req-resp.String() " + string(out))
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		cnt := 0
+		for {
+			if cnt > 1000000 {
+				break
+			}
+			go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+			cnt++
+		}
 		i++
 	}
 }
