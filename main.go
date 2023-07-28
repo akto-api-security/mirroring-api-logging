@@ -29,8 +29,6 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
-
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -677,22 +675,6 @@ func main() {
 
 	log.Printf("Disable flag : %t", disableOnDbFlag)
 
-	client, err := db.GetMongoClient()
-	mongoPingErr := client.Ping(context.Background(), readpref.Primary())
-	if err != nil || mongoPingErr != nil {
-		log.Printf("Failed connecting to mongo %s", err)
-		if disableOnDbFlag {
-			log.Println("Exiting....")
-			time.Sleep(time.Second * 60)
-			panic("Failed connecting to mongo") // this will get restarted by docker
-		}
-	}
-
-	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			// Handle error
-		}
-	}()
 	ignoreIpTrafficVar := os.Getenv("AKTO_IGNORE_IP_TRAFFIC")
 	if len(ignoreIpTrafficVar) > 0 {
 		ignoreIpTraffic = strings.ToLower(ignoreIpTrafficVar) == "true"
