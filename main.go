@@ -571,7 +571,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 }
 
 func kafkaCompletion() func(messages []kafka.Message, err error) {
-	log.Println("init kafka completion")
 	return func(messages []kafka.Message, err error) {
 		if err != nil {
 			kafkaErrMsgCount += len(messages)
