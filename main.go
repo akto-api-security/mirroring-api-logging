@@ -543,6 +543,13 @@ func main() {
 		interfaceName = "ens4"
 	}
 
+	aktoInterfaceName := os.Getenv("AKTO_INTERFACE_NAME")
+	if len(aktoInterfaceName) > 0 {
+		interfaceName = aktoInterfaceName
+	}
+
+	log.Println("Interface name: " + interfaceName)
+
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
