@@ -572,6 +572,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 func kafkaCompletion() func(messages []kafka.Message, err error) {
 	return func(messages []kafka.Message, err error) {
+		log.Printf("kafkaCompletion init")
 		if err != nil {
 			kafkaErrMsgCount += len(messages)
 			log.Printf("kafkaErrMsgCount : %d, messagesCount %d", kafkaErrMsgCount, len(messages))
@@ -612,8 +613,8 @@ func initKafka() {
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
-	kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 	for {
+		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
 		value := map[string]string{
 			"testConnectionString": "kafkaInit",
@@ -624,13 +625,14 @@ func initKafka() {
 		err := Produce(kafkaWriter, ctx, string(out))
 		if err != nil {
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
+			kafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
 			log.Println("connection establishing with kafka successfully")
+			kafkaWriter.Completion = kafkaCompletion()
 			break
 		}
 	}
-	kafkaWriter.Completion = kafkaCompletion()
 }
 
 func getIpString(endpoint []byte) string {
