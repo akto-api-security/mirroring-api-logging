@@ -614,6 +614,7 @@ func initKafka() {
 
 	kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 	for {
+		logMemoryStats()
 		value := map[string]string{
 			"testConnectionString": "kafkaInit",
 		}
@@ -720,11 +721,11 @@ func main() {
 	}()
 
 	interfaceName := "any"
+	initKafka()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
 		} else {
-			initKafka()
 			run(handle, -1, "MIRRORING")
 			log.Println("closing pcap connection....")
 			handle.Close()
@@ -734,6 +735,7 @@ func main() {
 			outgoingCountMap = make(map[string]utils.OutgoingCounter)
 			time.Sleep(10 * time.Second)
 			log.Println("SLEPT")
+			initKafka()
 		}
 	}
 
