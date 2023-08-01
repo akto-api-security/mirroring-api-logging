@@ -554,6 +554,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesInEpoch = time.Now()
 				flushAll()
 				logMemoryStats()
+				logKafkaStats()
 			}
 
 			if time.Now().Sub(kafkaErrMsgEpoch).Seconds() >= 10 {
@@ -615,6 +616,8 @@ func initKafka() {
 	for {
 		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
+		log.Println("logging kafka stats before pushing message")
+		logKafkaStats()
 		value := map[string]string{
 			"testConnectionString": "kafkaInit",
 		}
@@ -622,13 +625,14 @@ func initKafka() {
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
 		err := Produce(kafkaWriter, ctx, string(out))
+		log.Println("logging kafka stats post pushing message")
+		logKafkaStats()
 		if err != nil {
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			kafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
 			log.Println("connection establishing with kafka successfully")
-			log.Println(kafkaWriter.Stats())
 			kafkaWriter.Completion = kafkaCompletion()
 			break
 		}
@@ -657,6 +661,10 @@ func logMemoryStats() {
 
 	log.Println("Alloc in MB: ", m.Alloc/1024/1024)
 	log.Println("Sys in MB: ", m.Sys/1024/1024)
+}
+
+func logKafkaStats() {
+	log.Println(kafkaWriter.Stats())
 }
 
 //export readTcpDumpFile
