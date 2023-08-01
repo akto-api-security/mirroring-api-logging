@@ -628,6 +628,7 @@ func initKafka() {
 			time.Sleep(time.Second * 2)
 		} else {
 			log.Println("connection establishing with kafka successfully")
+			log.Println(kafkaWriter.Stats())
 			kafkaWriter.Completion = kafkaCompletion()
 			break
 		}
