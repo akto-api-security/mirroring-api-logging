@@ -351,7 +351,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		//printLog("req-resp.String() " + string(out))
 		go Produce(kafkaWriter, ctx, string(out))
-		ji++
+		i++
 	}
 }
 
