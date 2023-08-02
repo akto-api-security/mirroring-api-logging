@@ -291,14 +291,16 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			continue
 		}
 
-		if ignoreIpTraffic && checkIfIp(req.Host) {
-			i++
-			continue
-		}
+		if is_k8s {
+			if ignoreIpTraffic && checkIfIp(req.Host) {
+				i++
+				continue
+			}
 
-		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
-			i++
-			continue
+			if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
+				i++
+				continue
+			}
 		}
 
 		respHeader := make(map[string]string)
