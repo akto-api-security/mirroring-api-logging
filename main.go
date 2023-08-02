@@ -41,6 +41,8 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+var isGcp = false
+var is_k8s = false
 var printCounter = 500
 var bytesInThreshold = 500 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
@@ -167,8 +169,6 @@ func (s *myStream) Reassembled(rs []tcpassembly.Reassembly) {
 			s.bidi.lastPacketSeen = r.Seen
 		}
 	}
-
-	//s.bidi.maybeFinish()
 }
 
 // ReassemblyComplete marks this stream as finished.
@@ -222,7 +222,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	responsesContent := []string{}
 
 	for {
-
 		resp, err := http.ReadResponse(reader, nil)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
@@ -246,12 +245,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 				return
 			}
 		}
+
 		if err == nil {
 			body, err = ioutil.ReadAll(r)
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()
 			}
-
 		}
 
 		responses = append(responses, *resp)
@@ -421,9 +420,33 @@ func flushAll() {
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
-	if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
-		log.Fatal(err)
-		return
+	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
+	printLog("kafka_url: " + kafka_url)
+
+	is_k8s_flag := os.Getenv("IS_K8S")
+	if len(is_k8s_flag) > 0 {
+		val, err := strconv.ParseBool(is_k8s_flag)
+		if err != nil {
+			fmt.Println("invalid value set for flag IS_K8S")
+		} else {
+			is_k8s = val
+			fmt.Println("setting is_k8s = ", val)
+		}
+
+	}
+
+	if is_k8s {
+		if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
+			log.Fatal(err)
+			return
+		}
+	} else {
+		if !isGcp {
+			if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+				log.Fatal(err)
+				return
+			}
+		}
 	}
 
 	printLog("reading in packets")
@@ -467,6 +490,15 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	}
 
+	if !isGcp {
+		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+			log.Fatal(err)
+			return
+		}
+	}
+
+	printLog("reading in packets")
+
 	// Read in packets, pass to assembler.
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
@@ -475,10 +507,26 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 		innerPacket := packet
 		vxlanID := apiCollectionId
+		if apiCollectionId <= 0 && !isGcp && !is_k8s {
+
+			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
+				continue
+			}
+
+			udpContent := packet.TransportLayer().(*layers.UDP)
+
+			vxlanIDbyteArr := udpContent.Payload[4:7]
+			vxlanID = int(vxlanIDbyteArr[2]) + (int(vxlanIDbyteArr[1]) * 256) + (int(vxlanIDbyteArr[0]) * 256 * 256)
+			innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
+			// log.Println("%v", innerPacket)
+		}
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
 			printLog("not a tcp payload")
 			continue
 		} else {
+			if isGcp {
+				vxlanID = 0
+			}
 			tcp := innerPacket.TransportLayer().(*layers.TCP)
 
 			payloadLength := len(tcp.Payload)
@@ -542,12 +590,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				for k, v := range incomingReqDstIpCountMap {
 					log.Printf("dstIp %s, total req %d", k, v)
 				}
-
-				bytesIn = 0
-				bytesInEpoch = time.Now()
-				time.Sleep(10 * time.Second)
-				kafkaWriter.Close()
-				break
 			}
 
 			if time.Now().Sub(bytesInEpoch).Seconds() > 3 {
@@ -737,7 +779,22 @@ func main() {
 		}
 	}()
 
+	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
+
 	interfaceName := "any"
+
+	if !is_k8s {
+		if len(infra_mirroring_mode_input) > 0 {
+			isGcp = (infra_mirroring_mode_input == "gcp")
+		}
+
+		interfaceName = "eth0"
+
+		if isGcp {
+			interfaceName = "ens4"
+		}
+	}
+
 	initKafka()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
@@ -771,12 +828,4 @@ func printLog(val string) {
 		log.Println(val)
 		printCounter--
 	}
-}
-
-func mapToString(m map[string]string) string {
-	jsonBytes, err := json.Marshal(m)
-	if err != nil {
-		return ""
-	}
-	return string(jsonBytes)
 }
