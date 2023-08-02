@@ -422,9 +422,6 @@ func flushAll() {
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-	printLog("kafka_url: " + kafka_url)
-
 	is_k8s_flag := os.Getenv("IS_K8S")
 	if len(is_k8s_flag) > 0 {
 		val, err := strconv.ParseBool(is_k8s_flag)
@@ -592,6 +589,11 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				for k, v := range incomingReqDstIpCountMap {
 					log.Printf("dstIp %s, total req %d", k, v)
 				}
+				bytesIn = 0
+				bytesInEpoch = time.Now()
+				time.Sleep(10 * time.Second)
+				kafkaWriter.Close()
+				break
 			}
 
 			if time.Now().Sub(bytesInEpoch).Seconds() > 3 {
@@ -796,6 +798,13 @@ func main() {
 			interfaceName = "ens4"
 		}
 	}
+
+	aktoInterfaceName := os.Getenv("AKTO_INTERFACE_NAME")
+	if len(aktoInterfaceName) > 0 {
+		interfaceName = aktoInterfaceName
+	}
+
+	log.Println("Interface name: " + interfaceName)
 
 	initKafka()
 	for {
