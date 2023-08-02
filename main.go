@@ -421,19 +421,6 @@ func flushAll() {
 }
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
-
-	is_k8s_flag := os.Getenv("IS_K8S")
-	if len(is_k8s_flag) > 0 {
-		val, err := strconv.ParseBool(is_k8s_flag)
-		if err != nil {
-			fmt.Println("invalid value set for flag IS_K8S")
-		} else {
-			is_k8s = val
-			fmt.Println("setting is_k8s = ", val)
-		}
-
-	}
-
 	if is_k8s {
 		if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
 			log.Fatal(err)
@@ -784,6 +771,18 @@ func main() {
 	}()
 
 	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
+
+	is_k8s_flag := os.Getenv("IS_K8S")
+	if len(is_k8s_flag) > 0 {
+		val, err := strconv.ParseBool(is_k8s_flag)
+		if err != nil {
+			fmt.Println("invalid value set for flag IS_K8S")
+		} else {
+			is_k8s = val
+			fmt.Println("setting is_k8s = ", val)
+		}
+
+	}
 
 	interfaceName := "any"
 
