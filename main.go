@@ -476,15 +476,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	}
 
-	if !isGcp {
-		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
-			log.Fatal(err)
-			return
-		}
-	}
-
-	printLog("reading in packets")
-
 	// Read in packets, pass to assembler.
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
