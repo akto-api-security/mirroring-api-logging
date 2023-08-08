@@ -450,7 +450,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			log.Println("AKTO_MEM_THRESH_RESTART should be valid integer. Found ", aktoMemThresh)
 			return
 		} else {
-			log.Println("Setting bytes in threshold at " + strconv.Itoa(aktoMemThreshRestart))
+			log.Println("Setting akto mem threshold threshold at " + strconv.Itoa(aktoMemThreshRestart))
 		}
 
 	}
