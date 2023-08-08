@@ -659,7 +659,7 @@ func logMemoryStats() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	if (m.Alloc / 1024 / 1024) > 999 {
+	if (m.Alloc / 1024 / 1024) > 500 {
 		log.Println("current mem usage", m.Alloc/1024/1024)
 		os.Exit(3)
 	}
