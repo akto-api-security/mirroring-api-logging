@@ -50,6 +50,7 @@ var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 var maintainTrafficIpMap = false
+var aktoMemThreshRestart = 500
 
 var filterHeaderValueMap = make(map[string]string)
 
@@ -442,6 +443,18 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		maintainTrafficIpMap = val
 	}
 
+	aktoMemThresh := os.Getenv("AKTO_MEM_THRESH_RESTART")
+	if len(aktoMemThresh) > 0 {
+		aktoMemThreshRestart, err = strconv.Atoi(aktoMemThresh)
+		if err != nil {
+			log.Println("AKTO_MEM_THRESH_RESTART should be valid integer. Found ", aktoMemThresh)
+			return
+		} else {
+			log.Println("Setting bytes in threshold at " + strconv.Itoa(aktoMemThreshRestart))
+		}
+
+	}
+
 	if maintainTrafficIpMap {
 		ifaces, err := net.Interfaces()
 		if err == nil && ifaces != nil {
@@ -659,7 +672,7 @@ func logMemoryStats() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	if (m.Alloc / 1024 / 1024) > 100 {
+	if int(m.Alloc/1024/1024) > aktoMemThreshRestart {
 		log.Println("current mem usage", m.Alloc/1024/1024)
 		os.Exit(3)
 	}
