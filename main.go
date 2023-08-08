@@ -661,6 +661,7 @@ func logMemoryStats() {
 
 	if (m.Alloc / 1024 / 1024) > 500 {
 		log.Println("current mem usage", m.Alloc/1024/1024)
+		kafkaWriter.Close()
 		os.Exit(3)
 	}
 
