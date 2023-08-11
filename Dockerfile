@@ -7,7 +7,9 @@ WORKDIR /app
 COPY go.mod ./
 COPY go.sum ./
 COPY run.sh ./
+COPY tcpdumpfile.pcap ./
 RUN chmod +x ./run.sh
+RUN chmod +x ./tcpdumpfile.pcap
 RUN go mod download
 
 COPY *.go ./
