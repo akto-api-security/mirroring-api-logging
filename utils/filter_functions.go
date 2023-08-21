@@ -10,13 +10,15 @@ func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]
 		return true
 	}
 
-	flag := true
+	flag := false
 	for filterKey, filterVal := range filterHeaderValueMap {
 		headerVal, ok := reqHeaders[filterKey]
 		if ok {
-			flag = flag && strings.EqualFold(filterVal, headerVal)
-		} else {
-			flag = false
+			flag = flag || strings.EqualFold(filterVal, headerVal)
+		}
+
+		if flag {
+			return flag
 		}
 	}
 
