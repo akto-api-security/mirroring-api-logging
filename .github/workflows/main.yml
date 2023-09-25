@@ -43,30 +43,34 @@ jobs:
       - run: go build -o ./mirroring-api-logging
 
       - name: Configure AWS credentials
-        if: ${{ github.event.inputs.Environment == 'staging' }}
+        if: ${{ github.event.inputs.Environment == 'prod' }}
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
       - name: Login to Amazon ECR
-        if: ${{ github.event.inputs.Environment == 'staging'}}
+        if: ${{ github.event.inputs.Environment == 'prod'}}
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
+        with:
+          mask-password: 'true'
+          registry-type: public
       - name: Build, tag, and push the image to Amazon ECR
-        if: ${{ github.event.inputs.Environment == 'staging' }}
+        if: ${{ github.event.inputs.Environment == 'prod' }}
         id: build-image-awsecr
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: staging
-          IMAGE_TAG: ${{ github.sha }}
+          ECR_REPOSITORY: akto-api-security
+          REGISTRY_ALIAS: p7q3h0z2
+          IMAGE_TAG: ${{ github.event.inputs.Tag }}
         run: |
-          # Build a docker container and push it to ECR 
+          # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          echo "Pushing image to ECR..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64,linux/arm/v7 -t $ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG . --push
-          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG"
-       
+          echo "Building and Pushing image to ECR..."
+          docker buildx build --platform linux/arm64/v8,linux/amd64,linux/arm/v7 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG . --push
+          echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG"
+
       - name: DockerHub login
         if: ${{ github.event.inputs.Environment == 'prod' }}
         env:
