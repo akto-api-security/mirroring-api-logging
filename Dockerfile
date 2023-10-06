@@ -21,7 +21,7 @@ COPY *.go ./
 COPY db ./db
 COPY utils ./utils
 
-RUN go build -o /mirroring-api-logging
+RUN go build -o /home/myuser/mirroring-api-logging
 
 EXPOSE 4789/udp
 
