@@ -1,5 +1,5 @@
 while :
 do
-    /mirroring-api-logging
+    /home/myuser/mirroring-api-logging
     sleep 2
 done
