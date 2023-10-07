@@ -350,7 +350,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		//printLog("req-resp.String() " + string(out))
+		printLog("req-resp.String() " + string(out))
 		go Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
