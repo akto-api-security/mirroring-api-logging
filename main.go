@@ -755,13 +755,7 @@ func main() {
 		}
 	}()
 
-	interfaceName := os.Getenv("AKTO_INTERFACE_NAME")
-	if len(interfaceName) == 0 {
-		interfaceName = "any"
-	}
-
-	log.Println("Interface: " + interfaceName)
-
+	interfaceName := "any"
 	initKafka()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
