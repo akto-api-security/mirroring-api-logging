@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -17,6 +18,15 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, message string) err
 
 	if err != nil {
 		log.Println("ERROR while writing messages: ", err)
+
+		if strings.Contains(err.Error(), "too large") {
+			if len(msg.Value) > 300 {
+				log.Printf("First 300 characters of the message: %s\n", msg.Value[:300])
+			} else {
+				log.Printf("Message content: %s\n", msg.Value)
+			}
+		}
+
 		return err
 	}
 
