@@ -350,7 +350,15 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		//printLog("req-resp.String() " + string(out))
+		finalRes := string(out)
+		logFilterWord := os.Getenv("AKTO_LOG_FILTER_WORD")
+		if len(logFilterWord) == 0 {
+			logFilterWord = "application/grpc"
+		}
+
+		if strings.Contains(finalRes, logFilterWord) {
+			printLog("req-resp.String() " + finalRes)
+		}
 		go Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
