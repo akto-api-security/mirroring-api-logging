@@ -319,8 +319,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		if strings.Contains(finalRes, logFilterWord) {
-			printLog("req-resp.String() size: ", len(finalRes))
-			printLog("req-resp.String() " + finalRes)
+			log.Println("req-resp.String() size: ", len(finalRes))
+			log.Println("req-resp.String() " + finalRes)
 		}
 
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
