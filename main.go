@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"strings"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -311,7 +312,17 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		printLog("req-resp.String() " + string(out))
+		finalRes := string(out)
+		logFilterWord := os.Getenv("AKTO_LOG_FILTER_WORD")
+		if len(logFilterWord) == 0 {
+			logFilterWord = "application/grpc"
+		}
+
+		if strings.Contains(finalRes, logFilterWord) {
+			printLog("req-resp.String() size: ", len(finalRes))
+			printLog("req-resp.String() " + finalRes)
+		}
+
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
