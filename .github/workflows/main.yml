@@ -65,7 +65,7 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG .
           echo "Pushing image to ECR..."
           docker push $ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG
-          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG" >> $GITHUB_OUTPUT
        
       - name: DockerHub login
         if: ${{ github.event.inputs.Environment == 'prod' }}
@@ -86,5 +86,5 @@ jobs:
           docker build -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG .
           echo "Pushing image to DockerHub..."
           docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
-          echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
+          echo "image=$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG" >> $GITHUB_OUTPUT
        
