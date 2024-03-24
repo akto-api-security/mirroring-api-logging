@@ -11,25 +11,17 @@ package main
 import "C"
 
 import (
-	"bufio"
-	"bytes"
-	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
-	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/akto-api-security/mirroring-api-logging/db"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -37,25 +29,12 @@ import (
 	"github.com/google/gopacket/tcpassembly"
 
 	"net"
-
-	"github.com/segmentio/kafka-go"
 )
 
-var printCounter = 500
-var bytesInThreshold = 500 * 1024 * 1024
 var bytesInSleepDuration = time.Second * 120
-var kafkaErrMsgCount = 0
-var kafkaErrMsgEpoch = time.Now()
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
-var incomingCountMap = make(map[string]utils.IncomingCounter)
-var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 var maintainTrafficIpMap = false
-var aktoMemThreshRestart = 500
 
-var filterHeaderValueMap = make(map[string]string)
-
-var ignoreCloudMetadataCalls = false
-var ignoreIpTraffic = false
 var (
 	handle *pcap.Handle
 	err    error
@@ -178,182 +157,11 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
-func checkIfIp(host string) bool {
-	if len(host) == 0 {
-		return true
-	}
-	chunks := strings.Split(host, ":")
-	return net.ParseIP(chunks[0]) != nil
-}
-
 func tryReadFromBD(bd *bidi, isPending bool) {
-	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
-	i := 0
-	requests := []http.Request{}
-	requestsContent := []string{}
 
-	for {
-		req, err := http.ReadRequest(reader)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		} else if err != nil {
-			printLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return
-		}
-		body, err := ioutil.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			printLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
-		}
+	kafkaUtil.ParseAndProduce(bd.a.bytes, bd.b.bytes,
+		bd.key.net.Src().String(), bd.vxlanID, isPending, bd.source)
 
-		requests = append(requests, *req)
-		requestsContent = append(requestsContent, string(body))
-		i++
-	}
-
-	if len(requests) == 0 {
-		return
-	}
-
-	reader = bufio.NewReader(bytes.NewReader(bd.b.bytes))
-	i = 0
-
-	responses := []http.Response{}
-	responsesContent := []string{}
-
-	for {
-
-		resp, err := http.ReadResponse(reader, nil)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		} else if err != nil {
-			printLog(fmt.Sprintf("HTTP Request error: %s\n", err))
-			return
-		}
-
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			printLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
-		}
-		encoding := resp.Header["Content-Encoding"]
-		var r io.Reader
-		r = bytes.NewBuffer(body)
-		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
-			r, err = gzip.NewReader(r)
-			if err != nil {
-				printLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return
-			}
-		}
-		if err == nil {
-			body, err = ioutil.ReadAll(r)
-			if _, ok := r.(*gzip.Reader); ok {
-				r.(*gzip.Reader).Close()
-			}
-
-		}
-
-		responses = append(responses, *resp)
-		responsesContent = append(responsesContent, string(body))
-
-		i++
-	}
-
-	if len(requests) != len(responses) {
-		return
-	}
-
-	i = 0
-	for {
-		if len(requests) < i+1 {
-			break
-		}
-
-		req := &requests[i]
-		resp := &responses[i]
-
-		reqHeader := make(map[string]string)
-		for name, values := range req.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				reqHeader[name] = value
-			}
-		}
-
-		reqHeader["host"] = req.Host
-
-		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
-		//printLog("Req header: " + mapToString(reqHeader))
-		//printLog(fmt.Sprintf("passes %t", passes))
-
-		if !passes {
-			i++
-			continue
-		}
-
-		if ignoreIpTraffic && checkIfIp(req.Host) {
-			i++
-			continue
-		}
-
-		if ignoreCloudMetadataCalls && req.Host == "169.254.169.254" {
-			i++
-			continue
-		}
-
-		respHeader := make(map[string]string)
-		for name, values := range resp.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				respHeader[name] = value
-			}
-		}
-
-		reqHeaderString, _ := json.Marshal(reqHeader)
-		respHeaderString, _ := json.Marshal(respHeader)
-
-		value := map[string]string{
-			"path":            req.URL.String(),
-			"requestHeaders":  string(reqHeaderString),
-			"responseHeaders": string(respHeaderString),
-			"method":          req.Method,
-			"requestPayload":  requestsContent[i],
-			"responsePayload": responsesContent[i],
-			"ip":              bd.key.net.Src().String(),
-			"time":            fmt.Sprint(time.Now().Unix()),
-			"statusCode":      fmt.Sprint(resp.StatusCode),
-			"type":            string(req.Proto),
-			"status":          resp.Status,
-			"akto_account_id": fmt.Sprint(1000000),
-			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
-			"is_pending":      fmt.Sprint(isPending),
-			"source":          bd.source,
-		}
-
-		out, _ := json.Marshal(value)
-		ctx := context.Background()
-
-		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
-		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
-		hostString := reqHeader["host"]
-		if utils.CheckIfIpHost(hostString) {
-			hostString = "ip-host"
-		}
-		oc := utils.GenerateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), hostString)
-		existingOc, ok := outgoingCountMap[oc.OutgoingCounterKey()]
-		if ok {
-			existingOc.Inc(outgoingBytes, 1)
-		} else {
-			oc.Inc(outgoingBytes, 1)
-			outgoingCountMap[oc.OutgoingCounterKey()] = oc
-		}
-
-		//printLog("req-resp.String() " + string(out))
-		go Produce(kafkaWriter, ctx, string(out))
-		i++
-	}
 }
 
 // maybeFinish will wait until both directions are complete, then print out
@@ -408,8 +216,6 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 }
 
-var kafkaWriter *kafka.Writer
-
 func flushAll() {
 	for _, v := range assemblerMap {
 		v.FlushOlderThan(time.Now().Add(time.Second * -5))
@@ -427,7 +233,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		return
 	}
 
-	printLog("reading in packets")
+	utils.PrintLog("reading in packets")
 
 	interfaceMap := make(map[string]bool)
 	incomingReqSrcIpCountMap := make(map[string]int)
@@ -443,17 +249,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		maintainTrafficIpMap = val
 	}
 
-	aktoMemThresh := os.Getenv("AKTO_MEM_THRESH_RESTART")
-	if len(aktoMemThresh) > 0 {
-		aktoMemThreshRestart, err = strconv.Atoi(aktoMemThresh)
-		if err != nil {
-			log.Println("AKTO_MEM_THRESH_RESTART should be valid integer. Found ", aktoMemThresh)
-			return
-		} else {
-			log.Println("Setting akto mem threshold threshold at " + strconv.Itoa(aktoMemThreshRestart))
-		}
-
-	}
+	utils.InitMemThresh()
 
 	if maintainTrafficIpMap {
 		ifaces, err := net.Interfaces()
@@ -461,7 +257,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			for _, i := range ifaces {
 				addrs, err := i.Addrs()
 				if err != nil {
-					fmt.Print(fmt.Errorf("localAddresses: %+v\n", err.Error()))
+					fmt.Print(fmt.Errorf("localAddresses: %+v", err.Error()))
 					continue
 				}
 				for _, a := range addrs {
@@ -489,7 +285,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-			printLog("not a tcp payload")
+			utils.PrintLog("not a tcp payload")
 			continue
 		} else {
 			tcp := innerPacket.TransportLayer().(*layers.TCP)
@@ -524,29 +320,23 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				incomingReqDstIpCountMap[dstIp] += len(tcp.Payload)
 			}
 
-			existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
-			if ok {
-				existingIC.Inc(payloadLength)
-			} else {
-				ic.Inc(payloadLength)
-				incomingCountMap[ic.IncomingCounterKey()] = ic
-			}
+			trafficMetrics.SubmitIncomingTrafficMetrics(ic, payloadLength)
 
 			assembler := createAndGetAssembler(vxlanID, source)
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
 
 			bytesIn += len(tcp.Payload)
 
-			if bytesIn > bytesInThreshold {
-				log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
+			if bytesIn > kafkaUtil.BytesInThreshold {
+				log.Println("exceeded bytesInThreshold: ", kafkaUtil.BytesInThreshold, " with curr: ", bytesIn)
 				log.Println("limit reached, sleeping", time.Now())
 
 				log.Println("logging memory stats before wipeout", time.Now())
-				logMemoryStats()
+				utils.LogMemoryStats()
 				wipeOut()
 				log.Println("wipeout done", time.Now())
 				log.Println("logging memory stats post wipeout", time.Now())
-				logMemoryStats()
+				utils.LogMemoryStats()
 
 				for k, v := range incomingReqSrcIpCountMap {
 					log.Printf("srcIp %s, total req %d", k, v)
@@ -559,95 +349,19 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesIn = 0
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
-				kafkaWriter.Close()
+				kafkaUtil.Close()
 				break
 			}
 
-			if time.Now().Sub(bytesInEpoch).Seconds() > 3 {
+			if time.Since(bytesInEpoch).Seconds() > 3 {
 				bytesInEpoch = time.Now()
 				flushAll()
-				logMemoryStats()
-				logKafkaStats()
+				utils.LogMemoryStats()
+				kafkaUtil.LogKafkaStats()
 			}
 
-			if time.Now().Sub(kafkaErrMsgEpoch).Seconds() >= 10 {
+			kafkaUtil.LogKafkaError()
 
-				if kafkaErrMsgCount > 1000 {
-					log.Println("kafka error messages exceeded threshold, sleeping for 10 sec ", time.Now())
-					time.Sleep(10 * time.Second)
-				}
-				kafkaErrMsgCount = 0
-				kafkaErrMsgEpoch = time.Now()
-			}
-
-		}
-	}
-}
-
-func kafkaCompletion() func(messages []kafka.Message, err error) {
-	return func(messages []kafka.Message, err error) {
-		if err != nil {
-			kafkaErrMsgCount += len(messages)
-			log.Printf("kafkaErrMsgCount : %d, messagesCount %d", kafkaErrMsgCount, len(messages))
-		}
-	}
-}
-
-func initKafka() {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
-	}
-	printLog("kafka_url: " + kafka_url)
-
-	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
-	if len(bytesInThresholdInput) > 0 {
-		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
-		if err != nil {
-			printLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
-			return
-		} else {
-			printLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
-		}
-
-	}
-
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		printLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
-	}
-
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		printLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
-	}
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
-
-	for {
-		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
-		logMemoryStats()
-		log.Println("logging kafka stats before pushing message")
-		logKafkaStats()
-		value := map[string]string{
-			"testConnectionString": "kafkaInit",
-		}
-
-		out, _ := json.Marshal(value)
-		ctx := context.Background()
-		err := Produce(kafkaWriter, ctx, string(out))
-		log.Println("logging kafka stats post pushing message")
-		logKafkaStats()
-		if err != nil {
-			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
-			kafkaWriter.Close()
-			time.Sleep(time.Second * 2)
-		} else {
-			log.Println("connection establishing with kafka successfully")
-			kafkaWriter.Completion = kafkaCompletion()
-			break
 		}
 	}
 }
@@ -668,37 +382,13 @@ func getIpString(endpoint []byte) string {
 	return ip
 }
 
-func logMemoryStats() {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-
-	if int(m.Alloc/1024/1024) > aktoMemThreshRestart {
-		log.Println("current mem usage", m.Alloc/1024/1024)
-		os.Exit(3)
-	}
-
-	log.Println("Alloc in MB: ", m.Alloc/1024/1024)
-	log.Println("Sys in MB: ", m.Sys/1024/1024)
-}
-
-func logKafkaStats() {
-	stats := kafkaWriter.Stats()
-	log.Printf("Stats - Dials %d, Writes %d, Messages %d, Bytes %d, Errors %d, DialTime %v, BatchTime %v, "+
-		"WriteTime %v, WaitTime %v, Retries %d, BatchSize %d, BatchBytes %d, MaxAttempts %d, MaxBatchSize %d, "+
-		"BatchTimeout %v, ReadTimeout %v, WriteTimeout %v, RequiredAcks %d, Async %t, Topic %s", stats.Dials,
-		stats.Writes, stats.Messages, stats.Bytes, stats.Errors, stats.DialTime, stats.BatchTime, stats.WriteTime,
-		stats.WaitTime, stats.Retries, stats.BatchSize, stats.BatchBytes, stats.MaxAttempts, stats.MaxBatchSize,
-		stats.BatchTimeout, stats.ReadTimeout, stats.WriteTimeout, stats.RequiredAcks, stats.Async, stats.Topic)
-	//log.Println(kafkaWriter.Stats())
-}
-
 //export readTcpDumpFile
 func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	os.Setenv("AKTO_KAFKA_BROKER_URL", kafkaURL)
 	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
 	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
 
-	initKafka()
+	kafkaUtil.InitKafka()
 
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
 		log.Fatal(err)
@@ -708,55 +398,15 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 }
 
 func main() {
-	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
-	disableOnDbFlag := disableOnDb == "true"
+	db.InitMongoClient()
+	defer db.CloseMongoClient()
 
-	log.Printf("Disable flag : %t", disableOnDbFlag)
+	utils.InitIgnoreVars()
 
-	client, err := db.GetMongoClient()
-	mongoPingErr := client.Ping(context.Background(), readpref.Primary())
-	if err != nil || mongoPingErr != nil {
-		log.Printf("Failed connecting to mongo %s", err)
-		if disableOnDbFlag {
-			log.Println("Exiting....")
-			time.Sleep(time.Second * 60)
-			panic("Failed connecting to mongo") // this will get restarted by docker
-		}
-	}
-
-	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			// Handle error
-		}
-	}()
-	ignoreIpTrafficVar := os.Getenv("AKTO_IGNORE_IP_TRAFFIC")
-	if len(ignoreIpTrafficVar) > 0 {
-		ignoreIpTraffic = strings.ToLower(ignoreIpTrafficVar) == "true"
-		log.Println("ignoreIpTraffic: ", ignoreIpTraffic)
-	} else {
-		log.Println("ignoreIpTraffic: missing. defaulting to false")
-	}
-
-	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
-	if len(ignoreCloudMetadataCallsVar) > 0 {
-		ignoreCloudMetadataCalls = strings.ToLower(ignoreCloudMetadataCallsVar) == "true"
-		log.Println("ignoreCloudMetadataCalls: ", ignoreCloudMetadataCalls)
-	} else {
-		log.Println("ignoreCloudMetadataCalls: missing. defaulting to false")
-	}
-
-	// Set up a ticker to run every 2 minutes
-	ticker := time.NewTicker(2 * time.Minute)
-
-	tickerCode() // to run this immediately
-	go func() {
-		for range ticker.C {
-			tickerCode()
-		}
-	}()
+	trafficMetrics.StartMetricsTicker()
 
 	interfaceName := "any"
-	initKafka()
+	kafkaUtil.InitKafka()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
@@ -766,29 +416,13 @@ func main() {
 			handle.Close()
 			log.Println("sleeping....")
 			assemblerMap = make(map[int]*tcpassembly.Assembler)
-			incomingCountMap = make(map[string]utils.IncomingCounter)
-			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			trafficMetrics.InitTrafficMaps()
 			time.Sleep(10 * time.Second)
 			log.Println("SLEPT")
-			initKafka()
+			kafkaUtil.InitKafka()
 		}
 	}
 
-}
-
-func tickerCode() {
-	log.Println("Running ticker")
-	db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
-	incomingCountMap = make(map[string]utils.IncomingCounter)
-	outgoingCountMap = make(map[string]utils.OutgoingCounter)
-	filterHeaderValueMap = db.FetchFilterHeaderMap()
-}
-
-func printLog(val string) {
-	if printCounter > 0 {
-		log.Println(val)
-		printCounter--
-	}
 }
 
 func mapToString(m map[string]string) string {

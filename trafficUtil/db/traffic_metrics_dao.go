@@ -3,11 +3,12 @@ package db
 import (
 	"context"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 	"log"
 	"strconv"
+
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func trafficMetricsInstance() (*mongo.Collection, error) {
@@ -29,8 +30,8 @@ func TrafficMetricsDbUpdates(incomingCountMap map[string]utils.IncomingCounter, 
 	}
 	var incomingOperations []mongo.WriteModel
 
-	fmt.Printf("incoming count map: %d", len(incomingCountMap))
-	fmt.Printf("outgoing count map: %d", len(outgoingCountMap))
+	fmt.Printf("incoming count map: %d\n", len(incomingCountMap))
+	fmt.Printf("outgoing count map: %d\n", len(outgoingCountMap))
 
 	for _, value := range incomingCountMap {
 		filter := buildFilter(value.VxlanID, value.Ip, "", "INCOMING_PACKETS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)

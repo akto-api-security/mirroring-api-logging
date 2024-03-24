@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: akto-ebpf-connector
+  namespace: bookinfo
+  labels:
+    app: akto-collector
+spec:
+  selector:
+    matchLabels:
+      app: akto-collector
+  template:
+    metadata:
+      labels:
+        app: akto-collector
+    spec:
+    # optional
+      nodeSelector: 
+        mirror: "true"
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      hostPID: true
+      containers:
+      - name: akto-ebpf
+        image: coastaldemigod/ebpf:v32
+        imagePullPolicy: Always
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+        env: 
+          - name: AKTO_MODULE_DISCOVERY_CONFIG
+            value: '[{"key":{"eq":"x-forwarded-client-cert","ifAbsent":"reject"},"value":{"regex":".*bookinfo.*"}}]'
+          - name: AKTO_TRAFFIC_BATCH_TIME_SECS
+            value: "10"
+          - name: AKTO_TRAFFIC_BATCH_SIZE
+            value: "100"
+          - name: AKTO_KAFKA_BROKER_MAL
+            value: "172.20.19.220:9092"
+          # - name: LOG_LEVEL
+            # value: "0"
+          - name: AKTO_MONGO_CONN
+            value: "mongodb://172.20.74.133:27017/admini"
+          - name: TRAFFIC_INACTIVITY_THRESHOLD
+            value: "3"
+          - name: TRAFFIC_COMPLETE_THRESHOLD
+            value: "0"
+          - name: TRAFFIC_MAX_ACTIVE_CONN
+            value: "8192"
+          - name: PRINT_BPF_LOGS
+            value: "true"
+          - name: TRAFFIC_MAX_BUFFER_PER_TRACKER
+            value: "50485760"
+          # - name: KAFKA_POLL_INTERVAL
+            # value: "5"
+          # - name: DEBUG
+          #   value: "true"
+          # - name: AKTO_DISABLE_ON_DB
+            # value: "true"
+          # - name: SAMPLE_LIMIT_PER_MIN
+            # value:
+          # - name: CAPTURE_EGRESS
+            # value: "true"
+        securityContext:
+          capabilities:
+            add:
+            - SYS_PTRACE
+            - SYS_ADMIN
+          privileged: true
+        volumeMounts:
+          # needed to load kernel headers
+          - name: lib-modules
+            mountPath: /lib/modules
+            readOnly: true
+          # needed to trace kernel events
+          - name: sys-kernel
+            mountPath: /sys/kernel
+            readOnly: true
+          - name: host
+            mountPath: /host
+            readOnly: true
+      volumes:
+        - name: sys-kernel
+          hostPath:
+            path: /sys/kernel
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: host
+          hostPath:
+            path : /
+        

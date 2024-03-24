@@ -1,8 +1,9 @@
 package utils
 
 import (
-	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"testing"
+
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 func TestCheckIfIpHost(t *testing.T) {

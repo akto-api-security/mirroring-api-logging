@@ -8,11 +8,10 @@ COPY go.mod ./
 COPY go.sum ./
 COPY run.sh ./
 RUN chmod +x ./run.sh
-RUN go mod download
 
 COPY *.go ./
-COPY db ./db
-COPY utils ./utils
+COPY trafficUtil ./trafficUtil
+RUN go mod download
 
 RUN go build -o /mirroring-api-logging
 

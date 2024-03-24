@@ -1,9 +1,10 @@
 package utils
 
 import (
-	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"strconv"
 	"testing"
+
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 func TestIncomingCounterKey(t *testing.T) {
