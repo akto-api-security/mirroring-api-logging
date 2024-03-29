@@ -4,9 +4,10 @@ import (
 	"fmt"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
+	metaUtils "github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 
-	// "fmt"
 	"sync"
 	"time"
 )
@@ -18,61 +19,62 @@ type Factory struct {
 	completeThreshold    time.Duration
 	mutex                *sync.RWMutex
 	maxActiveConnections int
-	maxBufferPerTracker  int
-	sampleBufferPerMin   int
 	disableEgress        bool
-	currentTotalBuffer   int64
-	bufferStartTime      uint64
 }
 
 // NewFactory creates a new instance of the factory.
 func NewFactory(inactivityThreshold time.Duration, completeThreshold time.Duration,
-	maxActiveConnections int, maxBufferPerTracker int, sampleBufferPerMin int, disableEgress bool) *Factory {
+	maxActiveConnections int, disableEgress bool) *Factory {
 	return &Factory{
 		connections:          make(map[structs.ConnID]*Tracker),
 		mutex:                &sync.RWMutex{},
 		inactivityThreshold:  inactivityThreshold,
 		completeThreshold:    completeThreshold,
 		maxActiveConnections: maxActiveConnections,
-		maxBufferPerTracker:  maxBufferPerTracker,
-		sampleBufferPerMin:   sampleBufferPerMin,
 		disableEgress:        disableEgress,
 	}
 }
 
 func (factory *Factory) HandleReadyConnections() {
 	trackersToDelete := make(map[structs.ConnID]struct{})
-	// factory.mutex.Lock()
-	// defer factory.mutex.Unlock()
-	var bytesIn = 0
+
+	metaUtils.Debugf("Connections before processing: %v\n", len(factory.connections))
+	// utils.LogMemoryStats()
+	factory.mutex.Lock()
+	defer factory.mutex.Unlock()
 	for connID, tracker := range factory.connections {
-		if tracker.IsComplete(factory.completeThreshold) {
+		if tracker.IsComplete(factory.completeThreshold) ||
+			tracker.IsBufferOverflow() {
 			trackersToDelete[connID] = struct{}{}
 			if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 				continue
 			}
-			fmt.Printf("Tracker info: %v %v %v %v %v", tracker.connID.Conn_start_ns, tracker.connID.Fd, tracker.connID.Id, tracker.connID.Ip, tracker.connID.Port)
-			tryReadFromBD(tracker)
-			if !factory.disableEgress {
-				// attempt to parse the egress as well by switching the recv and sent buffers.
-				// TODO: change this approach (use local vars.) as it gives simultaneous read-write error, on a specific set of params.
-				temp := tracker.recvBuf
-				tracker.recvBuf = tracker.sentBuf
-				tracker.sentBuf = temp
-				tryReadFromBD(tracker)
-			}
-			bytesIn += len(tracker.recvBuf) + len(tracker.sentBuf)
 
-		} else if tracker.IsInactive(factory.inactivityThreshold) || tracker.IsBufferOverflow(factory.maxBufferPerTracker) {
+			wg := new(sync.WaitGroup)
+			for seq, receiveBuffer := range tracker.recvBuf {
+				sentBuffer, exists := tracker.sentBuf[seq]
+				if exists {
+					metaUtils.Debugf("Processing: %v\n", seq)
+					wg.Add(1)
+					go tryReadFromBD(receiveBuffer, sentBuffer, wg, seq)
+					if !factory.disableEgress {
+						// attempt to parse the egress as well by switching the recv and sent buffers.
+						wg.Add(1)
+						go tryReadFromBD(sentBuffer, receiveBuffer, wg, seq)
+					}
+				}
+			}
+			wg.Wait()
+		} else if tracker.IsInactive(factory.inactivityThreshold) {
 			trackersToDelete[connID] = struct{}{}
 		}
 	}
-	factory.mutex.Lock()
-	defer factory.mutex.Unlock()
 	for key := range trackersToDelete {
 		delete(factory.connections, key)
 	}
-
+	metaUtils.Debugf("Deleted connections: %v\n", len(trackersToDelete))
+	metaUtils.Debugf("Connections after processing: %v\n", len(factory.connections))
+	// utils.LogMemoryStats()
 	kafkaUtil.LogKafkaError()
 }
 
@@ -94,24 +96,46 @@ func (factory *Factory) CanBeFilled() bool {
 	defer factory.mutex.RUnlock()
 
 	maxConnCheck := len(factory.connections) < factory.maxActiveConnections
-
-	bufferSampleCheck := (factory.sampleBufferPerMin == -1) || factory.currentTotalBuffer < int64(factory.sampleBufferPerMin*1024*1024)
-
-	return maxConnCheck && bufferSampleCheck
+	return maxConnCheck
 }
 
-func (factory *Factory) UpdateBufferSize(bufferSize uint64) {
-	factory.mutex.RLock()
-	defer factory.mutex.RUnlock()
+var (
+	sampleBufferPerMin        = -1 // value in mb
+	currentTotalBuffer int64  = 0
+	lastPrint          int64  = 0
+	bufferMutex               = sync.RWMutex{}
+	lastReset          uint64 = uint64(time.Now().UnixMilli())
+)
 
-	if factory.sampleBufferPerMin != -1 && factory.currentTotalBuffer < int64(factory.sampleBufferPerMin*1024*1024) {
-		factory.currentTotalBuffer += int64(bufferSize)
-		fmt.Printf("Current total buffer:%v\n", factory.currentTotalBuffer)
+func init() {
+	utils.InitVar("TRAFFIC_SAMPLE_BUFFER_PER_MINUTE", &sampleBufferPerMin)
+}
+
+func BufferCheck() bool {
+	bufferMutex.Lock()
+	defer bufferMutex.Unlock()
+
+	if (uint64(time.Now().UnixMilli()) - lastReset) > uint64(time.Minute.Milliseconds()) {
+		lastReset = uint64(time.Now().UnixMilli())
+		currentTotalBuffer = int64(0)
+		lastPrint = int64(0)
+		fmt.Printf("Buffer reset: %v %v\n", currentTotalBuffer, lastPrint)
 	}
 
-	if uint64(time.Now().UnixNano())-factory.bufferStartTime > uint64(time.Minute.Nanoseconds()) {
-		factory.bufferStartTime = uint64(time.Now().UnixNano())
-		factory.currentTotalBuffer = 0
+	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
+	return bufferSampleCheck
+}
+
+func UpdateBufferSize(bufferSize uint64) {
+	bufferMutex.Lock()
+	defer bufferMutex.Unlock()
+
+	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
+		currentTotalBuffer += int64(bufferSize)
+		if currentTotalBuffer/(1024*1024) > lastPrint {
+			lastPrint = currentTotalBuffer / (1024 * 1024)
+			fmt.Printf("Current total buffer: %v %v\n", currentTotalBuffer, lastPrint)
+		}
 	}
 }
 

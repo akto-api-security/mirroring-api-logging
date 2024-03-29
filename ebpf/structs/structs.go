@@ -1,17 +1,18 @@
-
 package structs
 
 type ConnID struct {
-	Id             uint64
-	Fd             uint32
-	Conn_start_ns  uint64
-	Port           uint16
-	Ip             uint32
+	Id            uint64
+	Fd            uint32
+	Conn_start_ns uint64
+	Port          uint16
+	Ip            uint32
 }
 
 type SocketDataEventAttr struct {
-	ConnId         ConnID
-	Bytes_sent     int64
+	ConnId           ConnID
+	Bytes_sent       int64
+	ReadEventsCount  uint32
+	WriteEventsCount uint32
 }
 
 /*
@@ -21,6 +22,8 @@ u64 conn_start_ns;
 unsigned short port;
 u32 ip;
 int bytes_sent;
+u32 readEventsCount;
+u32 writeEventsCount;
 char msg[MAX_MSG_SIZE];
 */
 
@@ -28,7 +31,7 @@ char msg[MAX_MSG_SIZE];
 
 type SocketDataEvent struct {
 	Attr SocketDataEventAttr
-	Msg            [30720]byte
+	Msg  [30720]byte
 }
 
 type SocketOpenEvent struct {

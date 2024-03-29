@@ -211,12 +211,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			}
 			goodRequests++
 		} else {
-			fmt.Printf("req-resp.String() %v\n", string(out))
+			fmt.Printf("seq: %v, req-resp.String() %v\n", vxlanID, string(out))
 			badRequests++
 		}
 
 		if goodRequests%100 == 0 || badRequests%100 == 0 {
-			fmt.Printf("Outgoing bytes: %v , recvBuf: %v, sentBuf: %v, requests: %v, responses: %v\n", outgoingBytes, len(receiveBuffer), len(sentBuffer), len(requests), len(responses))
 			fmt.Printf("Good requests: %v , Bad requests: %v\n", goodRequests, badRequests)
 		}
 

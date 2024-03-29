@@ -94,22 +94,18 @@ func run() {
 		utils.SetLogLevel(1)
 	}
 
-	inactivityThreshold := 5 * time.Second
-	completeThreshold := 5 * time.Second
+	inactivityThreshold := 3 * time.Second
+	completeThreshold := 0 * time.Second
 	maxActiveConnections := 4096
-	maxBufferPerTracker := 1 * 1024 * 1024 // 1 MB
-	sampleBufferPerMin := -1               // value in MB
 	disableEgress := false
 
-	trafficUtils.InitIgnoreVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
-	trafficUtils.InitIgnoreVar("TRAFFIC_COMPLETE_THRESHOLD", &completeThreshold)
-	trafficUtils.InitIgnoreVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
-	trafficUtils.InitIgnoreVar("TRAFFIC_MAX_BUFFER_PER_TRACKER", &maxBufferPerTracker)
-	trafficUtils.InitIgnoreVar("TRAFFIC_SAMPLE_BUFFER_PER_MINUTE", &sampleBufferPerMin)
-	trafficUtils.InitIgnoreVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
+	trafficUtils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
+	trafficUtils.InitVar("TRAFFIC_COMPLETE_THRESHOLD", &completeThreshold)
+	trafficUtils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
+	trafficUtils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
 
 	connectionFactory := connections.NewFactory(inactivityThreshold, completeThreshold,
-		maxActiveConnections, maxBufferPerTracker, sampleBufferPerMin, disableEgress)
+		maxActiveConnections, disableEgress)
 
 	var isRunning bool
 	var mu = &sync.Mutex{}
@@ -119,9 +115,9 @@ func run() {
 	trafficUtils.InitMemThresh()
 	trafficMetrics.StartMetricsTicker()
 
-	kafkaPollInterval := 5 * time.Second
+	kafkaPollInterval := 2 * time.Second
 
-	trafficUtils.InitIgnoreVar("KAFKA_POLL_INTERVAL", &kafkaPollInterval)
+	trafficUtils.InitVar("KAFKA_POLL_INTERVAL", &kafkaPollInterval)
 
 	go func() {
 		for {

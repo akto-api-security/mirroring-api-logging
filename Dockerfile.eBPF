@@ -1,4 +1,4 @@
-FROM alpine:3.18 AS base
+FROM alpine:3.19 AS base
 
 USER root
 RUN apk add bcc-tools bcc-dev bcc-doc linux-headers

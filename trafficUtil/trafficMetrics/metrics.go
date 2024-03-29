@@ -2,6 +2,7 @@ package trafficMetrics
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
@@ -10,6 +11,8 @@ import (
 
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+
+var outgoingCountMapMutex = sync.RWMutex{}
 
 func InitTrafficMaps() {
 	incomingCountMap = make(map[string]utils.IncomingCounter)
@@ -27,6 +30,8 @@ func SubmitIncomingTrafficMetrics(ic utils.IncomingCounter, payloadLength int) {
 }
 
 func SubmitOutgoingTrafficMetrics(oc utils.OutgoingCounter, outgoingBytes int) {
+	outgoingCountMapMutex.Lock()
+	defer outgoingCountMapMutex.Unlock()
 	existingOc, ok := outgoingCountMap[oc.OutgoingCounterKey()]
 	if ok {
 		existingOc.Inc(outgoingBytes, 1)

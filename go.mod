@@ -4,11 +4,11 @@ go 1.17
 
 require (
 	github.com/google/gopacket v1.1.19
-	go.mongodb.org/mongo-driver v1.11.3
 )
 
 require (
 	github.com/akto-api-security/mirroring-api-logging/trafficUtil v0.0.0-00010101000000-000000000000
+	go.mongodb.org/mongo-driver v1.11.3 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
 	github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe // indirect

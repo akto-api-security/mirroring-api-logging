@@ -21,11 +21,11 @@ var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 
 func InitIgnoreVars() {
-	InitIgnoreVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
-	InitIgnoreVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
+	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
+	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 }
 
-func InitIgnoreVar(envVarName string, targetVar interface{}) {
+func InitVar(envVarName string, targetVar interface{}) {
 	envVar := os.Getenv(envVarName)
 	if len(envVar) > 0 {
 		switch v := targetVar.(type) {

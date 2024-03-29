@@ -7,16 +7,16 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-const (
-	maxBufferSize = 40 * 1024
-	/*
-		30KB limit defined in C++ probe code, per data event, taking some extra here.
-		this is used to create the initial user space buffer,
-		which is dynamically increased by go when required.
-	*/
+var (
+	MaxBufferSize = 20
 )
+
+func init() {
+	trafficUtils.InitVar("TRAFFIC_MAX_BUFFER_PER_TRACKER", &MaxBufferSize)
+}
 
 type Tracker struct {
 	connID structs.ConnID
@@ -29,35 +29,38 @@ type Tracker struct {
 	sentBytes uint64
 	recvBytes uint64
 
-	recvBuf []byte
-	sentBuf []byte
+	recvBuf map[int][]byte
+	sentBuf map[int][]byte
 	mutex   sync.RWMutex
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
 	return &Tracker{
 		connID:  connID,
-		recvBuf: make([]byte, 0, maxBufferSize),
-		sentBuf: make([]byte, 0, maxBufferSize),
+		recvBuf: make(map[int][]byte),
+		sentBuf: make(map[int][]byte),
 		mutex:   sync.RWMutex{},
 	}
 }
 
-// We process a tracker after atleast 15 seconds, and delete it after 30 seconds of connection close.
-
 func (conn *Tracker) IsComplete(duration time.Duration) bool {
 	conn.mutex.RLock()
 	defer conn.mutex.RUnlock()
-	return conn.closeTimestamp != 0 && uint64(time.Now().UnixNano())-conn.closeTimestamp > uint64(duration.Nanoseconds())
+	if conn.closeTimestamp > 0 {
+		utils.Debugf("now: %v, close: %v\n", uint64(time.Now().UnixNano()), conn.closeTimestamp)
+	}
+	return conn.closeTimestamp != 0 && uint64(time.Now().UnixNano())-conn.closeTimestamp >= uint64(duration.Nanoseconds())
 }
 
-func (conn *Tracker) IsBufferOverflow(maxBufferPerTracker int) bool {
+func (conn *Tracker) IsBufferOverflow() bool {
 	conn.mutex.RLock()
 	defer conn.mutex.RUnlock()
 
-	totalBufferSize := len(conn.recvBuf) + len(conn.sentBuf)
-
-	return totalBufferSize >= maxBufferPerTracker
+	totalBufferSize := int(max(len(conn.recvBuf), len(conn.sentBuf)))
+	if totalBufferSize >= MaxBufferSize {
+		utils.Debugf("Total buffer size: %v , process: %v\n", totalBufferSize, totalBufferSize >= MaxBufferSize)
+	}
+	return totalBufferSize >= MaxBufferSize
 }
 
 func (conn *Tracker) IsInactive(duration time.Duration) bool {
@@ -70,13 +73,18 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
+	totalBufferSize := int(max(len(conn.recvBuf), len(conn.sentBuf)))
+	if totalBufferSize >= MaxBufferSize {
+		return
+	}
+
 	bytesSent := (event.Attr.Bytes_sent >> 32) >> 16
 
 	if bytesSent > 0 {
-		conn.sentBuf = append(conn.sentBuf, event.Msg[:utils.Abs(bytesSent)]...)
+		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
 		conn.sentBytes += uint64(utils.Abs(bytesSent))
 	} else {
-		conn.recvBuf = append(conn.recvBuf, event.Msg[:utils.Abs(bytesSent)]...)
+		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
 		conn.recvBytes += uint64(utils.Abs(bytesSent))
 	}
 

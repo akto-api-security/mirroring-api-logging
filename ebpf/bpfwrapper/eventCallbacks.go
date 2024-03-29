@@ -3,7 +3,9 @@ package bpfwrapper
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log"
+	"strings"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -21,7 +23,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !connectionFactory.CanBeFilled() {
-			return
+			continue
 		}
 
 		var event structs.SocketOpenEvent
@@ -30,7 +32,6 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		// utils.Debugf("Got data with IP %v, on port: %v", event.ConnId.Ip, event.ConnId.Port)
 		connId := event.ConnId
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
@@ -68,8 +69,9 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			return
 		}
 
-		if !connectionFactory.CanBeFilled() {
-			return
+		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
+			utils.Debugf("Connections filled")
+			continue
 		}
 
 		var event structs.SocketDataEvent
@@ -87,19 +89,26 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		bytesSent := (event.Attr.Bytes_sent >> 32) >> 16
 
 		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 36
+		eventAttributesLogicalSize := 44
 
 		if len(data) > eventAttributesLogicalSize {
 			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
 		}
 
-		connId := event.Attr.ConnId
-		connectionFactory.GetOrCreate(connId).AddDataEvent(event)
+		if strings.Contains(string(data), "postman-token") || strings.Contains(string(data), "Postman-Token") {
 
-		connectionFactory.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
+			connId := event.Attr.ConnId
+			event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
+			event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
 
-		// utils.Debugf("<------------")
-		// utils.Debugf("Got data event of size %v, with data: %s", event.Attr.Bytes_sent, event.Msg[:utils.Abs(bytesSent)])
-		// utils.Debugf("------------>")
+			connectionFactory.GetOrCreate(connId).AddDataEvent(event)
+
+			connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
+			// fmt.Printf("<------------")
+			fmt.Printf("Got data IP %v port: %v fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Ip, connId.Port, connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+			fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
+			// fmt.Printf("------------>")
+		}
+
 	}
 }
