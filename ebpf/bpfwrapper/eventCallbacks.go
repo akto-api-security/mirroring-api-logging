@@ -110,7 +110,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
 			event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
 
-			tracker := connectionFactory.Get(connId)
+			tracker := connectionFactory.GetOrCreate(connId)
 
 			if tracker == nil {
 				fmt.Printf("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, string(event.Msg[:min(32, utils.Abs(bytesSent))]), connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
