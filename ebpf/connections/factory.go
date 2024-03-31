@@ -57,7 +57,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
-				fmt.Printf("Missing sequence: %v %v %v %v\n", kPrev, k, bufMap[k], bufMap[kPrev])
+				fmt.Printf("Missing sequence: %v %v %v %v\n", kPrev, k, string(bufMap[k]), string(bufMap[kPrev]))
 				break
 			}
 			kPrev = k
