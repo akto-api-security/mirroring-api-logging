@@ -97,11 +97,13 @@ func (factory *Factory) HandleReadyConnections() {
 			trackersToDelete[connID] = struct{}{}
 		}
 	}
+	fmt.Printf("Connections before processing: %v\n", len(factory.connections))
+
 	for key := range trackersToDelete {
 		delete(factory.connections, key)
 	}
-	metaUtils.Debugf("Deleted connections: %v\n", len(trackersToDelete))
-	metaUtils.Debugf("Connections after processing: %v\n", len(factory.connections))
+	fmt.Printf("Deleted connections: %v\n", len(trackersToDelete))
+	fmt.Printf("Connections after processing: %v\n", len(factory.connections))
 	// utils.LogMemoryStats()
 	kafkaUtil.LogKafkaError()
 }
