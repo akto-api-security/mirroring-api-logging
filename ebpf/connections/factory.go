@@ -2,6 +2,7 @@ package connections
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
@@ -35,6 +36,39 @@ func NewFactory(inactivityThreshold time.Duration, completeThreshold time.Durati
 	}
 }
 
+func convertToSingleByteArr(bufMap map[int][]byte) []byte {
+
+	if len(bufMap) == 0 {
+		return make([]byte, 0)
+	}
+
+	var keys []int
+	for k := range bufMap {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
+	// Append []byte values into a single slice
+	var combined []byte
+
+	kPrev := -1
+	for _, k := range keys {
+		if kPrev == -1 {
+			kPrev = k
+		} else {
+			if kPrev+1 != k {
+				fmt.Printf("Missing sequence: %v %v %v %v\n", kPrev, k, bufMap[k], bufMap[kPrev])
+				break
+			}
+			kPrev = k
+		}
+		combined = append(combined, bufMap[k]...)
+	}
+
+	return combined
+
+}
+
 func (factory *Factory) HandleReadyConnections() {
 	trackersToDelete := make(map[structs.ConnID]struct{})
 
@@ -49,22 +83,14 @@ func (factory *Factory) HandleReadyConnections() {
 			if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 				continue
 			}
+			receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
+			sentBuffer := convertToSingleByteArr(tracker.sentBuf)
 
-			wg := new(sync.WaitGroup)
-			for seq, receiveBuffer := range tracker.recvBuf {
-				sentBuffer, exists := tracker.sentBuf[seq]
-				if exists {
-					metaUtils.Debugf("Processing: %v\n", seq)
-					wg.Add(1)
-					go tryReadFromBD(receiveBuffer, sentBuffer, wg, seq)
-					if !factory.disableEgress {
-						// attempt to parse the egress as well by switching the recv and sent buffers.
-						wg.Add(1)
-						go tryReadFromBD(sentBuffer, receiveBuffer, wg, seq)
-					}
-				}
+			go tryReadFromBD(receiveBuffer, sentBuffer)
+			if !factory.disableEgress {
+				// attempt to parse the egress as well by switching the recv and sent buffers.
+				go tryReadFromBD(sentBuffer, receiveBuffer)
 			}
-			wg.Wait()
 		} else if tracker.IsInactive(factory.inactivityThreshold) {
 			trackersToDelete[connID] = struct{}{}
 		}

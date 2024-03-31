@@ -787,9 +787,9 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
     struct data_args_t* write_args_1 = active_write_args_map.lookup(&id);
 
     if (write_args_1 != NULL) {
-      bpf_trace_printk("syscall__probe_ret_write: pid: %llu fd: %d write args : %d", id, fd, write_args_1->fd);
+      bpf_trace_printk("syscall__probe_ret_write: pid: %llu write args : %d", id, write_args_1->fd);
     } else {
-      bpf_trace_printk("syscall__probe_ret_write: pid: %llu fd: %d write args : NULL", id, fd);
+      bpf_trace_printk("syscall__probe_ret_write: pid: %llu write args : NULL", id);
     }
   }
 
