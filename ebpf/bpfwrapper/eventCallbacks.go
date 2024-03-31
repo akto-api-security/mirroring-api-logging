@@ -32,7 +32,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		// fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
+		fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
 	}
@@ -54,7 +54,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if tracker == nil {
 			continue
 		}
-		// fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
+		fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
 		tracker.AddCloseEvent(event)
 	}
 }
@@ -113,7 +113,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			tracker := connectionFactory.Get(connId)
 
 			if tracker == nil {
-				fmt.Printf("Ignoring data fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+				fmt.Printf("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, string(event.Msg[:min(32, utils.Abs(bytesSent))]), connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 				continue
 			}
 
