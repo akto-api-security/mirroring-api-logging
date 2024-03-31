@@ -23,6 +23,9 @@ var badRequests = 0
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	sourceIp string, vxlanID int, isPending bool, trafficSource string) {
+
+	fmt.Printf("ParseAndProduce: receiveBuffer: %v, sentBuffer: %v	", string(receiveBuffer), string(sentBuffer))
+
 	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
 	i := 0
 	requests := []http.Request{}
@@ -47,6 +50,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 		requestsContent = append(requestsContent, string(body))
 		i++
 	}
+
+	fmt.Printf("ParseAndProduce: Found count of requests: %v", i)
 
 	if len(requests) == 0 {
 		return
@@ -96,6 +101,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 
 		i++
 	}
+
+	fmt.Printf("ParseAndProduce: Found count of responses: %v", i)
 
 	if len(requests) != len(responses) {
 		fmt.Printf("Len req-res mismatch: %v %v %v %v", len(requests), len(responses), len(receiveBuffer), len(sentBuffer))

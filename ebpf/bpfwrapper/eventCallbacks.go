@@ -31,8 +31,8 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			log.Printf("Failed to decode received data on socket open: %+v", err)
 			continue
 		}
-
 		connId := event.ConnId
+		fmt.Printf("Received open on: %v %v", connId.Fd, connId.Id)
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
 	}
@@ -50,6 +50,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
+		fmt.Printf("Received close on: %v %v", connId.Fd, connId.Id)
 		tracker := connectionFactory.Get(connId)
 		if tracker == nil {
 			continue
@@ -98,6 +99,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		if strings.Contains(string(data), "postman-token") || strings.Contains(string(data), "Postman-Token") {
 
 			connId := event.Attr.ConnId
+			fmt.Printf("Received data on: %v %v", connId.Fd, connId.Id)
 			event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
 			event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
 
@@ -106,7 +108,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 			// fmt.Printf("<------------")
 			fmt.Printf("Got data IP %v port: %v fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Ip, connId.Port, connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
-			fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
+			// fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
 			// fmt.Printf("------------>")
 		}
 
