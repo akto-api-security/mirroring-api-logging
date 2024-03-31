@@ -81,7 +81,7 @@ func (factory *Factory) HandleReadyConnections() {
 	for connID, tracker := range factory.connections {
 		if tracker.IsComplete() ||
 			tracker.IsInactive(factory.inactivityThreshold) {
-			fmt.Printf("Processing request : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
+			// fmt.Printf("Processing request : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
 			trackersToDelete[connID] = struct{}{}
 			if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 				continue

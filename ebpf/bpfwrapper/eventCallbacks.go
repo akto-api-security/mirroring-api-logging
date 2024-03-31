@@ -32,7 +32,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
+		// fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
 	}
@@ -54,7 +54,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if tracker == nil {
 			continue
 		}
-		fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
+		// fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
 		tracker.AddCloseEvent(event)
 	}
 }
