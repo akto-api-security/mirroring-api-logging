@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -58,7 +59,7 @@ func (conn *Tracker) IsBufferOverflow() bool {
 
 	totalBufferSize := int(max(len(conn.recvBuf), len(conn.sentBuf)))
 	if totalBufferSize >= MaxBufferSize {
-		utils.Debugf("Total buffer size: %v , process: %v\n", totalBufferSize, totalBufferSize >= MaxBufferSize)
+		fmt.Printf("Marking overflow Total buffer size: %v , process: %v\n", totalBufferSize, totalBufferSize >= MaxBufferSize)
 	}
 	return totalBufferSize >= MaxBufferSize
 }
@@ -75,6 +76,7 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 
 	totalBufferSize := int(max(len(conn.recvBuf), len(conn.sentBuf)))
 	if totalBufferSize >= MaxBufferSize {
+		fmt.Printf("Skipping because overflow Total buffer size: %v , process: %v\n", totalBufferSize, totalBufferSize >= MaxBufferSize)
 		return
 	}
 
