@@ -106,7 +106,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			tracker := connectionFactory.Get(connId)
 
 			if tracker == nil {
-				// fmt.Printf("Ignoring data IP %v port: %v fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Ip, connId.Port, connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+				fmt.Printf("Ignoring data IP %v port: %v fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Ip, connId.Port, connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 				continue
 			}
 
