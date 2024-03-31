@@ -80,7 +80,6 @@ func (factory *Factory) HandleReadyConnections() {
 	defer factory.mutex.Unlock()
 	for connID, tracker := range factory.connections {
 		if tracker.IsComplete(factory.completeThreshold) ||
-			tracker.IsBufferOverflow() ||
 			tracker.IsInactive(factory.inactivityThreshold) {
 			// fmt.Printf("Processing request : %v %v\n", connID.Fd, connID.Id)
 			trackersToDelete[connID] = struct{}{}
