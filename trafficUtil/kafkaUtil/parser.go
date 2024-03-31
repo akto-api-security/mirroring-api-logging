@@ -98,6 +98,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	}
 
 	if len(requests) != len(responses) {
+		fmt.Printf("Len req-res mismatch: %v %v %v %v", len(requests), len(responses), len(receiveBuffer), len(sentBuffer))
 		return
 	}
 
@@ -215,7 +216,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			badRequests++
 		}
 
-		if goodRequests%100 == 0 || badRequests%100 == 0 {
+		if goodRequests%100 == 0 || badRequests%100 == 0 || debug == "true" {
 			fmt.Printf("Good requests: %v , Bad requests: %v\n", goodRequests, badRequests)
 		}
 

@@ -81,6 +81,7 @@ func (factory *Factory) HandleReadyConnections() {
 	for connID, tracker := range factory.connections {
 		if tracker.IsComplete(factory.completeThreshold) ||
 			tracker.IsBufferOverflow() {
+			fmt.Printf("Processing request : %v %v\n", connID.Fd, connID.Id)
 			trackersToDelete[connID] = struct{}{}
 			if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 				continue
@@ -94,6 +95,7 @@ func (factory *Factory) HandleReadyConnections() {
 				go tryReadFromBD(sentBuffer, receiveBuffer)
 			}
 		} else if tracker.IsInactive(factory.inactivityThreshold) {
+			fmt.Printf("Marking inactive : %v %v\n", connID.Fd, connID.Id)
 			trackersToDelete[connID] = struct{}{}
 		}
 	}

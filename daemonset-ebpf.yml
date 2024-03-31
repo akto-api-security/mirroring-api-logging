@@ -22,7 +22,7 @@ spec:
       hostPID: true
       containers:
       - name: akto-ebpf
-        image: coastaldemigod/ebpf:v69
+        image: coastaldemigod/ebpf:v72
         imagePullPolicy: Always
         resources:
           limits:
@@ -45,13 +45,13 @@ spec:
           - name: AKTO_MONGO_CONN
             value: "mongodb://172.20.191.56:27017/admini"
           - name: TRAFFIC_INACTIVITY_THRESHOLD
-            value: "2"
+            value: "10"
           - name: TRAFFIC_COMPLETE_THRESHOLD
             value: "0"
           - name: TRAFFIC_MAX_ACTIVE_CONN
             value: "8192"
-          # - name: PRINT_BPF_LOGS
-            # value: "true"
+          - name: PRINT_BPF_LOGS
+            value: "true"
           - name: TRAFFIC_MAX_BUFFER_PER_TRACKER
             value: "20"
           - name: KAFKA_POLL_INTERVAL
