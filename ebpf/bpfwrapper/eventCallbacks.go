@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
-	"math"
 	"strings"
 	"unsafe"
 
@@ -65,6 +64,13 @@ var (
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
 	for data := range inputChan {
 		if data == nil {
@@ -115,7 +121,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 			connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 			// fmt.Printf("<------------")
-			fmt.Printf("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, event.Msg[:int(math.Min(32, utils.Abs(bytesSent)))], connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+			fmt.Printf("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, event.Msg[:min(32, utils.Abs(bytesSent))], connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 			// fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
 			// fmt.Printf("------------>")
 		}
