@@ -45,7 +45,7 @@ spec:
           - name: AKTO_MONGO_CONN
             value: "mongodb://172.20.191.56:27017/admini"
           - name: TRAFFIC_INACTIVITY_THRESHOLD
-            value: "10"
+            value: "60"
           - name: TRAFFIC_COMPLETE_THRESHOLD
             value: "0"
           - name: TRAFFIC_MAX_ACTIVE_CONN

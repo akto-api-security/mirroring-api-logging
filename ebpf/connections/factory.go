@@ -80,8 +80,9 @@ func (factory *Factory) HandleReadyConnections() {
 	defer factory.mutex.Unlock()
 	for connID, tracker := range factory.connections {
 		if tracker.IsComplete(factory.completeThreshold) ||
-			tracker.IsBufferOverflow() {
-			fmt.Printf("Processing request : %v %v\n", connID.Fd, connID.Id)
+			tracker.IsBufferOverflow() ||
+			tracker.IsInactive(factory.inactivityThreshold) {
+			// fmt.Printf("Processing request : %v %v\n", connID.Fd, connID.Id)
 			trackersToDelete[connID] = struct{}{}
 			if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 				continue
@@ -94,18 +95,15 @@ func (factory *Factory) HandleReadyConnections() {
 				// attempt to parse the egress as well by switching the recv and sent buffers.
 				go tryReadFromBD(sentBuffer, receiveBuffer)
 			}
-		} else if tracker.IsInactive(factory.inactivityThreshold) {
-			fmt.Printf("Marking inactive : %v %v\n", connID.Fd, connID.Id)
-			trackersToDelete[connID] = struct{}{}
 		}
 	}
-	fmt.Printf("Connections before processing: %v\n", len(factory.connections))
+	// fmt.Printf("Connections before processing: %v\n", len(factory.connections))
 
 	for key := range trackersToDelete {
 		delete(factory.connections, key)
 	}
-	fmt.Printf("Deleted connections: %v\n", len(trackersToDelete))
-	fmt.Printf("Connections after processing: %v\n", len(factory.connections))
+	// fmt.Printf("Deleted connections: %v\n", len(trackersToDelete))
+	// fmt.Printf("Connections after processing: %v\n", len(factory.connections))
 	// utils.LogMemoryStats()
 	kafkaUtil.LogKafkaError()
 }

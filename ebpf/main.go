@@ -99,6 +99,7 @@ func run() {
 	maxActiveConnections := 4096
 	disableEgress := false
 
+	trafficUtils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	trafficUtils.InitVar("TRAFFIC_COMPLETE_THRESHOLD", &completeThreshold)
 	trafficUtils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
 	trafficUtils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)

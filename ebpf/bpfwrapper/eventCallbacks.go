@@ -32,7 +32,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
+		// fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
 	}
@@ -50,7 +50,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
-		fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
+		// fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
 		tracker := connectionFactory.Get(connId)
 		if tracker == nil {
 			continue
@@ -99,14 +99,14 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		if strings.Contains(string(data), "postman-token") || strings.Contains(string(data), "Postman-Token") {
 
 			connId := event.Attr.ConnId
-			fmt.Printf("Received data on: %v %v\n", connId.Fd, connId.Id)
+			// fmt.Printf("Received data on: %v %v\n", connId.Fd, connId.Id)
 			event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
 			event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
 
 			tracker := connectionFactory.Get(connId)
 
 			if tracker == nil {
-				fmt.Printf("Ignoring data IP %v port: %v fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Ip, connId.Port, connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+				// fmt.Printf("Ignoring data IP %v port: %v fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Ip, connId.Port, connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 				continue
 			}
 
