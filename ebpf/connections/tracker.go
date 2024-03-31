@@ -43,13 +43,13 @@ func NewTracker(connID structs.ConnID) *Tracker {
 	}
 }
 
-func (conn *Tracker) IsComplete(duration time.Duration) bool {
+func (conn *Tracker) IsComplete() bool {
 	conn.mutex.RLock()
 	defer conn.mutex.RUnlock()
 	if conn.closeTimestamp > 0 {
 		utils.Debugf("now: %v, close: %v\n", uint64(time.Now().UnixNano()), conn.closeTimestamp)
 	}
-	return conn.closeTimestamp != 0 && uint64(time.Now().UnixNano())-conn.closeTimestamp >= uint64(duration.Nanoseconds())
+	return conn.closeTimestamp != 0 && uint64(time.Now().UnixNano()) >= conn.closeTimestamp
 }
 
 func (conn *Tracker) IsInactive(duration time.Duration) bool {
