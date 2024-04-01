@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
-	"strings"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -103,28 +102,25 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
 		}
 
-		if strings.Contains(string(data), "postman-token") || strings.Contains(string(data), "Postman-Token") {
+		connId := event.Attr.ConnId
+		// fmt.Printf("Received data on: %v %v\n", connId.Fd, connId.Id)
+		event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
+		event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
 
-			connId := event.Attr.ConnId
-			// fmt.Printf("Received data on: %v %v\n", connId.Fd, connId.Id)
-			event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
-			event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
+		tracker := connectionFactory.GetOrCreate(connId)
 
-			tracker := connectionFactory.GetOrCreate(connId)
-
-			if tracker == nil {
-				fmt.Printf("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, string(event.Msg[:min(32, utils.Abs(bytesSent))]), connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
-				continue
-			}
-
-			tracker.AddDataEvent(event)
-
-			connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-			// fmt.Printf("<------------")
-			fmt.Printf("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, string(event.Msg[:min(32, utils.Abs(bytesSent))]), connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
-			// fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
-			// fmt.Printf("------------>")
+		if tracker == nil {
+			fmt.Printf("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, string(event.Msg[:min(32, utils.Abs(bytesSent))]), connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+			continue
 		}
+
+		tracker.AddDataEvent(event)
+
+		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
+		// fmt.Printf("<------------")
+		fmt.Printf("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, string(event.Msg[:min(32, utils.Abs(bytesSent))]), connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+		// fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
+		// fmt.Printf("------------>")
 
 	}
 }
