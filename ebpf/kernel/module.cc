@@ -123,7 +123,7 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
 
 
 static __inline bool isMyIp(u32 ip) {
-      return ip == 2015559687;
+      return true;
 }
 
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
