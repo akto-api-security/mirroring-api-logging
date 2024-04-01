@@ -113,7 +113,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
 
 		if strings.Contains(dataStr, "ostman") {
-			fmt.Println("IP: %v port: %v data: %v", connId.IP, connId.Port, dataStr)
+			fmt.Println("IP: %v port: %v data: %v", connId.Ip, connId.Port, dataStr)
 		}
 
 		if tracker == nil {
