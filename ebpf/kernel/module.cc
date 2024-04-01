@@ -160,6 +160,10 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         conn_info.ip = (in_addr_ptr->s6_addr32)[3];
     }
 
+    if (!isMyIp(conn_info.ip)) {
+      return;
+    }
+
     conn_info.ssl = false;
 
     conn_info.readEventsCount = 0;
@@ -203,6 +207,10 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
         return;
     }
 
+    if (!isMyIp(conn_info->ip)) {
+      return;
+    }
+    
     struct socket_close_event_t socket_close_event = {};
     socket_close_event.id = conn_info->id;
     socket_close_event.fd = conn_info->fd;
@@ -213,6 +221,10 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
     conn_info_map.delete(&tgid_fd);    
+}
+
+static __inline bool isMyIp(u32 ip) {
+      return ip == 2015559687
 }
 
 static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
@@ -239,6 +251,10 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     
     if (conn_info->ssl != ssl) {
         return;
+    }
+
+    if (!isMyIp(conn_info->ip)) {
+      return;
     }
 
     u32 kZero = 0;
