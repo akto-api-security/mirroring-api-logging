@@ -94,7 +94,7 @@ func run() {
 		utils.SetLogLevel(1)
 	}
 
-	inactivityThreshold := 60 * time.Second
+	inactivityThreshold := 600 * time.Second
 	completeThreshold := 0 * time.Second
 	maxActiveConnections := 4096
 	disableEgress := false
