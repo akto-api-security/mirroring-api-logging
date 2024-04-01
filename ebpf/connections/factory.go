@@ -89,7 +89,6 @@ func (factory *Factory) HandleReadyConnections() {
 			receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
 			sentBuffer := convertToSingleByteArr(tracker.sentBuf)
 
-			fmt.Printf("requests: %v %v", string(receiveBuffer), string(sentBuffer))
 			go tryReadFromBD(receiveBuffer, sentBuffer)
 			if !factory.disableEgress {
 				// attempt to parse the egress as well by switching the recv and sent buffers.
