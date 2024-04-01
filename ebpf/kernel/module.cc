@@ -121,6 +121,11 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
+
+static __inline bool isMyIp(u32 ip) {
+      return ip == 2015559687;
+}
+
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
     int ret_fd = PT_REGS_RC(ret);
 
@@ -210,7 +215,7 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     if (!isMyIp(conn_info->ip)) {
       return;
     }
-    
+
     struct socket_close_event_t socket_close_event = {};
     socket_close_event.id = conn_info->id;
     socket_close_event.fd = conn_info->fd;
@@ -221,10 +226,6 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
     conn_info_map.delete(&tgid_fd);    
-}
-
-static __inline bool isMyIp(u32 ip) {
-      return ip == 2015559687
 }
 
 static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
