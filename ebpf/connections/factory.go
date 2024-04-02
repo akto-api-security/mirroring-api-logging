@@ -125,7 +125,7 @@ func (factory *Factory) HandleReadyConnections() {
 		}
 
 		if isInvalid {
-			fmt.Printf("Invalid stream : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
+			fmt.Printf("Invalid stream marker : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
 		}
 	}
 	fmt.Printf("Connections before processing: %v\n", len(factory.connections))
