@@ -36,6 +36,8 @@ func NewFactory(inactivityThreshold time.Duration, completeThreshold time.Durati
 	}
 }
 
+var validVerbs = map[string]bool{"GET": true, "POS": true, "PUT": true, "DEL": true, "PAT": true, "HEA": true, "OPT": true, "CON": true, "TRA": true, "HTT": true}
+
 func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 
 	if len(bufMap) == 0 {
@@ -58,9 +60,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 		} else {
 			if kPrev+1 != k {
 				fmt.Printf("Missing sequence: %v %v - %v - %v\n", kPrev, k, string(bufMap[k]), string(bufMap[kPrev]))
-				if string(bufMap[kPrev][:4]) != "HTTP" {
-					break
-				}
+				break
 			}
 			kPrev = k
 		}
