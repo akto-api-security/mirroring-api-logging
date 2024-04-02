@@ -98,7 +98,7 @@ func (factory *Factory) HandleReadyConnections() {
 	trackersToDelete := make(map[structs.ConnID]struct{})
 
 	metaUtils.Debugf("Connections before processing: %v\n", len(factory.connections))
-	// utils.LogMemoryStats()
+	utils.LogMemoryStats()
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
 
@@ -139,7 +139,7 @@ func (factory *Factory) HandleReadyConnections() {
 	}
 	// fmt.Printf("Deleted connections: %v\n", len(trackersToDelete))
 	// fmt.Printf("Connections after processing: %v\n", len(factory.connections))
-	// utils.LogMemoryStats()
+	utils.LogMemoryStats()
 	kafkaUtil.LogKafkaError()
 }
 

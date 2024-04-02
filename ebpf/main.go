@@ -115,7 +115,7 @@ func run() {
 	trafficUtils.InitMemThresh()
 	trafficMetrics.StartMetricsTicker()
 
-	kafkaPollInterval := 2 * time.Second
+	kafkaPollInterval := 500 * time.Millisecond
 
 	trafficUtils.InitVar("KAFKA_POLL_INTERVAL", &kafkaPollInterval)
 
