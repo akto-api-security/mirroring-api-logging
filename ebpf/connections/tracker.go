@@ -72,7 +72,7 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		conn.recvBytes += uint64(utils.Abs(bytesSent))
 	}
 
-	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	// conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }
 
 func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
@@ -91,5 +91,5 @@ func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
 	defer conn.mutex.Unlock()
 
 	conn.closeTimestamp = uint64(time.Now().UnixNano())
-	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	// conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }

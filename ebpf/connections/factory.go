@@ -71,6 +71,21 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 
 }
 
+func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelete map[structs.ConnID]struct{}) {
+	trackersToDelete[connID] = struct{}{}
+	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
+		return
+	}
+	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
+	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
+
+	go tryReadFromBD(receiveBuffer, sentBuffer)
+	if !factory.disableEgress {
+		// attempt to parse the egress as well by switching the recv and sent buffers.
+		go tryReadFromBD(sentBuffer, receiveBuffer)
+	}
+}
+
 func (factory *Factory) HandleReadyConnections() {
 	trackersToDelete := make(map[structs.ConnID]struct{})
 
@@ -79,21 +94,22 @@ func (factory *Factory) HandleReadyConnections() {
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
 	for connID, tracker := range factory.connections {
-		if tracker.IsComplete() ||
-			tracker.IsInactive(factory.inactivityThreshold) {
-			fmt.Printf("Processing request : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
-			trackersToDelete[connID] = struct{}{}
-			if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
-				continue
-			}
-			receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
-			sentBuffer := convertToSingleByteArr(tracker.sentBuf)
+		isInactive := tracker.IsInactive(factory.inactivityThreshold)
+		isComplete := tracker.IsComplete() && tracker.lastAccessTimestamp != 0
+		isInvalid := tracker.lastAccessTimestamp == 0
 
-			go tryReadFromBD(receiveBuffer, sentBuffer)
-			if !factory.disableEgress {
-				// attempt to parse the egress as well by switching the recv and sent buffers.
-				go tryReadFromBD(sentBuffer, receiveBuffer)
-			}
+		if isInactive {
+			fmt.Printf("Inactive stream : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
+			ProcessTrackerData(connID, tracker, trackersToDelete)
+		}
+
+		if isComplete {
+			fmt.Printf("Complete stream : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
+			ProcessTrackerData(connID, tracker, trackersToDelete)
+		}
+
+		if isInvalid {
+			fmt.Printf("Invalid stream : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
 		}
 	}
 	// fmt.Printf("Connections before processing: %v\n", len(factory.connections))
