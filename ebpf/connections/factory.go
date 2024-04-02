@@ -100,7 +100,7 @@ func (factory *Factory) HandleReadyConnections() {
 
 		if isInactive {
 			fmt.Printf("Inactive stream : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
-			ProcessTrackerData(connID, tracker, trackersToDelete)
+			ProcessTrackerData(connID, tracker, trackersToDelete, isComplete)
 		}
 
 		if isComplete {
