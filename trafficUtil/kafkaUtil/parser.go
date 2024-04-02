@@ -116,6 +116,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 		}
 		if isComplete {
 			return
+		} else {
+			correctLen := len(requests)
+			if len(responses) < len(requests) {
+				correctLen = len(responses)
+			}
+
+			responses = responses[:correctLen]
+			requests = requests[:correctLen]
 		}
 	}
 
