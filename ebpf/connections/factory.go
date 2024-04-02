@@ -56,6 +56,10 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	kPrev := -1
 	for _, k := range keys {
 		if kPrev == -1 {
+			if k != 0 {
+				fmt.Printf("Bad start sequence: %v - %v \n", k, string(bufMap[k]))
+				break
+			}
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
