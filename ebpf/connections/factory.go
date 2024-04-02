@@ -71,6 +71,14 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 
 }
 
+func calcSize(bufMap map[int][]byte) int {
+	ret := 0
+	for _, v := range bufMap {
+		ret += len(v)
+	}
+	return ret
+}
+
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelete map[structs.ConnID]struct{}, isComplete bool) {
 	trackersToDelete[connID] = struct{}{}
 	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
@@ -93,7 +101,11 @@ func (factory *Factory) HandleReadyConnections() {
 	// utils.LogMemoryStats()
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
+
+	totalSize := 0
+
 	for connID, tracker := range factory.connections {
+		totalSize += calcSize(tracker.sentBuf) + calcSize(tracker.recvBuf)
 		isInactive := tracker.IsInactive(factory.inactivityThreshold)
 		isComplete := tracker.IsComplete() && tracker.lastAccessTimestamp != 0
 		isInvalid := tracker.lastAccessTimestamp == 0
@@ -113,6 +125,14 @@ func (factory *Factory) HandleReadyConnections() {
 		}
 	}
 	// fmt.Printf("Connections before processing: %v\n", len(factory.connections))
+	fmt.Printf("Total size: %v\n", totalSize)
+
+	if totalSize >= 300_000_000 {
+		fmt.Printf("Deleting all trackers: %v\n", totalSize)
+		for k, _ := range factory.connections {
+			trackersToDelete[k] = struct{}{}
+		}
+	}
 
 	for key := range trackersToDelete {
 		delete(factory.connections, key)
