@@ -71,7 +71,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 
 }
 
-func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelete map[structs.ConnID]struct{}) {
+func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelete map[structs.ConnID]struct{}, isComplete bool) {
 	trackersToDelete[connID] = struct{}{}
 	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 		return
@@ -79,10 +79,10 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelet
 	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
 	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
 
-	go tryReadFromBD(receiveBuffer, sentBuffer)
+	go tryReadFromBD(receiveBuffer, sentBuffer, isComplete)
 	// if !factory.disableEgress {
 	// attempt to parse the egress as well by switching the recv and sent buffers.
-	go tryReadFromBD(sentBuffer, receiveBuffer)
+	go tryReadFromBD(sentBuffer, receiveBuffer, isComplete)
 	// }
 }
 
@@ -105,7 +105,7 @@ func (factory *Factory) HandleReadyConnections() {
 
 		if isComplete {
 			fmt.Printf("Complete stream : %v %v lens: %v %v\n", connID.Fd, connID.Id, len(tracker.sentBuf), len(tracker.recvBuf))
-			ProcessTrackerData(connID, tracker, trackersToDelete)
+			ProcessTrackerData(connID, tracker, trackersToDelete, isComplete)
 		}
 
 		if isInvalid {

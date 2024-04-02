@@ -22,7 +22,7 @@ var goodRequests = 0
 var badRequests = 0
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
-	sourceIp string, vxlanID int, isPending bool, trafficSource string) {
+	sourceIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool) {
 
 	shouldPrint := strings.Contains(string(receiveBuffer), "ostman")
 	if shouldPrint {
@@ -112,9 +112,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	}
 	if len(requests) != len(responses) {
 		if shouldPrint {
-			fmt.Printf("Len req-res mismatch: %v %v %v %v\n", len(requests), len(responses), len(receiveBuffer), len(sentBuffer))
+			fmt.Printf("Len req-res mismatch: %v %v %v %v isComplete: %v\n", len(requests), len(responses), len(receiveBuffer), len(sentBuffer), isComplete)
 		}
-		return
+		if isComplete {
+			return
+		}
 	}
 
 	debug := os.Getenv("DEBUG")
