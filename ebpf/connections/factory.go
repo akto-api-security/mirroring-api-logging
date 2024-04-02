@@ -109,7 +109,7 @@ func (factory *Factory) HandleReadyConnections() {
 	totalSize := 0
 
 	for connID, tracker := range factory.connections {
-		totalSize += calcSize(tracker.sentBuf) + calcSize(tracker.recvBuf)
+		totalSize += calcSize(tracker.sentBuf) + calcSize(tracker.recvBuf) + 20
 		isInactive := tracker.IsInactive(factory.inactivityThreshold)
 		isComplete := tracker.IsComplete() && tracker.lastAccessTimestamp != 0
 		isInvalid := tracker.lastAccessTimestamp == 0
@@ -131,7 +131,7 @@ func (factory *Factory) HandleReadyConnections() {
 	fmt.Printf("Connections before processing: %v\n", len(factory.connections))
 	fmt.Printf("Total size: %v\n", totalSize)
 
-	if totalSize >= 300_000_000 {
+	if totalSize >= 600_000_000 {
 		fmt.Printf("Deleting all trackers: %v\n", totalSize)
 		for k, _ := range factory.connections {
 			trackersToDelete[k] = struct{}{}
