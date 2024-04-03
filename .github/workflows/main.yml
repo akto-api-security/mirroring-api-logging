@@ -16,6 +16,9 @@ on:
       Tag: 
         required: true
         default: 'latest'
+      EbpfTag: 
+        required: true
+        default: 'k8s_ebpf'
       Environment:
         required: true
         type: choice
@@ -89,7 +92,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: akto-api-security
           REGISTRY_ALIAS: p7q3h0z2
-          IMAGE_TAG: ${{ github.event.inputs.Tag }}
+          IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
@@ -123,7 +126,7 @@ jobs:
         id: build-image-dockerhub-ebpf
         env:
           ECR_REGISTRY: aktosecurity
-          IMAGE_TAG: ${{ github.event.inputs.Tag }}
+          IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
