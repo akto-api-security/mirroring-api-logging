@@ -20,7 +20,7 @@ func PrintLog(val string) {
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 
-func InitIgnoreVars() {
+func init() {
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 }

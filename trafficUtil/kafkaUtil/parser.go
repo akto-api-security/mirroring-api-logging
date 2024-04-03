@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -18,13 +17,20 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-var goodRequests = 0
-var badRequests = 0
+var (
+	goodRequests = 0
+	badRequests  = 0
+	debugMode    = false
+)
+
+func init() {
+	utils.InitVar("DEBUG_MODE", &debugMode)
+}
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	sourceIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool) {
 
-	shouldPrint := strings.Contains(string(receiveBuffer), "ostman")
+	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
 		fmt.Printf("ParseAndProduce: receiveBuffer: %v , sentBuffer: %v\n", string(receiveBuffer), string(sentBuffer))
 	}
@@ -112,24 +118,20 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	}
 	if len(requests) != len(responses) {
 		if shouldPrint {
-			fmt.Printf("Len req-res mismatch: %v %v %v %v isComplete: %v\n", len(requests), len(responses), len(receiveBuffer), len(sentBuffer), isComplete)
+			fmt.Printf("Len req-res mismatch: lens: %v %v %v %v isComplete: %v\n",
+				len(requests), len(responses),
+				len(receiveBuffer), len(sentBuffer), isComplete)
 		}
 		if isComplete {
 			return
-		} else {
-			correctLen := len(requests)
-			if len(responses) < len(requests) {
-				correctLen = len(responses)
-			}
-
-			responses = responses[:correctLen]
-			requests = requests[:correctLen]
 		}
-	}
+		correctLen := len(requests)
+		if len(responses) < len(requests) {
+			correctLen = len(responses)
+		}
 
-	debug := os.Getenv("DEBUG")
-	if len(debug) == 0 {
-		debug = "false"
+		responses = responses[:correctLen]
+		requests = requests[:correctLen]
 	}
 
 	i = 0
@@ -147,14 +149,9 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				if strings.EqualFold(name, "postman-token") {
+				if shouldPrint &&
+					strings.EqualFold(name, "x-debug-token") {
 					id = value
-					if debug == "true" {
-						fmt.Printf("Id found: %v\n", id)
-					}
-				}
-				if debug == "true" {
-					fmt.Printf("Key: %v Value: %v\n", name, value)
 				}
 				reqHeader[name] = value
 			}
@@ -231,18 +228,17 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 		oc := utils.GenerateOutgoingCounter(vxlanID, sourceIp, hostString)
 		trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
 
-		if strings.Contains(responsesContent[i], id) {
-			if debug == "true" {
-				fmt.Printf("Id found in body: %v\n", id)
+		if shouldPrint {
+			if strings.Contains(responsesContent[i], id) {
+				goodRequests++
+			} else {
+				fmt.Printf("req-resp.String() %v\n", string(out))
+				badRequests++
 			}
-			goodRequests++
-		} else {
-			fmt.Printf("seq: %v, req-resp.String() %v\n", vxlanID, string(out))
-			badRequests++
-		}
 
-		if goodRequests%100 == 0 || badRequests%100 == 0 || debug == "true" {
-			fmt.Printf("Good requests: %v , Bad requests: %v\n", goodRequests, badRequests)
+			if goodRequests%100 == 0 || badRequests%100 == 0 {
+				fmt.Printf("Good requests: %v , Bad requests: %v\n", goodRequests, badRequests)
+			}
 		}
 
 		go Produce(ctx, string(out))

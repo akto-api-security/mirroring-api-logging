@@ -160,7 +160,7 @@ func (s *myStream) ReassemblyComplete() {
 func tryReadFromBD(bd *bidi, isPending bool) {
 
 	kafkaUtil.ParseAndProduce(bd.a.bytes, bd.b.bytes,
-		bd.key.net.Src().String(), bd.vxlanID, isPending, bd.source)
+		bd.key.net.Src().String(), bd.vxlanID, isPending, bd.source, true)
 
 }
 
@@ -248,8 +248,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		fmt.Println("setting MAINTAIN_TRAFFIC_IP_MAP = ", val)
 		maintainTrafficIpMap = val
 	}
-
-	utils.InitMemThresh()
 
 	if maintainTrafficIpMap {
 		ifaces, err := net.Interfaces()
@@ -347,7 +345,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				}
 
 				bytesIn = 0
-				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
 				kafkaUtil.Close()
 				break
@@ -400,8 +397,6 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 func main() {
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
-
-	utils.InitIgnoreVars()
 
 	trafficMetrics.StartMetricsTicker()
 

@@ -1,22 +1,12 @@
 package connections
 
 import (
-	"log"
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
-	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
-
-var (
-	MaxBufferSize = 20
-)
-
-func init() {
-	trafficUtils.InitVar("TRAFFIC_MAX_BUFFER_PER_TRACKER", &MaxBufferSize)
-}
 
 type Tracker struct {
 	connID structs.ConnID
@@ -46,16 +36,27 @@ func NewTracker(connID structs.ConnID) *Tracker {
 func (conn *Tracker) IsComplete() bool {
 	conn.mutex.RLock()
 	defer conn.mutex.RUnlock()
-	if conn.closeTimestamp > 0 {
-		utils.Debugf("now: %v, close: %v\n", uint64(time.Now().UnixNano()), conn.closeTimestamp)
+	complete := conn.closeTimestamp != 0 &&
+		uint64(time.Now().UnixNano()) >= conn.closeTimestamp
+	if complete {
+		utils.LogProcessing("closed: %v %v ts: %v %v\n", conn.connID.Fd, conn.connID.Id, conn.closeTimestamp, uint64(time.Now().UnixNano()))
 	}
-	return conn.closeTimestamp != 0 && uint64(time.Now().UnixNano()) >= conn.closeTimestamp
+	return complete
 }
 
-func (conn *Tracker) IsInactive(duration time.Duration) bool {
+/*
+This preemptively processes the stream after a certain time threshold.
+Any more data in this stream will be ignored.
+*/
+func (conn *Tracker) MarkInactive(duration time.Duration) bool {
 	conn.mutex.RLock()
 	defer conn.mutex.RUnlock()
-	return conn.lastAccessTimestamp != 0 && uint64(time.Now().UnixNano())-conn.lastAccessTimestamp > uint64(duration.Nanoseconds())
+	inactive := conn.openTimestamp != 0 &&
+		uint64(time.Now().UnixNano())-conn.openTimestamp > uint64(duration.Nanoseconds())
+	if inactive {
+		utils.LogProcessing("marking inactive: %v %v , ts: %v %v\n", conn.connID.Fd, conn.connID.Id, conn.openTimestamp, uint64(time.Now().UnixNano()))
+	}
+	return inactive
 }
 
 func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
@@ -72,18 +73,19 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		conn.recvBytes += uint64(utils.Abs(bytesSent))
 	}
 
-	// conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }
 
 func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if conn.openTimestamp != 0 && conn.openTimestamp != event.ConnId.Conn_start_ns {
-		log.Printf("Changed open info timestamp from %v to %v", conn.openTimestamp, event.ConnId.Conn_start_ns)
+	now := uint64(time.Now().UnixNano())
+	if conn.openTimestamp != 0 {
+		utils.LogIngest("Changing conn open timestamp from %v to %v\n", conn.openTimestamp, now)
 	}
-	conn.openTimestamp = event.ConnId.Conn_start_ns
-	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	conn.openTimestamp = now
+	conn.lastAccessTimestamp = now
 }
 
 func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
@@ -91,5 +93,5 @@ func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
 	defer conn.mutex.Unlock()
 
 	conn.closeTimestamp = uint64(time.Now().UnixNano())
-	// conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }

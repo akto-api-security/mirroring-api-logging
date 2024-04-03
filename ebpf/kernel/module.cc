@@ -281,13 +281,6 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->readEventsCount = conn_info->readEventsCount;
 
 
-    // if(counter%50 == 0 ){
-    //       bpf_trace_printk("pid abc: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
-    // unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
-    // bpf_trace_printk("rwc abc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000),tgid_fd, socket_data_event->msg);
-    // }
-    //   counter = counter % 10000;
-    //   counter++;
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
     unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;

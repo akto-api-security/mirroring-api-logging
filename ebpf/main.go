@@ -5,7 +5,6 @@ import (
 	"os/signal"
 
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -82,37 +80,12 @@ func run() {
 	defer db.CloseMongoClient()
 	kafkaUtil.InitKafka()
 
-	logLevel := os.Getenv("LOG_LEVEL")
-	if len(logLevel) > 0 {
-		logLevelNum, err := strconv.Atoi(logLevel)
-		if err == nil {
-			utils.SetLogLevel(logLevelNum)
-		} else {
-			utils.SetLogLevel(1)
-		}
-	} else {
-		utils.SetLogLevel(1)
-	}
-
-	inactivityThreshold := 120 * time.Second
-	completeThreshold := 0 * time.Second
-	maxActiveConnections := 4096
-	disableEgress := false
-
-	trafficUtils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
-	trafficUtils.InitVar("TRAFFIC_COMPLETE_THRESHOLD", &completeThreshold)
-	trafficUtils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
-	trafficUtils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
-
-	connectionFactory := connections.NewFactory(inactivityThreshold, completeThreshold,
-		maxActiveConnections, disableEgress)
+	connectionFactory := connections.NewFactory()
 
 	var isRunning bool
 	var mu = &sync.Mutex{}
 
 	trafficMetrics.InitTrafficMaps()
-	trafficUtils.InitIgnoreVars()
-	trafficUtils.InitMemThresh()
 	trafficMetrics.StartMetricsTicker()
 
 	kafkaPollInterval := 500 * time.Millisecond

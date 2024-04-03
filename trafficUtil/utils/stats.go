@@ -4,23 +4,12 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"strconv"
 )
 
 var aktoMemThreshRestart = 500
 
-func InitMemThresh() {
-	aktoMemThresh := os.Getenv("AKTO_MEM_THRESH_RESTART")
-	if len(aktoMemThresh) > 0 {
-		aktoMemThreshRestartLocal, err := strconv.Atoi(aktoMemThresh)
-		if err != nil {
-			log.Println("AKTO_MEM_THRESH_RESTART should be valid integer. Found ", aktoMemThresh)
-			return
-		} else {
-			log.Println("Setting akto mem threshold threshold at " + strconv.Itoa(aktoMemThreshRestartLocal))
-		}
-		aktoMemThreshRestart = aktoMemThreshRestartLocal
-	}
+func init() {
+	InitVar("AKTO_MEM_THRESH_RESTART", &aktoMemThreshRestart)
 }
 
 func LogMemoryStats() {

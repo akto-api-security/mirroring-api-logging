@@ -3,9 +3,7 @@ package bpfwrapper
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"log"
-	"strings"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -32,7 +30,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		fmt.Printf("Received open on: %v %v\n", connId.Fd, connId.Id)
+		utils.LogIngest("Received open on: %v %v\n", connId.Fd, connId.Id)
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
 	}
@@ -54,7 +52,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if tracker == nil {
 			continue
 		}
-		fmt.Printf("Received close on: %v %v\n", connId.Fd, connId.Id)
+		utils.LogIngest("Received close on: %v %v\n", connId.Fd, connId.Id)
 		tracker.AddCloseEvent(event)
 	}
 }
@@ -78,7 +76,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			utils.Debugf("Connections filled")
+			utils.LogIngest("Connections filled")
 			continue
 		}
 
@@ -89,7 +87,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		// So we split the loading into the fixed size attribute parts, and copying the message separately.
 
 		if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
-			log.Printf("Failed to decode received data: %+v", err)
+			utils.LogIngest("Failed to decode received data: %+v", err)
 			continue
 		}
 
@@ -104,7 +102,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		connId := event.Attr.ConnId
-		// fmt.Printf("Received data on: %v %v\n", connId.Fd, connId.Id)
+
 		event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
 		event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
 
@@ -112,24 +110,15 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
 
-		if strings.Contains(dataStr, "productpage") || strings.Contains(dataStr, "status code") {
-			fmt.Println("IP: %v port: %v data: %v", connId.Ip, connId.Port, dataStr)
-		}
-
 		if tracker == nil {
-			fmt.Printf("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+			utils.LogIngest("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 			continue
 		}
 
 		tracker.AddDataEvent(event)
 
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-		// fmt.Printf("<------------")
-		if strings.Contains(dataStr, "productpage") || strings.Contains(dataStr, "status code") {
-			fmt.Printf("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
-		}
-		// fmt.Printf("Got data event of size %v, with data: %s\n", bytesSent, event.Msg[:utils.Abs(bytesSent)])
-		// fmt.Printf("------------>")
 
+		utils.LogIngest("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 	}
 }

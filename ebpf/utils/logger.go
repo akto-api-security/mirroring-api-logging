@@ -2,41 +2,28 @@ package utils
 
 import (
 	"log"
+
+	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-const (
-	LogLevelDebug = iota
-	LogLevelInfo
-	LogLevelWarning
-	LogLevelError
+var (
+	ingestLogs  bool = false
+	processLogs bool = false
 )
 
-var logLevel = LogLevelInfo // Set default log level
-
-func SetLogLevel(level int) {
-	logLevel = level
+func init() {
+	trafficUtils.InitVar("INGEST_LOGS", &ingestLogs)
+	trafficUtils.InitVar("PROCESS_LOGS", &processLogs)
 }
 
-func Debugf(format string, args ...interface{}) {
-	if logLevel <= LogLevelDebug {
+func LogIngest(format string, args ...interface{}) {
+	if ingestLogs {
 		log.Printf(format, args...)
 	}
 }
 
-func Infof(format string, args ...interface{}) {
-	if logLevel <= LogLevelInfo {
-		log.Printf(format, args...)
-	}
-}
-
-func Warningf(format string, args ...interface{}) {
-	if logLevel <= LogLevelWarning {
-		log.Printf(format, args...)
-	}
-}
-
-func Errorf(format string, args ...interface{}) {
-	if logLevel <= LogLevelError {
+func LogProcessing(format string, args ...interface{}) {
+	if processLogs {
 		log.Printf(format, args...)
 	}
 }
