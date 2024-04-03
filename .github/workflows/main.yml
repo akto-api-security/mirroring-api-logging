@@ -93,7 +93,7 @@ jobs:
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
           echo "Building and Pushing image to ECR..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64,linux/arm/v7 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging-ebpf:$IMAGE_TAG -f Dockerfile.eBPF . --push
+          docker buildx build --platform linux/amd64 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging-ebpf:$IMAGE_TAG -f Dockerfile.eBPF . --push
           echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging-ebpf:$IMAGE_TAG"
 
       - name: DockerHub login
@@ -127,5 +127,5 @@ jobs:
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
           echo "Building and Pushing image to DockerHub..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64,linux/arm/v7 -t $ECR_REGISTRY/mirror-api-logging-ebpf:$IMAGE_TAG -f Dockerfile.eBPF . --push
+          docker buildx build --platform linux/amd64 -t $ECR_REGISTRY/mirror-api-logging-ebpf:$IMAGE_TAG -f Dockerfile.eBPF . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging-ebpf:$IMAGE_TAG"
