@@ -68,7 +68,7 @@ var (
 	maxActiveConnections = 4096
 	inactivityThreshold  = 30 * time.Second
 	// Value in MB
-	bufferMemThreshold = 600
+	bufferMemThreshold = 400
 )
 
 func init() {
@@ -76,6 +76,7 @@ func init() {
 	utils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
+	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	// convert MB to B
 	bufferMemThreshold = bufferMemThreshold * 1024 * 1024
 }

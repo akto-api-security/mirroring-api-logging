@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/signal"
+	"strconv"
 
 	"log"
 	"strings"
@@ -53,6 +54,13 @@ func replaceBpfLogsMacros() {
 	source = strings.Replace(source, "PRINT_BPF_LOGS", printBpfLogs, -1)
 }
 
+func replaceMaxConnectionMapSize() {
+	maxConnectionSizeMapSize := 131072
+	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
+	maxConnectionSizeMapSizeStr := strconv.Itoa(maxConnectionSizeMapSize)
+	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
+}
+
 func main() {
 	run()
 }
@@ -67,6 +75,7 @@ func run() {
 
 	replaceOpensslMacros()
 	replaceBpfLogsMacros()
+	replaceMaxConnectionMapSize()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 

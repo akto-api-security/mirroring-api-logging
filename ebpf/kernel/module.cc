@@ -100,9 +100,13 @@ struct socket_data_event_t {
     char msg[MAX_MSG_SIZE];
 };
 
-// u32 counter = 0;
-
-BPF_HASH(conn_info_map, u64, struct conn_info_t, 131072); // 128 * 1024
+BPF_HASH(conn_info_map, u64, struct conn_info_t, TRAFFIC_MAX_CONNECTION_MAP_SIZE); // 128 * 1024
+/*
+Stores conn_info_map's keys on a rotating basic, using the conn_counter.
+i.e. clear the one which you're on and store the new one.
+*/
+BPF_ARRAY(conn_info_map_keys, u64, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
+BPF_ARRAY(conn_counter, int, 1);
 
 BPF_PERF_OUTPUT(socket_data_events);
 BPF_PERF_OUTPUT(socket_open_events);
@@ -119,11 +123,6 @@ BPF_HASH(active_ssl_write_args_map, uint64_t, struct data_args_t);
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
-}
-
-
-static __inline bool isMyIp(u32 ip) {
-      return true;
 }
 
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
@@ -165,23 +164,49 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         conn_info.ip = (in_addr_ptr->s6_addr32)[3];
     }
 
-    if (!isMyIp(conn_info.ip)) {
-      return;
-    }
-
     conn_info.ssl = false;
 
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
     u32 tgid = id >> 32;
+    u64 tgid_fd = 0;
     if(isConnect){
-        u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-        conn_info_map.update(&tgid_fd, &conn_info);
+        tgid_fd = gen_tgid_fd(tgid, args->fd);
     } else {
-        u64 tgid_fd = gen_tgid_fd(tgid, ret_fd);
-        conn_info_map.update(&tgid_fd, &conn_info);
+        tgid_fd = gen_tgid_fd(tgid, ret_fd);
     }
+
+    int zero = 0;
+    int *counter = conn_counter.lookup_or_try_init(&zero, &zero);
+    int val = 0;
+    if (counter != NULL) {
+      if ( (*counter) > ( TRAFFIC_MAX_CONNECTION_MAP_SIZE - 5 ) ) {
+        conn_counter.update(&zero,&zero);
+        if (PRINT_BPF_LOGS){
+          bpf_trace_printk("conn_info_counter reset: %d", *counter);
+        }
+      }
+      (*counter)++;
+      val = *counter;
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("conn_info_counter found: %d", val);
+      }
+      u64 *curr = conn_info_map_keys.lookup(&val);
+      if (curr != NULL) {
+        u64 curVal = *curr;
+        struct conn_info_t *conn_info = conn_info_map.lookup(&curVal);
+        if (conn_info != NULL) {
+          conn_info_map.delete(&curVal);
+          if (PRINT_BPF_LOGS){
+            bpf_trace_printk("conn_info_counter deleting: %d", curVal);
+          }
+        }
+      }
+    }
+
+    conn_info_map_keys.update(&val, &tgid_fd);
+    conn_info_map.update(&tgid_fd, &conn_info);
 
     struct socket_open_event_t socket_open_event = {};
     socket_open_event.id = conn_info.id;
@@ -210,10 +235,6 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
     if (conn_info == NULL) {
         return;
-    }
-
-    if (!isMyIp(conn_info->ip)) {
-      return;
     }
 
     struct socket_close_event_t socket_close_event = {};
@@ -252,10 +273,6 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     
     if (conn_info->ssl != ssl) {
         return;
-    }
-
-    if (!isMyIp(conn_info->ip)) {
-      return;
     }
 
     u32 kZero = 0;

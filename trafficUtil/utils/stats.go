@@ -10,7 +10,7 @@ var aktoMemThreshRestart = 500
 
 func init() {
 	InitVar("AKTO_MEM_THRESH_RESTART", &aktoMemThreshRestart)
-}
+	InitVar("AKTO_MEM_HARD_LIMIT", &aktoMemThreshRestart)}
 
 func LogMemoryStats() {
 	var m runtime.MemStats

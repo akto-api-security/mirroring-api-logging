@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -18,17 +20,56 @@ import (
 )
 
 var (
-	goodRequests = 0
-	badRequests  = 0
-	debugMode    = false
+	goodRequests               = 0
+	badRequests                = 0
+	debugMode                  = false
+	outputBandwidthLimitPerMin = -1
+	currentBandwidthProcessed  = 0
+	lastSampleUpdate           = time.Now().Unix()
+	sampleMutex                = sync.RWMutex{}
 )
+
+const ONE_MINUTE = 60
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
+	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
+	// convert MB to B
+	if outputBandwidthLimitPerMin != -1 {
+		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
+	}
+}
+
+func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
+
+	if outputBandwidthLimitPerMin == -1 {
+		return false
+	}
+	sampleMutex.Lock()
+	defer sampleMutex.Unlock()
+	now := time.Now().Unix()
+	if int(now-lastSampleUpdate) > ONE_MINUTE {
+		lastSampleUpdate = now
+		currentBandwidthProcessed = 0
+		log.Printf("reset limit: %v %v, processed: %v", now, lastSampleUpdate, currentBandwidthProcessed)
+	}
+	skip := currentBandwidthProcessed > outputBandwidthLimitPerMin
+	if !skip {
+		currentBandwidthProcessed += sampleSize
+		skip = currentBandwidthProcessed > outputBandwidthLimitPerMin
+		if skip {
+			log.Printf("Skipping sending to akto at: %v %v, processed: %v", now, lastSampleUpdate, currentBandwidthProcessed)
+		}
+	}
+	return skip
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	sourceIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool) {
+
+	if checkAndUpdateBandwidthProcessed(0) {
+		return
+	}
 
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
@@ -220,6 +261,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		// this number is the closest (slightly higher) to the actual connection transfer bytes.
 		outgoingBytes := len(out)
+
+		if checkAndUpdateBandwidthProcessed(outgoingBytes) {
+			return
+		}
 
 		hostString := reqHeader["host"]
 		if utils.CheckIfIpHost(hostString) {
