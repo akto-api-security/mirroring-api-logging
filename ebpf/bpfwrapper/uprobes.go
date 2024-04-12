@@ -30,14 +30,14 @@ func AttachUprobes(soPath string, pid int, bpfModule *bcc.Module, kprobeList []U
 
 		switch probe.Type {
 		case EntryType:
-			log.Printf("Loading %q for %q as kprobe\n", probe.HookName, probe.FunctionToHook)
+			log.Printf("Loading %q for %q as uprobe\n", probe.HookName, probe.FunctionToHook)
 			if err = bpfModule.AttachUprobe(soPath, functionToHook, probeFD, pid); err != nil {
-				return fmt.Errorf("failed to attach kprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
+				return fmt.Errorf("failed to attach uprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
 			}
 		case ReturnType:
-			log.Printf("Loading %q for %q as kretprobe\n", probe.HookName, probe.FunctionToHook)
+			log.Printf("Loading %q for %q as uretprobe\n", probe.HookName, probe.FunctionToHook)
 			if err = bpfModule.AttachUretprobe(soPath, functionToHook, probeFD, pid); err != nil {
-				return fmt.Errorf("failed to attach kretprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
+				return fmt.Errorf("failed to attach uretprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
 			}
 		default:
 			return fmt.Errorf("unknown uprobe type %d given for %q", probe.Type, probe.HookName)

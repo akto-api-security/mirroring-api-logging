@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -156,10 +158,53 @@ func run() {
 		log.Panic(err)
 	}
 
+	processFactory := process.NewFactory()
+
+	var isRunning_2 bool
+	var mu_2 = &sync.Mutex{}
+
+	pollInterval := 1 * time.Minute
+
+	go func() {
+		for {
+			if !isRunning_2 {
+				mu_2.Lock()
+				if isRunning_2 {
+					mu_2.Unlock()
+					return
+				}
+				isRunning_2 = true
+				mu_2.Unlock()
+
+				fmt.Printf("Entering\n")
+				processFactory.AddNewProcessesToProbe(bpfModule)
+				fmt.Printf("Exiting\n")
+				mu_2.Lock()
+				isRunning_2 = false
+				mu_2.Unlock()
+			}
+			time.Sleep(pollInterval)
+		}
+	}()
+
 	if captureSsl == "true" {
 		opensslPath := os.Getenv("OPENSSL_PATH_AKTO")
 		if len(opensslPath) > 0 {
-			opensslPath = strings.Replace(opensslPath, "usr", "usr_host", 1)
+			// opensslPath = strings.Replace(opensslPath, "usr", "usr_host", 1)
+			if len(captureEgress) > 0 && captureEgress == "true" {
+				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooksEgress); err != nil {
+					log.Printf("%s", err.Error())
+				}
+			} else {
+				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooks); err != nil {
+					log.Printf("%s", err.Error())
+				}
+			}
+		}
+
+		opensslPath = os.Getenv("OPENSSL_PATH_AKTO_2")
+		if len(opensslPath) > 0 {
+			// opensslPath = strings.Replace(opensslPath, "usr", "usr_host", 1)
 			if len(captureEgress) > 0 && captureEgress == "true" {
 				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooksEgress); err != nil {
 					log.Printf("%s", err.Error())
@@ -173,7 +218,7 @@ func run() {
 
 		boringLibsslPath := os.Getenv("BSSL_PATH_AKTO")
 		if len(boringLibsslPath) > 0 {
-			boringLibsslPath = strings.Replace(boringLibsslPath, "usr", "usr_host", 1)
+			// boringLibsslPath = strings.Replace(boringLibsslPath, "usr", "usr_host", 1)
 			if err := bpfwrapper.AttachUprobes(boringLibsslPath, -1, bpfModule, bpfwrapper.BoringsslHooks); err != nil {
 				log.Printf("%s", err.Error())
 			}

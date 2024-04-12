@@ -205,6 +205,8 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
       }
     }
 
+    bpf_trace_printk("accept: pid fd: %d %d %llu", id , conn_info.fd, tgid_fd);
+
     conn_info_map_keys.update(&val, &tgid_fd);
     conn_info_map.update(&tgid_fd, &conn_info);
 
@@ -237,6 +239,8 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
         return;
     }
 
+    bpf_trace_printk("close: pid fd: %d %d", id , conn_info->fd);
+
     struct socket_close_event_t socket_close_event = {};
     socket_close_event.id = conn_info->id;
     socket_close_event.fd = conn_info->fd;
@@ -260,20 +264,25 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         return;
     }
 
+    bpf_trace_printk("SSL data 1 %d", id);
     if (args->fd < 0) {
         return;
     }
 
     u32 tgid = id >> 32;
     u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+    bpf_trace_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
     struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
     if (conn_info == NULL) {
         return;
     }
+    bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
     
     if (conn_info->ssl != ssl) {
         return;
     }
+
+    bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
 
     u32 kZero = 0;
     struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
@@ -828,44 +837,63 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
     bpf_trace_printk("syscall__probe_ret_write data process: pid: %d", id);
   }
 
-        process_syscall_data(ctx, write_args, id, true, false);
+    process_syscall_data(ctx, write_args, id, true, false);
     }
 
     active_write_args_map.delete(&id);
     return 0;
 }
 
-static u32 get_fd(void *ssl, bool isBoringSSL) {
+static u32 get_fd(void *ssl, int sslVersion, bool rw) {
     int32_t SSL_rbio_offset;
     int32_t RBIO_num_offset;
-    
-    if(isBoringSSL){
-        SSL_rbio_offset = 0x18;
-        RBIO_num_offset = 0x18;
-    } else {
-        SSL_rbio_offset = 0x10;
-        RBIO_num_offset = RBIO_NUM_OFFSET;
+
+        SSL_rbio_offset = 16;
+    switch (sslVersion)
+    {
+    case 1: 
+        RBIO_num_offset = 40;
+      break;
+        case 2: 
+        RBIO_num_offset = 48;
+      break;
+          case 3: 
+        RBIO_num_offset = 56;
+      break;
+          case 4: 
+        SSL_rbio_offset = 24;
+        RBIO_num_offset = 24;
+      break;
+    default:
+      break;
     }
 
     const void** rbio_ptr_addr = ssl + SSL_rbio_offset;
     const void* rbio_ptr = *rbio_ptr_addr;
     const int* rbio_num_addr = rbio_ptr + RBIO_num_offset;
     u32 rbio_num = *rbio_num_addr;
+    bpf_trace_printk("SSL fd offset: %d %d %d", rbio_num, SSL_rbio_offset, RBIO_num_offset);
     return rbio_num;
 }
 
 static void set_conn_as_ssl(u32 tgid, u32 fd){
     u64 tgid_fd = gen_tgid_fd(tgid, fd);
+    bpf_trace_printk("SSL tgid: %d", tgid_fd);
     struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
     if (conn_info == NULL) {
         return;
     }
+    bpf_trace_printk("SSL marking ssl tgid: %d", tgid_fd);
     conn_info->ssl = true;
 }
 
 static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
+
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_core: pid: %d %d %d", id, tgid, fd);
+  }
 
   char* bufc = (char*)PT_REGS_PARM2(ctx);
 
@@ -878,14 +906,47 @@ static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf
   set_conn_as_ssl(tgid, write_args.fd);
 }
 
+int probe_entry_SSL_write_1_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 1, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_1_0: fd: %d", fd);
+  }
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_write_1_1(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 2, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_1_1: fd: %d", fd);
+  }
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_write_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 3, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
 int probe_entry_SSL_write(struct pt_regs *ctx, void *ssl, void *buf, int num) {
-    u32 fd = get_fd(ssl, false);
+    u32 fd = get_fd(ssl, 1, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write: fd: %d", fd);
+  }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
   return 0;
 }
 
 int probe_entry_SSL_write_boring(struct pt_regs *ctx, void *ssl, void *buf, int num) {
-    u32 fd = get_fd(ssl, true);
+    u32 fd = get_fd(ssl, 4, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_boring: fd: %d", fd);
+  }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
   return 0;
 }
@@ -910,6 +971,10 @@ static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf,
     u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
 
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_core: pid: %d %d %d", id, tgid, fd);
+  }
+
   char* bufc = (char*)PT_REGS_PARM2(ctx);
 
   struct data_args_t read_args = {};
@@ -921,15 +986,47 @@ static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf,
   set_conn_as_ssl(tgid, read_args.fd);
 }
 
-int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
-    int32_t fd = get_fd(ssl, false);
+int probe_entry_SSL_read_1_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 1, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_1_0: fd: %d", fd);
+  }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
 
+int probe_entry_SSL_read_1_1(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 2, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_1_1: fd: %d", fd);
+  }
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_read_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 3, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 1, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read: fd: %d", fd);
+  }
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
   return 0;
 }
 
 int probe_entry_SSL_read_boring(struct pt_regs *ctx, void *ssl, void *buf, int num) {
-    int32_t fd = get_fd(ssl, true);
+    int32_t fd = get_fd(ssl, 4, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_boring: fd: %d", fd);
+  }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
 
   return 0;

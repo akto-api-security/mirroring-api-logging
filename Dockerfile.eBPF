@@ -16,6 +16,7 @@ RUN go mod download
 # This marks all kprobes deployed by akto
 RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
+# TODO: mark the same for user probes as well
 RUN go build -o ebpf-logging
 
 FROM base
