@@ -32,6 +32,9 @@ enum source_function_t {
   // For SSL libraries.
   kSSLWrite,
   kSSLRead,
+
+  kGoTLSWrite,
+  kGoTLSRead
 };
 
 struct conn_info_t {
@@ -120,6 +123,12 @@ BPF_HASH(active_read_args_map, u64, struct data_args_t);
 BPF_HASH(active_write_args_map, u64, struct data_args_t);
 BPF_HASH(active_ssl_read_args_map, uint64_t, struct data_args_t);
 BPF_HASH(active_ssl_write_args_map, uint64_t, struct data_args_t);
+
+/*
+Maintain a map of kubernetes pids, and only process, if data is from them. 
+This should reduce the noise a lot.
+*/
+
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
@@ -1096,5 +1105,385 @@ int probe_entry_setsockopt(struct pt_regs* ctx, int socket, int level, int optio
   if (read_args != NULL) {
     read_args->sock_event = true;
   }
+  return 0;
+}
+
+struct tgid_goid_t {
+  u32 tgid;
+  long long goid;
+};
+
+struct go_tls_conn_args {
+  void* conn_ptr;
+  char* plaintext_ptr;
+};
+
+struct go_interface {
+  int64_t type;
+  void* ptr;
+};
+
+enum location_type_t {
+  kLocationTypeStack = 1,
+  kLocationTypeRegisters = 2
+};
+struct location_t{
+  enum location_type_t type;
+  u32 offset;
+};
+
+struct go_symaddrs_t {
+  u64 FDSysFDOffset;
+  u64 TLSConnOffset;
+  u64 GIDOffset;
+	u64 TCPConnOffset;
+	u64 IsClientOffset;
+
+  struct location_t WriteConnectionLoc;
+	struct location_t WriteBufferLoc;
+	struct location_t WriteRet0Loc;
+	struct location_t WriteRet1Loc;
+
+	struct location_t ReadConnectionLoc;
+	struct location_t ReadBufferLoc;
+	struct location_t ReadRet0Loc;
+	struct location_t ReadRet1Loc;
+
+};
+
+struct go_regabi_regs {
+  uint64_t regs[9];
+};
+
+BPF_PERCPU_ARRAY(regs_heap, struct go_regabi_regs, 1);
+
+static __inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
+  uint32_t kZero = 0;
+  struct go_regabi_regs* regs_heap_var = regs_heap.lookup(&kZero);
+  if (regs_heap_var == NULL) {
+    return NULL;
+  }
+
+// #if defined(TARGET_ARCH_X86_64)
+  regs_heap_var->regs[0] = ctx->ax;
+  regs_heap_var->regs[1] = ctx->bx;
+  regs_heap_var->regs[2] = ctx->cx;
+  regs_heap_var->regs[3] = ctx->di;
+  regs_heap_var->regs[4] = ctx->si;
+  regs_heap_var->regs[5] = ctx->r8;
+  regs_heap_var->regs[6] = ctx->r9;
+  regs_heap_var->regs[7] = ctx->r10;
+  regs_heap_var->regs[8] = ctx->r11;
+// #elif defined(TARGET_ARCH_AARCH64)
+// #pragma unroll
+//   for (uint32_t i = 0; i < 9; i++) {
+//     regs_heap_var->regs[i] = ctx->regs[i];
+//   }
+// #else
+// #error Target Architecture not supported
+// #endif
+
+  return regs_heap_var->regs;
+}
+
+BPF_HASH(go_symaddrs_table, u32, struct go_symaddrs_t);
+BPF_HASH(active_tls_conn_op_map, struct tgid_goid_t, struct go_tls_conn_args);
+
+static inline uint64_t get_goid(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  uint32_t tgid = id >> 32;
+  struct go_symaddrs_t* common_symaddrs = go_symaddrs_table.lookup(&tgid);
+  if (common_symaddrs == NULL) {
+    return 0;
+  }
+
+  // Get fsbase from `struct task_struct`.
+  const struct task_struct* task_ptr = (struct task_struct*)bpf_get_current_task();
+  if (!task_ptr) {
+    return 0;
+  }
+
+// #if defined(TARGET_ARCH_X86_64)
+  const void* fs_base = (void*)task_ptr->thread.fsbase;
+// #elif defined(TARGET_ARCH_AARCH64)
+//   const void* fs_base = (void*)task_ptr->thread.uw.tp_value;
+// #else
+// #error Target architecture not supported
+// #endif
+
+  // Get ptr to `struct g` from 8 bytes before fsbase and then access the goID.
+  int32_t g_addr_offset = -8;
+  uint64_t goid;
+  size_t g_addr;
+  bpf_probe_read_user(&g_addr, sizeof(void*), (void*)(fs_base + g_addr_offset));
+  bpf_probe_read_user(&goid, sizeof(void*), (void*)(g_addr + common_symaddrs->GIDOffset));
+  return goid;
+}
+
+static __inline void assign_arg(void* arg, size_t arg_size, struct location_t loc, const void* sp,
+                                uint64_t* regs) {
+  if (loc.type == kLocationTypeStack) {
+    bpf_probe_read(arg, arg_size, sp + loc.offset);
+  } else if (loc.type == kLocationTypeRegisters) {
+    if (loc.offset >= 0) {
+      bpf_probe_read(arg, arg_size, (char*)regs + loc.offset);
+    }
+  }
+}
+
+static __inline int32_t get_fd_from_conn_intf_core(struct go_interface conn_intf,
+                                                   const struct go_symaddrs_t* symaddrs) {
+
+    bpf_probe_read(&conn_intf, sizeof(conn_intf), conn_intf.ptr + symaddrs->TLSConnOffset);
+
+    if (conn_intf.type != symaddrs->TCPConnOffset) {
+        return 0;
+    }
+
+    void* fd_ptr;
+    bpf_probe_read(&fd_ptr, sizeof(fd_ptr), conn_intf.ptr);
+    __u64 sysfd;
+    bpf_probe_read(&sysfd, sizeof(sysfd), fd_ptr + symaddrs->FDSysFDOffset);
+    return sysfd;
+}
+
+int probe_entry_tls_conn_write(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  uint32_t tgid = id >> 32;
+  uint32_t pid = id;
+
+  struct tgid_goid_t tgid_goid = {};
+  tgid_goid.tgid = tgid;
+  uint64_t goid = get_goid(ctx);
+  if (goid == 0) {
+    return 0;
+  }
+  tgid_goid.goid = goid;
+
+  bpf_trace_printk("probe_entry_tls_conn_write 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+
+  struct go_symaddrs_t* symaddrs = go_symaddrs_table.lookup(&tgid);
+  if (symaddrs == NULL) {
+    return 0;
+  }
+
+  const void* sp = (const void*)ctx->sp;
+  uint64_t* regs = go_regabi_regs(ctx);
+  if (regs == NULL) {
+    return 0;
+  }
+
+  bpf_trace_printk("probe_entry_tls_conn_write 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+  
+  struct go_tls_conn_args args = {};
+  assign_arg(&args.conn_ptr, sizeof(args.conn_ptr), symaddrs->WriteConnectionLoc, sp, regs);
+  assign_arg(&args.plaintext_ptr, sizeof(args.plaintext_ptr), symaddrs->WriteBufferLoc, sp, regs);
+
+  active_tls_conn_op_map.update(&tgid_goid, &args);
+
+  bpf_trace_printk("probe_entry_tls_conn_write 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+  return 0;
+}
+
+static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64_t id,
+                                                     uint32_t tgid, struct go_tls_conn_args* args) {
+  struct go_symaddrs_t* symaddrs = go_symaddrs_table.lookup(&tgid);
+  if (symaddrs == NULL) {
+    return 0;
+  }
+
+  const void* sp = (const void*)ctx->sp;
+  uint64_t* regs = go_regabi_regs(ctx);
+  if (regs == NULL) {
+    return 0;
+  }
+
+  int64_t retval0 = 0;
+  assign_arg(&retval0, sizeof(retval0), symaddrs->WriteRet0Loc, sp, regs);
+
+  struct go_interface retval1 = {};
+  assign_arg(&retval1, sizeof(retval1), symaddrs->WriteRet1Loc, sp, regs);
+
+  bpf_trace_printk("probe_return_tls_conn_write 2.1 %llu %lu", id, tgid);
+
+  // If function returns an error, then there's no data to trace.
+  if (retval1.ptr != 0) {
+    return 0;
+  }
+
+  // To call get_fd_from_conn_intf, cast the conn_ptr into a go_interface.
+  struct go_interface conn_intf;
+  conn_intf.type = 1;
+  conn_intf.ptr = args->conn_ptr;
+  int fd = get_fd_from_conn_intf_core(conn_intf, symaddrs);
+  u32 fdu = (u32)fd;
+  
+  bpf_trace_printk("TLS : %lu", fdu);
+
+  set_conn_as_ssl(tgid, fdu);
+  bpf_trace_printk("probe_return_tls_conn_write 2.2 %llu %lu", id, tgid);
+
+  struct data_args_t data_args;
+  data_args.source_fn = kGoTLSWrite;
+  data_args.buf = args->plaintext_ptr;
+  // data_args.msg_len = 0;  // Unused.
+  data_args.fd = fd;
+
+  process_syscall_data(ctx, &data_args, id, true, /* ssl */ true);
+
+  bpf_trace_printk("probe_return_tls_conn_write 2.3 %llu %lu", id, tgid);
+
+  return 0;
+}
+
+int probe_return_tls_conn_write(struct pt_regs* ctx) {
+
+  uint64_t id = bpf_get_current_pid_tgid();
+  uint32_t tgid = id >> 32;
+  uint32_t pid = id;
+
+  struct tgid_goid_t tgid_goid = {};
+  tgid_goid.tgid = tgid;
+  uint64_t goid = get_goid(ctx);
+  if (goid == 0) {
+    return 0;
+  }
+  tgid_goid.goid = goid;
+
+  bpf_trace_printk("probe_return_tls_conn_write 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+
+  struct go_tls_conn_args* args = active_tls_conn_op_map.lookup(&tgid_goid);
+  if (args == NULL) {
+    return 0;
+  }
+
+  bpf_trace_printk("probe_return_tls_conn_write 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+
+  probe_return_tls_conn_write_core(ctx, id, tgid, args);
+
+  active_tls_conn_op_map.delete(&tgid_goid);
+
+  bpf_trace_printk("probe_return_tls_conn_write 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+  return 0;
+}
+
+int probe_entry_tls_conn_read(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  uint32_t tgid = id >> 32;
+  uint32_t pid = id;
+
+  struct tgid_goid_t tgid_goid = {};
+  tgid_goid.tgid = tgid;
+  uint64_t goid = get_goid(ctx);
+  if (goid == 0) {
+    return 0;
+  }
+  tgid_goid.goid = goid;
+
+  bpf_trace_printk("probe_entry_tls_conn_read 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+
+  struct go_symaddrs_t* symaddrs = go_symaddrs_table.lookup(&tgid);
+  if (symaddrs == NULL) {
+    return 0;
+  }
+
+  const void* sp = (const void*)ctx->sp;
+  uint64_t* regs = go_regabi_regs(ctx);
+  if (regs == NULL) {
+    return 0;
+  }
+
+  bpf_trace_printk("probe_entry_tls_conn_read 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+  
+  struct go_tls_conn_args args = {};
+  assign_arg(&args.conn_ptr, sizeof(args.conn_ptr), symaddrs->ReadConnectionLoc, sp, regs);
+  assign_arg(&args.plaintext_ptr, sizeof(args.plaintext_ptr), symaddrs->ReadBufferLoc, sp, regs);
+
+  active_tls_conn_op_map.update(&tgid_goid, &args);
+
+  bpf_trace_printk("probe_entry_tls_conn_read 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+  return 0;
+}
+
+static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_t id,
+                                                     uint32_t tgid, struct go_tls_conn_args* args) {
+  struct go_symaddrs_t* symaddrs = go_symaddrs_table.lookup(&tgid);
+  if (symaddrs == NULL) {
+    return 0;
+  }
+
+  const void* sp = (const void*)ctx->sp;
+  uint64_t* regs = go_regabi_regs(ctx);
+  if (regs == NULL) {
+    return 0;
+  }
+
+  int64_t retval0 = 0;
+  assign_arg(&retval0, sizeof(retval0), symaddrs->ReadRet0Loc, sp, regs);
+
+  struct go_interface retval1 = {};
+  assign_arg(&retval1, sizeof(retval1), symaddrs->ReadRet1Loc, sp, regs);
+
+  bpf_trace_printk("probe_return_tls_conn_read 2.1 %llu %lu", id, tgid);
+
+  // If function returns an error, then there's no data to trace.
+  if (retval1.ptr != 0) {
+    return 0;
+  }
+
+  // To call get_fd_from_conn_intf, cast the conn_ptr into a go_interface.
+  struct go_interface conn_intf;
+  conn_intf.type = 1;
+  conn_intf.ptr = args->conn_ptr;
+  int fd = get_fd_from_conn_intf_core(conn_intf, symaddrs);
+  u32 fdu = (u32)fd;
+  
+  bpf_trace_printk("TLS : %lu", fdu);
+
+  set_conn_as_ssl(tgid, fdu);
+  bpf_trace_printk("probe_return_tls_conn_read 2.2 %llu %lu", id, tgid);
+
+  struct data_args_t data_args;
+  data_args.source_fn = kGoTLSRead;
+  data_args.buf = args->plaintext_ptr;
+  // data_args.msg_len = 0;  // Unused.
+  data_args.fd = fd;
+
+  process_syscall_data(ctx, &data_args, id, false, /* ssl */ true);
+
+  bpf_trace_printk("probe_return_tls_conn_read 2.3 %llu %lu", id, tgid);
+
+  return 0;
+}
+
+int probe_return_tls_conn_read(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  uint32_t tgid = id >> 32;
+  uint32_t pid = id;
+
+  struct tgid_goid_t tgid_goid = {};
+  tgid_goid.tgid = tgid;
+  uint64_t goid = get_goid(ctx);
+  if (goid == 0) {
+    return 0;
+  }
+  tgid_goid.goid = goid;
+
+  bpf_trace_printk("probe_return_tls_conn_read 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+
+  struct go_tls_conn_args* args = active_tls_conn_op_map.lookup(&tgid_goid);
+  if (args == NULL) {
+    return 0;
+  }
+
+  bpf_trace_printk("probe_return_tls_conn_read 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+
+  probe_return_tls_conn_read_core(ctx, id, tgid, args);
+
+  active_tls_conn_op_map.delete(&tgid_goid);
+
+  bpf_trace_printk("probe_return_tls_conn_read 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
+  return 0;
+
   return 0;
 }

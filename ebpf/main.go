@@ -67,6 +67,13 @@ func main() {
 	run()
 }
 
+type go_symaddrs struct {
+	a int64
+	b int64
+	c uint32
+	d uint64
+}
+
 func run() {
 
 	byteString, err := os.ReadFile("./kernel/module.cc")
@@ -165,27 +172,69 @@ func run() {
 
 	pollInterval := 1 * time.Minute
 
-	go func() {
-		for {
-			if !isRunning_2 {
-				mu_2.Lock()
-				if isRunning_2 {
+	if captureSsl == "true" {
+		go func() {
+			for {
+				if !isRunning_2 {
+					mu_2.Lock()
+					if isRunning_2 {
+						mu_2.Unlock()
+						return
+					}
+					isRunning_2 = true
 					mu_2.Unlock()
-					return
-				}
-				isRunning_2 = true
-				mu_2.Unlock()
 
-				fmt.Printf("Entering\n")
-				processFactory.AddNewProcessesToProbe(bpfModule)
-				fmt.Printf("Exiting\n")
-				mu_2.Lock()
-				isRunning_2 = false
-				mu_2.Unlock()
+					fmt.Printf("Entering\n")
+					processFactory.AddNewProcessesToProbe(bpfModule)
+					fmt.Printf("Exiting\n")
+					mu_2.Lock()
+					isRunning_2 = false
+					mu_2.Unlock()
+				}
+				time.Sleep(pollInterval)
 			}
-			time.Sleep(pollInterval)
+		}()
+	}
+
+	// fmt.Printf("TableSize : %v %v", bpfModule.TableSize(), bpfModule.TableId("two_way_map"))
+
+	// str := go_symaddrs{
+	// 	a: 1,
+	// 	b: -23,
+	// 	c: 231232,
+	// 	d: 231,
+	// }
+
+	// const sz = int(unsafe.Sizeof(go_symaddrs{}))
+	// var asByteSlice []byte = (*(*[sz]byte)(unsafe.Pointer(&str)))[:]
+
+	// // ptr := unsafe.Pointer(&str)
+
+	// key, _ := table.KeyStrToBytes("1")
+
+	// key2, _ := table.KeyStrToBytes("1232424")
+	// // leaf, _ := table.LeafStrToBytes("11")
+	// // key1 := 1
+	// // keyPtr := unsafe.Pointer(&key1)
+
+	// if err := table.Set(key, asByteSlice); err != nil {
+	// 	fmt.Errorf("table.Set key 1 failed: %v", err)
+	// }
+
+	// str.c = 1223
+	// str.a = -234
+	// asByteSlice = (*(*[sz]byte)(unsafe.Pointer(&str)))[:]
+
+	// if err := table.Set(key2, asByteSlice); err != nil {
+	// 	fmt.Errorf("table.Set key 1232424 failed: %v", err)
+	// }
+
+	goTLSPath := os.Getenv("GO_TLS_PATH")
+	if len(goTLSPath) > 0 {
+		if err := bpfwrapper.AttachUprobes(goTLSPath, -1, bpfModule, bpfwrapper.GoTlsHooks); err != nil {
+			log.Printf("%s", err.Error())
 		}
-	}()
+	}
 
 	if captureSsl == "true" {
 		opensslPath := os.Getenv("OPENSSL_PATH_AKTO")

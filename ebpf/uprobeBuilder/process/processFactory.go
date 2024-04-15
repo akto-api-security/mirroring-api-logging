@@ -88,8 +88,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			containers, err := CheckProcessCGroupBelongToKube(pid)
 			// probe only k8s processes
+			// TODO: check this once again.
 			if err != nil {
 				if !probeAllPid {
+					fmt.Printf("No libraries for pid: %v %v\n", pid, err)
 					continue
 				}
 			}
@@ -101,6 +103,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			}
 
 			fmt.Printf("Attempting for pid: %v %v\n", pid, len(libraries))
+			// TODO: attach probes for all possible functions, to the same pid.
 			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
 			if attached {
@@ -112,10 +115,21 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				}
 				processFactory.processMap[pid] = p
 			} else if err != nil {
-				log.Println(err)
+				log.Printf("openSSL probing error: %v %v\n", pid, err)
 			}
 
-			
+			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
+			if attached {
+				p := Process{
+					pid:         pid,
+					containerId: containers[0],
+					linkType:    StaticLink,
+					probeType:   GoTLS,
+				}
+				processFactory.processMap[pid] = p
+			} else if err != nil {
+				log.Printf("GoTLS probing error: %v %v\n", pid, err)
+			}
 
 		}
 	}

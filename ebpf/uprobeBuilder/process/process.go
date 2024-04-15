@@ -75,6 +75,7 @@ func FindLibrariesPathInMapFile(pid int32) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer mapFile.Close()
 	scanner := bufio.NewScanner(mapFile)
 	modules := make(map[string]bool)
 	for scanner.Scan() {

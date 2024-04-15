@@ -22,7 +22,7 @@ spec:
       hostPID: true
       containers:
       - name: akto-ebpf
-        image: aktosecurity/mirror-api-logging-ebpf:latest
+        image: coastaldemigod/ebpf:v84
         imagePullPolicy: Always
         resources:
           limits:
@@ -58,18 +58,18 @@ spec:
           #   value: "20"
           # - name: KAFKA_POLL_INTERVAL
           #   value: "1"
-          # - name: AKTO_MEM_THRESH_RESTART
-          #   value: "1000"
+          - name: AKTO_MEM_THRESH_RESTART
+            value: "900"
           # - name: TRAFFIC_SAMPLE_BUFFER_PER_MINUTE
             # value: "100"
-          # - name: DEBUG
-            # value: "true"
+          - name: DEBUG_MODE
+            value: "true"
           # - name: AKTO_DISABLE_ON_DB
             # value: "true"
           # - name: SAMPLE_LIMIT_PER_MIN
             # value:
-          # - name: CAPTURE_EGRESS
-            # value: "true"
+          - name: CAPTURE_SSL
+            value: "true"
         securityContext:
           capabilities:
             add:
