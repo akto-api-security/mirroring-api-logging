@@ -148,7 +148,7 @@ func run() {
 
 	pollInterval := 5 * time.Minute
 
-	trafficUtils.InitVar("Uprobe_POLL_INTERVAL", &pollInterval)
+	trafficUtils.InitVar("UPROBE_POLL_INTERVAL", &pollInterval)
 
 	ssl.InitMaps(bpfModule)
 
@@ -175,8 +175,6 @@ func run() {
 			}
 		}()
 	}
-
-
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)

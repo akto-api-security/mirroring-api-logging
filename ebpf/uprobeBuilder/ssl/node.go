@@ -41,7 +41,7 @@ func TryNodeProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, e
 	}
 	fmt.Printf("Found node config: %v %v\n", pid, config)
 
-	if err := updateBpfMap(NodeTLS, pid, nil, config); err != nil {
+	if err := updateBpfMap(Node, pid, nil, config); err != nil {
 		return false, fmt.Errorf("setting the Node TLS argument location failure, pid: %d, error: %v", pid, err)
 	}
 

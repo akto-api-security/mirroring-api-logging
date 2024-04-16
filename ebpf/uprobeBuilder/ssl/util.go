@@ -38,12 +38,13 @@ func getExeSymLinkHostPath(pid int32) (string, error) {
 	return symLinkHostPath, nil
 }
 
-type symAddr int
+type ProbeType int
 
 const (
-	OpenSSL symAddr = iota
+	OpenSSL ProbeType = iota
+	Envoy
 	GoTLS
-	NodeTLS
+	Node
 )
 
 const (
@@ -52,7 +53,7 @@ const (
 )
 
 var (
-	symAddrsTables    = make(map[symAddr]*bcc.Table)
+	symAddrsTables    = make(map[ProbeType]*bcc.Table)
 	goSymAddrsTable   = &bcc.Table{}
 	nodeSymAddrsTable = &bcc.Table{}
 )
@@ -62,22 +63,22 @@ func InitMaps(bpfModule *bcc.Module) {
 	nodeSymAddrsTable = bcc.NewTable(bpfModule.TableId("node_tlswrap_symaddrs_map"), bpfModule)
 }
 
-func getBccTable(addrType symAddr) (*bcc.Table, error) {
+func getBccTable(addrType ProbeType) (*bcc.Table, error) {
 	switch addrType {
 	case GoTLS:
 		return goSymAddrsTable, nil
-	case NodeTLS:
+	case Node:
 		return nodeSymAddrsTable, nil
 	}
 	return nil, fmt.Errorf("no table found")
 }
 
-func updateBpfMap(addrType symAddr, pid int32, symAddrsGo *GoTLSSymbolAddress, symAddrsNode *NodeTLSSymbolAddress) error {
+func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress, symAddrsNode *NodeTLSSymbolAddress) error {
 	var asByteSlice []byte = make([]byte, 0)
 	switch addrType {
 	case GoTLS:
 		asByteSlice = (*(*[szGoTls]byte)(unsafe.Pointer(symAddrsGo)))[:]
-	case NodeTLS:
+	case Node:
 		asByteSlice = (*(*[szNodeTls]byte)(unsafe.Pointer(symAddrsNode)))[:]
 	}
 	fmt.Printf("byte arr: %v\n", asByteSlice)
@@ -90,6 +91,16 @@ func updateBpfMap(addrType symAddr, pid int32, symAddrsGo *GoTLSSymbolAddress, s
 
 	if err := table.Set(keyByte, asByteSlice); err != nil {
 		return fmt.Errorf("table.Set key %v failed: %v", pid, err)
+	}
+	return nil
+}
+
+func DeletePidFromBPFMap(addrType ProbeType, pid int32) error {
+	table, _ := getBccTable(addrType)
+	key := fmt.Sprint(uint32(pid))
+	keyByte, _ := table.KeyStrToBytes(key)
+	if err := table.Delete(keyByte); err != nil {
+		return fmt.Errorf("table.Delete key %v failed: %v", pid, err)
 	}
 	return nil
 }

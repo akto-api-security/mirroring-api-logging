@@ -18,20 +18,11 @@ const (
 	StaticLink
 )
 
-type ProbeType int
-
-const (
-	OpenSSL ProbeType = iota
-	Envoy
-	GoTLS
-	Node
-)
-
 type Process struct {
 	pid         int32
 	containerId string // cgroup
 	linkType    LinkType
-	probeType   ProbeType
+	probeType   ssl.ProbeType
 	// command     string // cmdline
 	// ppid        int32  // stat [4]
 }
@@ -79,7 +70,12 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 		}
 	}
 	for _, pid := range deletedPids {
-		delete(processFactory.processMap, pid)
+		_, ok := processFactory.processMap[pid]
+		if ok {
+			probeType := processFactory.processMap[pid].probeType
+			ssl.DeletePidFromBPFMap(probeType, pid)
+			delete(processFactory.processMap, pid)
+		}
 	}
 	fmt.Printf("Attempt for  %v processes\n", len(pidSet))
 	for pid := range pidSet {
@@ -111,9 +107,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 					pid:         pid,
 					containerId: containers[0],
 					linkType:    DynamicLink,
-					probeType:   OpenSSL,
+					probeType:   ssl.OpenSSL,
 				}
 				processFactory.processMap[pid] = p
+				continue
 			} else if err != nil {
 				log.Printf("openSSL probing error: %v %v\n", pid, err)
 			}
@@ -124,9 +121,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 					pid:         pid,
 					containerId: containers[0],
 					linkType:    StaticLink,
-					probeType:   GoTLS,
+					probeType:   ssl.GoTLS,
 				}
 				processFactory.processMap[pid] = p
+				continue
 			} else if err != nil {
 				log.Printf("GoTLS probing error: %v %v\n", pid, err)
 			}
@@ -137,11 +135,12 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 					pid:         pid,
 					containerId: containers[0],
 					linkType:    StaticLink,
-					probeType:   GoTLS,
+					probeType:   ssl.Node,
 				}
 				processFactory.processMap[pid] = p
+				continue
 			} else if err != nil {
-				log.Printf("GoTLS probing error: %v %v\n", pid, err)
+				log.Printf("Node probing error: %v %v\n", pid, err)
 			}
 
 		}
