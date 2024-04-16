@@ -20,6 +20,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -27,23 +28,6 @@ import (
 )
 
 var source string = ""
-
-func replaceOpensslMacros() {
-	opensslVersion := os.Getenv("OPENSSL_VERSION_AKTO")
-	fixed := false
-	if len(opensslVersion) > 0 {
-		split := strings.Split(opensslVersion, ".")
-		if len(split) == 3 {
-			if split[0] == "1" && (split[1] == "0" || strings.HasPrefix(split[2], "0")) {
-				source = strings.Replace(source, "RBIO_NUM_OFFSET", "0x28", 1)
-				fixed = true
-			}
-		}
-	}
-	if !fixed {
-		source = strings.Replace(source, "RBIO_NUM_OFFSET", "0x30", 1)
-	}
-}
 
 func replaceBpfLogsMacros() {
 
@@ -67,13 +51,6 @@ func main() {
 	run()
 }
 
-type go_symaddrs struct {
-	a int64
-	b int64
-	c uint32
-	d uint64
-}
-
 func run() {
 
 	byteString, err := os.ReadFile("./kernel/module.cc")
@@ -82,7 +59,6 @@ func run() {
 	}
 	source = string(byteString)
 
-	replaceOpensslMacros()
 	replaceBpfLogsMacros()
 	replaceMaxConnectionMapSize()
 
@@ -170,7 +146,11 @@ func run() {
 	var isRunning_2 bool
 	var mu_2 = &sync.Mutex{}
 
-	pollInterval := 1 * time.Minute
+	pollInterval := 5 * time.Minute
+
+	trafficUtils.InitVar("Uprobe_POLL_INTERVAL", &pollInterval)
+
+	ssl.InitMaps(bpfModule)
 
 	if captureSsl == "true" {
 		go func() {
@@ -196,83 +176,7 @@ func run() {
 		}()
 	}
 
-	// fmt.Printf("TableSize : %v %v", bpfModule.TableSize(), bpfModule.TableId("two_way_map"))
 
-	// str := go_symaddrs{
-	// 	a: 1,
-	// 	b: -23,
-	// 	c: 231232,
-	// 	d: 231,
-	// }
-
-	// const sz = int(unsafe.Sizeof(go_symaddrs{}))
-	// var asByteSlice []byte = (*(*[sz]byte)(unsafe.Pointer(&str)))[:]
-
-	// // ptr := unsafe.Pointer(&str)
-
-	// key, _ := table.KeyStrToBytes("1")
-
-	// key2, _ := table.KeyStrToBytes("1232424")
-	// // leaf, _ := table.LeafStrToBytes("11")
-	// // key1 := 1
-	// // keyPtr := unsafe.Pointer(&key1)
-
-	// if err := table.Set(key, asByteSlice); err != nil {
-	// 	fmt.Errorf("table.Set key 1 failed: %v", err)
-	// }
-
-	// str.c = 1223
-	// str.a = -234
-	// asByteSlice = (*(*[sz]byte)(unsafe.Pointer(&str)))[:]
-
-	// if err := table.Set(key2, asByteSlice); err != nil {
-	// 	fmt.Errorf("table.Set key 1232424 failed: %v", err)
-	// }
-
-	goTLSPath := os.Getenv("GO_TLS_PATH")
-	if len(goTLSPath) > 0 {
-		if err := bpfwrapper.AttachUprobes(goTLSPath, -1, bpfModule, bpfwrapper.GoTlsHooks); err != nil {
-			log.Printf("%s", err.Error())
-		}
-	}
-
-	if captureSsl == "true" {
-		opensslPath := os.Getenv("OPENSSL_PATH_AKTO")
-		if len(opensslPath) > 0 {
-			// opensslPath = strings.Replace(opensslPath, "usr", "usr_host", 1)
-			if len(captureEgress) > 0 && captureEgress == "true" {
-				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooksEgress); err != nil {
-					log.Printf("%s", err.Error())
-				}
-			} else {
-				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooks); err != nil {
-					log.Printf("%s", err.Error())
-				}
-			}
-		}
-
-		opensslPath = os.Getenv("OPENSSL_PATH_AKTO_2")
-		if len(opensslPath) > 0 {
-			// opensslPath = strings.Replace(opensslPath, "usr", "usr_host", 1)
-			if len(captureEgress) > 0 && captureEgress == "true" {
-				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooksEgress); err != nil {
-					log.Printf("%s", err.Error())
-				}
-			} else {
-				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooks); err != nil {
-					log.Printf("%s", err.Error())
-				}
-			}
-		}
-
-		boringLibsslPath := os.Getenv("BSSL_PATH_AKTO")
-		if len(boringLibsslPath) > 0 {
-			// boringLibsslPath = strings.Replace(boringLibsslPath, "usr", "usr_host", 1)
-			if err := bpfwrapper.AttachUprobes(boringLibsslPath, -1, bpfModule, bpfwrapper.BoringsslHooks); err != nil {
-				log.Printf("%s", err.Error())
-			}
-		}
-	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)

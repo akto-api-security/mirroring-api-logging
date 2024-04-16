@@ -18,12 +18,12 @@ var (
 		{
 			FunctionToHook: "crypto/tls.(*Conn).Write",
 			HookName:       "probe_return_tls_conn_write",
-			Type:           ReturnType_Matching_Suf,
+			Type:           ReturnType_Matching_Suf_Addr,
 		},
 		{
 			FunctionToHook: "crypto/tls.(*Conn).Read",
 			HookName:       "probe_return_tls_conn_read",
-			Type:           ReturnType_Matching_Suf,
+			Type:           ReturnType_Matching_Suf_Addr,
 		},
 	}
 )

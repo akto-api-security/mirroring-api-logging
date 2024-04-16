@@ -18,7 +18,9 @@ const (
 	EntryType ProbeType = iota
 	ReturnType
 	EntryType_Matching_Suf
-	ReturnType_Matching_Suf
+	ReturnType_Matching_Suf_Addr
+	EntryType_Matching_Pre
+	ReturnType_Matching_Pre
 )
 
 // Kprobe represents a single Kprobe hook.

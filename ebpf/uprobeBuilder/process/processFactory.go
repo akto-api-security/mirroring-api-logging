@@ -103,7 +103,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			}
 
 			fmt.Printf("Attempting for pid: %v %v\n", pid, len(libraries))
-			// TODO: attach probes for all possible functions, to the same pid.
+			// openssl probes here are being attached on dynamically linked SSL libraries only.
 			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
 			if attached {
@@ -119,6 +119,19 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			}
 
 			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
+			if attached {
+				p := Process{
+					pid:         pid,
+					containerId: containers[0],
+					linkType:    StaticLink,
+					probeType:   GoTLS,
+				}
+				processFactory.processMap[pid] = p
+			} else if err != nil {
+				log.Printf("GoTLS probing error: %v %v\n", pid, err)
+			}
+
+			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
 			if attached {
 				p := Process{
 					pid:         pid,

@@ -7,9 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"unsafe"
 
-	"github.com/iovisor/gobpf/bcc"
 	"golang.org/x/arch/arm64/arm64asm"
 	"golang.org/x/arch/x86/x86asm"
 
@@ -203,23 +201,6 @@ func assignGoTLSArgsLocation(err error, function *elf.FunctionInfo, argName stri
 	} else {
 		return fmt.Errorf("the location type is not support, function: %s, args name: %s, type: %d",
 			function.Name(), argName, args.Location.Type)
-	}
-	return nil
-}
-
-func updateBccTableWithSymAddrs(bpfModule *bcc.Module, pid int32, symAddrs *GoTLSSymbolAddress) error {
-	const sz = int(unsafe.Sizeof(GoTLSSymbolAddress{}))
-	var asByteSlice []byte = (*(*[sz]byte)(unsafe.Pointer(symAddrs)))[:]
-	fmt.Printf("byte arr: %v\n", asByteSlice)
-
-	table := getGoSymAddrsTable(bpfModule)
-	key := fmt.Sprint(uint32(pid))
-	keyByte, _ := table.KeyStrToBytes(key)
-
-	fmt.Printf("key arr: %v %v \n", key, keyByte)
-
-	if err := table.Set(keyByte, asByteSlice); err != nil {
-		return fmt.Errorf("table.Set key %v failed: %v", pid, err)
 	}
 	return nil
 }

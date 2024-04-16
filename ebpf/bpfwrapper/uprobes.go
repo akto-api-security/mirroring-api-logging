@@ -52,7 +52,7 @@ func AttachUprobes(soPath string, pid int, bpfModule *bcc.Module, uprobeList []U
 			if err = bpfModule.AttachMatchingUprobes(soPath, regex, probeFD, pid); err != nil {
 				return fmt.Errorf("failed to attach matching uprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
 			}
-		case ReturnType_Matching_Suf:
+		case ReturnType_Matching_Suf_Addr:
 			for _, add := range probe.Addresses {
 				log.Printf("Loading %q for %q as matching uretprobe with add %v\n", probe.HookName, probe.FunctionToHook, add)
 				path, addr, err := bcc.ResolveSymbolPath(soPath, functionToHook, 0x0, pid)
@@ -67,6 +67,20 @@ func AttachUprobes(soPath string, pid int, bpfModule *bcc.Module, uprobeList []U
 					continue
 				}
 			}
+		case EntryType_Matching_Pre:
+			log.Printf("Loading %q for %q as pre matching uprobe\n", probe.HookName, probe.FunctionToHook)
+			regex := getPrefixRegex(functionToHook)
+
+			if err = bpfModule.AttachMatchingUprobes(soPath, regex, probeFD, pid); err != nil {
+				return fmt.Errorf("failed to attach pre matching uprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
+			}
+		case ReturnType_Matching_Pre:
+			log.Printf("Loading %q for %q as matching uprobe\n", probe.HookName, probe.FunctionToHook)
+			regex := getPrefixRegex(functionToHook)
+
+			if err = bpfModule.AttachMatchingUretprobes(soPath, regex, probeFD, pid); err != nil {
+				return fmt.Errorf("failed to attach matching uprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
+			}
 		default:
 			return fmt.Errorf("unknown uprobe type %d given for %q", probe.Type, probe.HookName)
 		}
@@ -76,6 +90,10 @@ func AttachUprobes(soPath string, pid int, bpfModule *bcc.Module, uprobeList []U
 
 func getSuffixRegex(input string) string {
 	return ".*" + escapeRegexChars(input) + "$"
+}
+
+func getPrefixRegex(input string) string {
+	return "^" + escapeRegexChars(input) + ".*"
 }
 
 func escapeRegexChars(input string) string {
