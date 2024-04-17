@@ -1,7 +1,7 @@
 FROM alpine:3.19 AS base
 
 USER root
-RUN apk add bcc-tools bcc-dev bcc-doc linux-headers
+RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 
 FROM base AS builder
 
