@@ -9,6 +9,8 @@
 #define MAX_MSG_SIZE 30720
 #define LOOP_LIMIT 42
 
+#define ARCH_TYPE 1
+
 enum source_function_t {
 
   // For syscalls.
@@ -1285,7 +1287,7 @@ static __inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
     return NULL;
   }
 
-// #if defined(TARGET_ARCH_X86_64)
+#if defined(TARGET_ARCH_X86_64)
   regs_heap_var->regs[0] = ctx->ax;
   regs_heap_var->regs[1] = ctx->bx;
   regs_heap_var->regs[2] = ctx->cx;
@@ -1295,14 +1297,14 @@ static __inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
   regs_heap_var->regs[6] = ctx->r9;
   regs_heap_var->regs[7] = ctx->r10;
   regs_heap_var->regs[8] = ctx->r11;
-// #elif defined(TARGET_ARCH_AARCH64)
-// #pragma unroll
-//   for (uint32_t i = 0; i < 9; i++) {
-//     regs_heap_var->regs[i] = ctx->regs[i];
-//   }
-// #else
-// #error Target Architecture not supported
-// #endif
+#elif defined(TARGET_ARCH_AARCH64)
+#pragma unroll
+  for (uint32_t i = 0; i < 9; i++) {
+    regs_heap_var->regs[i] = ctx->regs[i];
+  }
+#else
+#error Target Architecture not supported
+#endif
 
   return regs_heap_var->regs;
 }
@@ -1324,13 +1326,13 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
     return 0;
   }
 
-// #if defined(TARGET_ARCH_X86_64)
+#if defined(TARGET_ARCH_X86_64)
   const void* fs_base = (void*)task_ptr->thread.fsbase;
-// #elif defined(TARGET_ARCH_AARCH64)
-//   const void* fs_base = (void*)task_ptr->thread.uw.tp_value;
-// #else
-// #error Target architecture not supported
-// #endif
+#elif defined(TARGET_ARCH_AARCH64)
+  const void* fs_base = (void*)task_ptr->thread.uw.tp_value;
+#else
+#error Target architecture not supported
+#endif
 
   // Get ptr to `struct g` from 8 bytes before fsbase and then access the goID.
   int32_t g_addr_offset = -8;

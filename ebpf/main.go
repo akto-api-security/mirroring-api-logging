@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 
 	"log"
@@ -47,6 +48,16 @@ func replaceMaxConnectionMapSize() {
 	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
 }
 
+func replaceArchType() {
+	arch := runtime.GOARCH
+	archStr := "TARGET_ARCH_X86_64"
+	if strings.Contains(arch, "arm") {
+		archStr = "TARGET_ARCH_AARCH64"
+	}
+	fmt.Printf("arch type detected: %v\n", arch)
+	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
+}
+
 func main() {
 	run()
 }
@@ -61,6 +72,7 @@ func run() {
 
 	replaceBpfLogsMacros()
 	replaceMaxConnectionMapSize()
+	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
