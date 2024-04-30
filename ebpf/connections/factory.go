@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
@@ -16,6 +17,7 @@ import (
 type Factory struct {
 	connections map[structs.ConnID]*Tracker
 	mutex       *sync.RWMutex
+	paused      bool
 }
 
 // NewFactory creates a new instance of the factory.
@@ -23,6 +25,7 @@ func NewFactory() *Factory {
 	return &Factory{
 		connections: make(map[structs.ConnID]*Tracker),
 		mutex:       &sync.RWMutex{},
+		paused:      false,
 	}
 }
 
@@ -96,7 +99,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelet
 	}
 }
 
-func (factory *Factory) HandleReadyConnections() {
+func (factory *Factory) HandleReadyConnections() error {
 	trackersToDelete := make(map[structs.ConnID]struct{})
 
 	metaUtils.LogProcessing("Connections before processing: %v\n", len(factory.connections))
@@ -131,10 +134,10 @@ func (factory *Factory) HandleReadyConnections() {
 	metaUtils.LogProcessing("Total size: %v\n", totalSize)
 
 	if totalSize >= bufferMemThreshold {
-		metaUtils.LogProcessing("Deleting all trackers: %v \n", totalSize)
-		for k := range factory.connections {
-			trackersToDelete[k] = struct{}{}
-		}
+		metaUtils.LogProcessing("Deleting all trackers, clearing conn factory: %v \n", totalSize)
+		factory.paused = true
+		factory.clearFactory()
+		return fmt.Errorf("buffer size exceeded threshold, resetting probe")
 	}
 
 	for key := range trackersToDelete {
@@ -144,6 +147,15 @@ func (factory *Factory) HandleReadyConnections() {
 	metaUtils.LogProcessing("Connections after processing: %v\n", len(factory.connections))
 	utils.LogMemoryStats()
 	kafkaUtil.LogKafkaError()
+	return nil
+}
+
+func (factory *Factory) clearFactory() {
+	factory.connections = make(map[structs.ConnID]*Tracker)
+}
+
+func (factory *Factory) StartAgain() {
+	factory.paused = false
 }
 
 // GetOrCreate returns a tracker that related to the given connection and transaction ids.
@@ -164,7 +176,7 @@ func (factory *Factory) CanBeFilled() bool {
 	defer factory.mutex.RUnlock()
 
 	maxConnCheck := len(factory.connections) < maxActiveConnections
-	return maxConnCheck
+	return maxConnCheck && !factory.paused
 }
 
 var (

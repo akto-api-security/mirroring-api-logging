@@ -17,8 +17,8 @@ func PrintLog(val string) {
 	}
 }
 
-var IgnoreIpTraffic = false
-var IgnoreCloudMetadataCalls = false
+var IgnoreIpTraffic = true
+var IgnoreCloudMetadataCalls = true
 
 func init() {
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
@@ -51,6 +51,6 @@ func InitVar(envVarName string, targetVar interface{}) {
 			log.Printf("Unsupported type for targetVar: %T\n", v)
 		}
 	} else {
-		log.Printf("%s: missing. using default value\n", envVarName)
+		log.Printf("%s: missing. using default value %v\n", envVarName, targetVar)
 	}
 }

@@ -87,6 +87,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 
 func Close() {
 	kafkaWriter.Close()
+	log.Printf("kafka closed")
 }
 
 func LogKafkaStats() {
