@@ -51,6 +51,6 @@ func InitVar(envVarName string, targetVar interface{}) {
 			log.Printf("Unsupported type for targetVar: %T\n", v)
 		}
 	} else {
-		log.Printf("%s: missing. using default value %v\n", envVarName, targetVar)
+		log.Printf("%s: missing. using default value\n", envVarName)
 	}
 }
