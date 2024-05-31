@@ -17,8 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/db"
-	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"io"
 	"io/fs"
 	"io/ioutil"
@@ -27,6 +25,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/akto-api-security/mirroring-api-logging/utils"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -183,6 +183,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
 			return
 		}
+		log.Println("HHIIIIIIIHIIIIIIIHIIIIIIIHIIIIIIIHIIIIIIIHIIIIIIIHIIIIIIIHIIIIIIIHIIIIIIIIIIIIII")
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
@@ -192,7 +193,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		requests = append(requests, *req)
 		requestsContent = append(requestsContent, string(body))
-		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
+		log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
 		i++
 	}
 
@@ -275,6 +276,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
+		print(out)
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
@@ -347,6 +349,33 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 }
 
+func printPacketInfo(packet gopacket.Packet) {
+	log.Println(packet.TransportLayer())
+	if ethernetLayer := packet.Layer(layers.LayerTypeEthernet); ethernetLayer != nil {
+		eth, _ := ethernetLayer.(*layers.Ethernet)
+		fmt.Println("Ethernet Layer detected.")
+		fmt.Printf("Source MAC: %s\n", eth.SrcMAC)
+		fmt.Printf("Destination MAC: %s\n", eth.DstMAC)
+		fmt.Printf("Ethernet type: %s\n", eth.EthernetType)
+	}
+
+	if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
+		ip, _ := ipLayer.(*layers.IPv4)
+		fmt.Println("IPv4 Layer detected.")
+		fmt.Printf("From %s to %s\n", ip.SrcIP, ip.DstIP)
+		fmt.Printf("Protocol: %s\n", ip.Protocol)
+	}
+
+	if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+		tcp, _ := tcpLayer.(*layers.TCP)
+		fmt.Println("TCP Layer detected.")
+		fmt.Printf("From port %d to %d\n", tcp.SrcPort, tcp.DstPort)
+		fmt.Printf("Sequence number: %d\n", tcp.Seq)
+	}
+
+	fmt.Println()
+}
+
 var kafkaWriter *kafka.Writer
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
@@ -370,30 +399,30 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	}
 
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
-	}
+	// kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
+	// if e != nil {
+	// 	log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+	// 	return
+	// }
 
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
-	}
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+	// kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
+	// if e != nil {
+	// 	log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+	// 	return
+	// }
+	// kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
-	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+	// kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 	// Set up pcap packet capture
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
 	// if err != nil {  }
 
-	if !isGcp {
-		if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
-			log.Printf("SetBPFFilter error: %v", err)
-			return
-		}
-	}
+	// if !isGcp {
+	// 	if err := handle.SetBPFFilter("udp and port 4789"); err != nil { // optional
+	// 		log.Printf("SetBPFFilter error: %v", err)
+	// 		return
+	// 	}
+	// }
 
 	log.Println("reading in packets")
 	// Read in packets, pass to assembler.
@@ -403,11 +432,14 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	for packet := range packetSource.Packets() {
 		innerPacket := packet
 		vxlanID := apiCollectionId
-		if apiCollectionId <= 0 && !isGcp {
+		// printPacketInfo(packet)
+		if false {
+			log.Println("hi")
 
-			if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
-				continue
-			}
+			// if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
+			// 	log.Println("snot a tcp payload")
+			// 	continue
+			// }
 
 			udpContent := packet.TransportLayer().(*layers.UDP)
 
@@ -416,10 +448,12 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			innerPacket = gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
 			// log.Println("%v", innerPacket)
 		}
+		// log.Println(innerPacket)
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-			// log.Println("not a tcp payload")
+			log.Println("not a tcp payload")
 			continue
 		} else {
+			log.Println("is tcp payload")
 			if isGcp {
 				vxlanID = 0
 			}
@@ -441,9 +475,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			bytesIn += len(tcp.Payload)
 
-			if bytesIn%1_000_000 == 0 {
-				log.Println("Bytes in: ", bytesIn)
-			}
+			// if bytesIn%1_000_000 == 0 {
+			// 	log.Println("Bytes in: ", bytesIn)
+			// }
+			log.Println("Bytes in: ", bytesIn)
 
 			if bytesIn > bytesInThreshold {
 				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
@@ -476,60 +511,63 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 
 func main() {
 
-	client, err := db.GetMongoClient()
-	if err != nil {
-		// Handle error
-	}
+	// client, err := db.GetMongoClient()
+	// if err != nil {
+	// 	// Handle error
+	// }
 
-	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			// Handle error
-		}
-	}()
+	// defer func() {
+	// 	if err := client.Disconnect(context.Background()); err != nil {
+	// 		// Handle error
+	// 	}
+	// }()
 
 	// Set up a ticker to run every 2 minutes
-	ticker := time.NewTicker(2 * time.Minute)
+	// ticker := time.NewTicker(2 * time.Minute)
 
-	go func() {
-		for range ticker.C {
-			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
-			incomingCountMap = make(map[string]utils.IncomingCounter)
-			outgoingCountMap = make(map[string]utils.OutgoingCounter)
-			cleanupReadFilesMap()
-		}
-	}()
+	// go func() {
+	// 	for range ticker.C {
+	// 		db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+	// 		incomingCountMap = make(map[string]utils.IncomingCounter)
+	// 		outgoingCountMap = make(map[string]utils.OutgoingCounter)
+	// 		cleanupReadFilesMap()
+	// 	}
+	// }()
 
-	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
+	// infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
 
-	if len(infra_mirroring_mode_input) > 0 {
-		isGcp = (infra_mirroring_mode_input == "gcp")
-	}
+	// if len(infra_mirroring_mode_input) > 0 {
+	// 	isGcp = (infra_mirroring_mode_input == "gcp")
+	// }
 
-	interfaceName := "eth0"
+	// interfaceName := "eth0"
 
-	if isGcp {
-		interfaceName = "ens4"
-	}
+	// if isGcp {
+	// 	interfaceName = "ens4"
+	// }
 
-	interfaceNameValue, found := os.LookupEnv("interface_name")
-	if found && interfaceNameValue != "" {
-		interfaceName = interfaceNameValue
-	}
+	// interfaceNameValue, found := os.LookupEnv("interface_name")
+	// if found && interfaceNameValue != "" {
+	// 	interfaceName = interfaceNameValue
+	// }
 
-	log.Printf("Interface name: %s", interfaceName)
+	// log.Printf("Interface name: %s", interfaceName)
 
 	for {
 
-		files, err := ioutil.ReadDir("/app/files/")
-		log.Println("reading files...")
-		if err != nil {
-			log.Printf("Error reading files from directory : %v", err)
-			continue
-		}
+		// 	files, err := ioutil.ReadDir("/app/files/")
+		// 	log.Println("reading files...")
+		// 	if err != nil {
+		// 		log.Printf("Error reading files from directory : %v", err)
+		// 		continue
+		// 	}
 
-		for _, file := range files {
-			readTCPFileAndProcess(file)
-		}
+		// 	for _, file := range files {
+		// 		readTCPFileAndProcess(file)
+		// 	}
+
+		fileInfo, _ := os.Stat("/Users/avneesh/Desktop/akto-api-security/infra/output-replay.pcap")
+		readTCPFileAndProcess(fileInfo)
 
 		time.Sleep(time.Second * 2)
 	}
@@ -563,7 +601,7 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 	if timeNow-int64(fileCreationTs) < 35 {
 		return
 	}
-	fileName := "/app/files/" + file.Name()
+	fileName := "/Users/avneesh/Desktop/akto-api-security/infra/output-replay.pcap"
 
 	_, ok := readFiles[file.Name()]
 	if ok {
