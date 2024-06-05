@@ -755,7 +755,10 @@ func main() {
 		}
 	}()
 
-	interfaceName := "any"
+	interfaceName := os.Getenv("MIRRORING_INTERFACE")
+	if len(interfaceName) == 0 {
+		interfaceName = "any"
+	}
 	initKafka()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
