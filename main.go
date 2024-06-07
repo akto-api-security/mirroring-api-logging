@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -165,12 +164,8 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
-func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
+func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 
-	isHttp2Req := false
-	if len(bd.a.bytes) > 24 && string(bd.a.bytes[0:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
-		bd.a.bytes = bd.a.bytes[24:]
-	}
 	streamRequestMap := make(map[string][]http2ReqResp)
 	framer := http2.NewFramer(nil, bytes.NewReader(bd.a.bytes))
 
@@ -181,7 +176,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 	gotPayload := make(map[string]bool)
 	decoder := hpack.NewDecoder(4096, func(hf hpack.HeaderField) {
 
-		// fmt.Printf("REQ Header: %s: %s\n", hf.Name, hf.Value)
 		if len(hf.Name) > 0 {
 			headersMap[hf.Name] = hf.Value
 		}
@@ -190,7 +184,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 	for {
 
 		frame, err := framer.ReadFrame()
-		// fmt.Printf("Frame: %v\n", frame)
 
 		if err == io.EOF {
 			break
@@ -199,9 +192,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 			continue
 		}
 
-		// Print frame details
-		// fmt.Printf("Frame reached here: %v\n", frame)
-		// fmt.Printf("Stream Id: %v\n", frame.Header().StreamID)
 		streamId := fmt.Sprint(frame.Header().StreamID)
 		if len(streamId) == 0 {
 			continue
@@ -211,22 +201,17 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 			headersMap = make(map[string]string)
 		}
 
-		// fmt.Printf("Frame reached here: %v\n", frame.Header().StreamID)
-		// fmt.Printf("streamId working on %v\n", streamId)
 		switch f := frame.(type) {
 		case *http2.HeadersFrame:
 			_, err := decoder.Write(f.HeaderBlockFragment())
 			gotHeaders[streamId] = true
 			if err != nil {
-				// log.Printf("Error request decoding headers: %v", err)
 			}
 
 		case *http2.DataFrame:
-			// log.Println("Data: ", len(f.Data()), string(f.Data()))
 			if len(string(f.Data())) > 0 {
 				payload = base64.StdEncoding.EncodeToString(f.Data())
 				gotPayload[streamId] = true
-				// fmt.Println("payload", payload)
 			}
 		}
 
@@ -243,9 +228,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 		}
 	}
 
-	// log.Println("Reached here for resp")
-	// log.Println("bd.b.bytes: ", len(bd.b.bytes), string(bd.b.bytes))
-
 	gotHeaders = make(map[string]bool)
 	gotPayload = make(map[string]bool)
 	gotGrpcHeaders := make(map[string]bool)
@@ -257,7 +239,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 	framerResp := http2.NewFramer(nil, bytes.NewReader(bd.b.bytes))
 	headersMap = make(map[string]string)
 	decoder = hpack.NewDecoder(4096, func(hf hpack.HeaderField) {
-		// fmt.Printf("RES Header: %s: %s\n", hf.Name, hf.Value)
 		if len(hf.Name) > 0 {
 			headersMap[hf.Name] = hf.Value
 		}
@@ -265,7 +246,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 
 	for {
 		frame, err := framerResp.ReadFrame()
-		// fmt.Printf("Frame: %v\n", frame)
 		if err == io.EOF {
 			break
 		}
@@ -273,7 +253,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 			continue
 		}
 
-		// Print frame details
 		streamId := fmt.Sprint(frame.Header().StreamID)
 
 		if len(streamId) == 0 {
@@ -285,7 +264,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 
 		switch f := frame.(type) {
 		case *http2.HeadersFrame:
-			// fmt.Println("headers map", headersMap)
 			_, err := decoder.Write(f.HeaderBlockFragment())
 			if err != nil {
 				log.Printf("Error response decoding headers: %v", err)
@@ -298,11 +276,9 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 			}
 			headersCount[streamId]++
 		case *http2.DataFrame:
-			// log.Println("Data: ", len(f.Data()), string(f.Data()))
 			if len(string(f.Data())) > 0 {
 				payload = base64.StdEncoding.EncodeToString(f.Data())
 				gotPayload[streamId] = true
-				// fmt.Println("payload", payload)
 			}
 		}
 		if gotHeaders[streamId] && gotPayload[streamId] {
@@ -371,7 +347,6 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 			value["time"] = fmt.Sprint(time.Now().Unix())
 			value["is_pending"] = fmt.Sprint(isPending)
 			out, _ := json.Marshal(value)
-			isHttp2Req = true
 
 			if printCounter > 0 {
 				printCounter--
@@ -381,16 +356,16 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
 		}
 
 	}
-
-	if isHttp2Req {
-		return true, nil
-	}
-	return false, errors.New("not an http2 request")
 }
 
-func tryParseAsNormalHttpRequest(bd *bidi, isPending bool) {
+func tryReadFromBD(bd *bidi, isPending bool) {
+	if len(bd.a.bytes) > 24 && string(bd.a.bytes[0:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
+		bd.a.bytes = bd.a.bytes[24:]
+		tryParseAsHttp2Request(bd, isPending)
+		return
+	}
 
-	reader := bufio.NewReader(bytes.NewReader(bd.b.bytes))
+	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
 	requests := []http.Request{}
 	requestsContent := []string{}
@@ -412,7 +387,6 @@ func tryParseAsNormalHttpRequest(bd *bidi, isPending bool) {
 
 		requests = append(requests, *req)
 		requestsContent = append(requestsContent, string(body))
-		// log.Println("req.URL.String()", i, req.URL.String(), string(body), len(bd.a.bytes))
 		i++
 	}
 
@@ -502,13 +476,6 @@ func tryParseAsNormalHttpRequest(bd *bidi, isPending bool) {
 	}
 }
 
-func tryReadFromBD(bd *bidi, isPending bool) {
-	_, err := tryParseAsHttp2Request(bd, isPending)
-	if err != nil {
-		tryParseAsNormalHttpRequest(bd, isPending)
-	}
-}
-
 // maybeFinish will wait until both directions are complete, then print out
 // stats.
 func (bd *bidi) maybeFinish() {
@@ -527,17 +494,6 @@ func (bd *bidi) maybeFinish() {
 		}
 	}
 }
-
-// func flushAll() {
-// 	for _, v := range assemblerMap {
-// 		log.Println("TIME.SECOND:", time.Second)
-// 		v.FlushOlderThan(time.Now().Add(time.Second * -500))
-// 		//log.Println("num flushed/closed:", r, k)
-// 		//log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
-// 		//factoryMap[k].collectOldStreams()
-// 		//log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
-// 	}
-// }
 
 func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 
@@ -590,29 +546,10 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 		// Read in packets, pass to assembler.
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
-			// pb, ok := packet.(gopacket.PacketBuilder)
-			// if !ok {
-			// 	panic("Not a PacketBuilder")
-			// }
-			// ipv4 := &layers.IPv4{}
-			// ipv4.DecodeFromBytes(packet.Data()[20:], pb)
-			// pb.AddLayer(ipv4)
-			// pb.SetNetworkLayer(ipv4)
-			// pb.NextDecoder(ipv4.NextLayerType())
-
-			// 			arr := packet1.Data()
-			// 			if len(arr) <= 20 {
-			// 				continue
-			// 			}
-			//
-			// 			packet := gopacket.NewPacket(arr[20:], layers.LayerTypeIPv4, gopacket.Default)
-			//
 			innerPacket := packet
 			vxlanID := apiCollectionId
 			if apiCollectionId <= 0 {
 
-				// log.Println("packet.NetworkLayer().NetworkFlow().Des()", packet.NetworkLayer().NetworkFlow().Dst())
-				// log.Println("packet.TransportLayer().LayerType()", packet.TransportLayer().LayerType())
 				if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
 					continue
 				}
