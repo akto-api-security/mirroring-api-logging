@@ -347,12 +347,13 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 			value["time"] = fmt.Sprint(time.Now().Unix())
 			value["is_pending"] = fmt.Sprint(isPending)
 			out, _ := json.Marshal(value)
+			ctx := context.Background()
 
 			if printCounter > 0 {
 				printCounter--
 				log.Println("req-resp.String()", string(out))
 			}
-			// go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+			go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		}
 
 	}
