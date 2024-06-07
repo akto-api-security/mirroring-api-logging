@@ -316,6 +316,8 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 			if path, exists := http2Request.headersMap[":path"]; exists {
 				value["path"] = path
 				delete(http2Request.headersMap, ":path")
+			} else {
+			    continue
 			}
 			if method, exists := http2Request.headersMap[":method"]; exists {
 				value["method"] = method
@@ -327,10 +329,11 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 			}
 			if status, exists := http2Response.headersMap[":status"]; exists {
 				value["statusCode"] = status
+				value["status"] = status
 				delete(http2Response.headersMap, ":status")
 			}
 			value["requestPayload"] = http2Request.payload
-			value["responsePayload"] = http2Request.payload
+			value["responsePayload"] = http2Response.payload
 
 			if len(http2Request.headersMap) > 0 {
 				requestHeaders, _ := json.Marshal(http2Request.headersMap)
@@ -338,9 +341,10 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 			}
 			if len(http2Response.headersMap) > 0 {
 				responseHeader, _ := json.Marshal(http2Response.headersMap)
-				value["responseHeader"] = string(responseHeader)
+				value["responseHeaders"] = string(responseHeader)
 			}
 
+			value["type"] = "HTTP/2"
 			value["ip"] = bd.key.net.Src().String()
 			value["akto_account_id"] = fmt.Sprint(1000000)
 			value["akto_vxlan_id"] = fmt.Sprint(bd.vxlanID)
