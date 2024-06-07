@@ -15,7 +15,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -23,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -32,6 +35,9 @@ import (
 
 	"github.com/akto-api-security/gomiddleware"
 	"github.com/segmentio/kafka-go"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/hpack"
 )
 
 var printCounter = 500
@@ -80,6 +86,16 @@ type myFactory struct {
 	// bidiMap maps keys to bidirectional stream pairs.
 	bidiMap map[key]*bidi
 	vxlanID int
+}
+
+type http2ReqResp struct {
+	headersMap map[string]string
+	payload    string
+	isInvalid  bool
+}
+
+func (k http2ReqResp) String() string {
+	return fmt.Sprintf("%v:%v", k.headersMap, k.payload)
 }
 
 // New handles creating a new tcpassembly.Stream.
@@ -149,8 +165,232 @@ func (s *myStream) ReassemblyComplete() {
 	s.bidi.maybeFinish()
 }
 
-func tryReadFromBD(bd *bidi, isPending bool) {
-	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
+func tryParseAsHttp2Request(bd *bidi, isPending bool) (bool, error) {
+
+	isHttp2Req := false
+	if len(bd.a.bytes) > 24 && string(bd.a.bytes[0:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
+		bd.a.bytes = bd.a.bytes[24:]
+	}
+	streamRequestMap := make(map[string][]http2ReqResp)
+	framer := http2.NewFramer(nil, bytes.NewReader(bd.a.bytes))
+
+	headersMap := make(map[string]string)
+	payload := ""
+
+	gotHeaders := make(map[string]bool)
+	gotPayload := make(map[string]bool)
+	decoder := hpack.NewDecoder(4096, func(hf hpack.HeaderField) {
+
+		// fmt.Printf("REQ Header: %s: %s\n", hf.Name, hf.Value)
+		if len(hf.Name) > 0 {
+			headersMap[hf.Name] = hf.Value
+		}
+	})
+
+	for {
+
+		frame, err := framer.ReadFrame()
+		// fmt.Printf("Frame: %v\n", frame)
+
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		// Print frame details
+		// fmt.Printf("Frame reached here: %v\n", frame)
+		// fmt.Printf("Stream Id: %v\n", frame.Header().StreamID)
+		streamId := fmt.Sprint(frame.Header().StreamID)
+		if len(streamId) == 0 {
+			continue
+		}
+
+		if !gotHeaders[streamId] {
+			headersMap = make(map[string]string)
+		}
+
+		// fmt.Printf("Frame reached here: %v\n", frame.Header().StreamID)
+		// fmt.Printf("streamId working on %v\n", streamId)
+		switch f := frame.(type) {
+		case *http2.HeadersFrame:
+			_, err := decoder.Write(f.HeaderBlockFragment())
+			gotHeaders[streamId] = true
+			if err != nil {
+				// log.Printf("Error request decoding headers: %v", err)
+			}
+
+		case *http2.DataFrame:
+			// log.Println("Data: ", len(f.Data()), string(f.Data()))
+			if len(string(f.Data())) > 0 {
+				payload = base64.StdEncoding.EncodeToString(f.Data())
+				gotPayload[streamId] = true
+				// fmt.Println("payload", payload)
+			}
+		}
+
+		if gotHeaders[streamId] && gotPayload[streamId] {
+			if _, exists := streamRequestMap[streamId]; !exists {
+				streamRequestMap[streamId] = []http2ReqResp{}
+			}
+			streamRequestMap[streamId] = append(streamRequestMap[streamId], http2ReqResp{
+				headersMap: headersMap,
+				payload:    payload,
+			})
+			gotHeaders[streamId] = false
+			gotPayload[streamId] = false
+		}
+	}
+
+	// log.Println("Reached here for resp")
+	// log.Println("bd.b.bytes: ", len(bd.b.bytes), string(bd.b.bytes))
+
+	gotHeaders = make(map[string]bool)
+	gotPayload = make(map[string]bool)
+	gotGrpcHeaders := make(map[string]bool)
+	headersCount := make(map[string]int)
+	headersMap = make(map[string]string)
+	payload = ""
+
+	streamResponseMap := make(map[string][]http2ReqResp)
+	framerResp := http2.NewFramer(nil, bytes.NewReader(bd.b.bytes))
+	headersMap = make(map[string]string)
+	decoder = hpack.NewDecoder(4096, func(hf hpack.HeaderField) {
+		// fmt.Printf("RES Header: %s: %s\n", hf.Name, hf.Value)
+		if len(hf.Name) > 0 {
+			headersMap[hf.Name] = hf.Value
+		}
+	})
+
+	for {
+		frame, err := framerResp.ReadFrame()
+		// fmt.Printf("Frame: %v\n", frame)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		// Print frame details
+		streamId := fmt.Sprint(frame.Header().StreamID)
+
+		if len(streamId) == 0 {
+			continue
+		}
+		if !(gotHeaders[streamId]) {
+			headersMap = make(map[string]string)
+		}
+
+		switch f := frame.(type) {
+		case *http2.HeadersFrame:
+			// fmt.Println("headers map", headersMap)
+			_, err := decoder.Write(f.HeaderBlockFragment())
+			if err != nil {
+				log.Printf("Error response decoding headers: %v", err)
+			}
+			if headersCount[streamId] == 0 {
+				if strings.Contains(headersMap["content-type"], "application/grpc") {
+					gotGrpcHeaders[streamId] = true
+				}
+				gotHeaders[streamId] = true
+			}
+			headersCount[streamId]++
+		case *http2.DataFrame:
+			// log.Println("Data: ", len(f.Data()), string(f.Data()))
+			if len(string(f.Data())) > 0 {
+				payload = base64.StdEncoding.EncodeToString(f.Data())
+				gotPayload[streamId] = true
+				// fmt.Println("payload", payload)
+			}
+		}
+		if gotHeaders[streamId] && gotPayload[streamId] {
+
+			if gotGrpcHeaders[streamId] && headersCount[streamId] == 1 {
+				continue
+			}
+
+			if _, exists := streamResponseMap[streamId]; !exists {
+				streamResponseMap[streamId] = []http2ReqResp{}
+			}
+			streamResponseMap[streamId] = append(streamResponseMap[streamId], http2ReqResp{
+				headersMap: headersMap,
+				payload:    payload,
+			})
+			gotPayload[streamId] = false
+			gotHeaders[streamId] = false
+			gotGrpcHeaders[streamId] = false
+			headersCount[streamId] = 0
+		}
+	}
+
+	for streamId, http2Req := range streamRequestMap {
+		http2Resp := streamResponseMap[streamId]
+		if len(http2Resp) != len(http2Req) {
+			continue
+		}
+		for req := range http2Req {
+
+			http2Request := http2Req[req]
+			http2Response := http2Resp[req]
+
+			value := make(map[string]string)
+
+			if path, exists := http2Request.headersMap[":path"]; exists {
+				value["path"] = path
+				delete(http2Request.headersMap, ":path")
+			}
+			if method, exists := http2Request.headersMap[":method"]; exists {
+				value["method"] = method
+				delete(http2Request.headersMap, ":method")
+			}
+			if scheme, exists := http2Request.headersMap[":scheme"]; exists {
+				value["scheme"] = scheme
+				delete(http2Request.headersMap, ":scheme")
+			}
+			if status, exists := http2Response.headersMap[":status"]; exists {
+				value["statusCode"] = status
+				delete(http2Response.headersMap, ":status")
+			}
+			value["requestPayload"] = http2Request.payload
+			value["responsePayload"] = http2Request.payload
+
+			if len(http2Request.headersMap) > 0 {
+				requestHeaders, _ := json.Marshal(http2Request.headersMap)
+				value["requestHeaders"] = string(requestHeaders)
+			}
+			if len(http2Response.headersMap) > 0 {
+				responseHeader, _ := json.Marshal(http2Response.headersMap)
+				value["responseHeader"] = string(responseHeader)
+			}
+
+			value["ip"] = bd.key.net.Src().String()
+			value["akto_account_id"] = fmt.Sprint(1000000)
+			value["akto_vxlan_id"] = fmt.Sprint(bd.vxlanID)
+			value["time"] = fmt.Sprint(time.Now().Unix())
+			value["is_pending"] = fmt.Sprint(isPending)
+			out, _ := json.Marshal(value)
+			isHttp2Req = true
+
+			if printCounter > 0 {
+				printCounter--
+				log.Println("req-resp.String()", string(out))
+			}
+			// go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		}
+
+	}
+
+	if isHttp2Req {
+		return true, nil
+	}
+	return false, errors.New("not an http2 request")
+}
+
+func tryParseAsNormalHttpRequest(bd *bidi, isPending bool) {
+
+	reader := bufio.NewReader(bytes.NewReader(bd.b.bytes))
 	i := 0
 	requests := []http.Request{}
 	requestsContent := []string{}
@@ -262,6 +502,13 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	}
 }
 
+func tryReadFromBD(bd *bidi, isPending bool) {
+	_, err := tryParseAsHttp2Request(bd, isPending)
+	if err != nil {
+		tryParseAsNormalHttpRequest(bd, isPending)
+	}
+}
+
 // maybeFinish will wait until both directions are complete, then print out
 // stats.
 func (bd *bidi) maybeFinish() {
@@ -280,6 +527,17 @@ func (bd *bidi) maybeFinish() {
 		}
 	}
 }
+
+// func flushAll() {
+// 	for _, v := range assemblerMap {
+// 		log.Println("TIME.SECOND:", time.Second)
+// 		v.FlushOlderThan(time.Now().Add(time.Second * -500))
+// 		//log.Println("num flushed/closed:", r, k)
+// 		//log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
+// 		//factoryMap[k].collectOldStreams()
+// 		//log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
+// 	}
+// }
 
 func createAndGetAssembler(vxlanID int) *tcpassembly.Assembler {
 
@@ -332,10 +590,29 @@ func run(handle *pcap.Handle, apiCollectionId int) {
 		// Read in packets, pass to assembler.
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
+			// pb, ok := packet.(gopacket.PacketBuilder)
+			// if !ok {
+			// 	panic("Not a PacketBuilder")
+			// }
+			// ipv4 := &layers.IPv4{}
+			// ipv4.DecodeFromBytes(packet.Data()[20:], pb)
+			// pb.AddLayer(ipv4)
+			// pb.SetNetworkLayer(ipv4)
+			// pb.NextDecoder(ipv4.NextLayerType())
+
+			// 			arr := packet1.Data()
+			// 			if len(arr) <= 20 {
+			// 				continue
+			// 			}
+			//
+			// 			packet := gopacket.NewPacket(arr[20:], layers.LayerTypeIPv4, gopacket.Default)
+			//
 			innerPacket := packet
 			vxlanID := apiCollectionId
 			if apiCollectionId <= 0 {
 
+				// log.Println("packet.NetworkLayer().NetworkFlow().Des()", packet.NetworkLayer().NetworkFlow().Dst())
+				// log.Println("packet.TransportLayer().LayerType()", packet.TransportLayer().LayerType())
 				if packet.NetworkLayer() == nil || packet.TransportLayer() == nil || packet.TransportLayer().LayerType() != layers.LayerTypeUDP {
 					continue
 				}
