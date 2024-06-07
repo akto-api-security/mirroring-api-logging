@@ -353,7 +353,7 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 				value["path"] = path
 				delete(http2Request.headersMap, ":path")
 			} else {
-				return
+				continue
 			}
 			if method, exists := http2Request.headersMap[":method"]; exists {
 				value["method"] = method
