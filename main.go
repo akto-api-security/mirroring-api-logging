@@ -329,7 +329,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"akto_account_id": fmt.Sprint(1000000),
 			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
 			"is_pending":      fmt.Sprint(isPending),
-			"source":          bd.source,
+			"source":          "OTHER",
 		}
 
 		out, _ := json.Marshal(value)
