@@ -18,7 +18,7 @@ func LogMemoryStats() {
 
 	if int(m.Alloc/1024/1024) > aktoMemThreshRestart {
 		log.Println("current mem usage", m.Alloc/1024/1024)
-		os.Exit(3)
+		os.Exit(4)
 	}
 
 	log.Println("Alloc in MB: ", m.Alloc/1024/1024)

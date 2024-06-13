@@ -28,9 +28,7 @@ import (
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-var source string = ""
-
-func replaceBpfLogsMacros() {
+func replaceBpfLogsMacros(source string) string {
 
 	printBpfLogsEnv := os.Getenv("PRINT_BPF_LOGS")
 	printBpfLogs := "false"
@@ -39,16 +37,18 @@ func replaceBpfLogsMacros() {
 	}
 
 	source = strings.Replace(source, "PRINT_BPF_LOGS", printBpfLogs, -1)
+	return source
 }
 
-func replaceMaxConnectionMapSize() {
+func replaceMaxConnectionMapSize(source string) string {
 	maxConnectionSizeMapSize := 131072
 	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
 	maxConnectionSizeMapSizeStr := strconv.Itoa(maxConnectionSizeMapSize)
 	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
+	return source
 }
 
-func replaceArchType() {
+func replaceArchType(source string) string {
 	arch := runtime.GOARCH
 	archStr := "TARGET_ARCH_X86_64"
 	if strings.Contains(arch, "arm") {
@@ -56,6 +56,7 @@ func replaceArchType() {
 	}
 	fmt.Printf("arch type detected: %v\n", arch)
 	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
+	return source
 }
 
 func main() {
@@ -68,11 +69,11 @@ func run() {
 	if err != nil {
 		log.Panic(err)
 	}
-	source = string(byteString)
+	source := string(byteString)
 
-	replaceBpfLogsMacros()
-	replaceMaxConnectionMapSize()
-	replaceArchType()
+	source = replaceArchType(source)
+	source = replaceBpfLogsMacros(source)
+	source = replaceMaxConnectionMapSize(source)
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
@@ -85,6 +86,7 @@ func run() {
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
 	kafkaUtil.InitKafka()
+	defer kafkaUtil.Close()
 
 	connectionFactory := connections.NewFactory()
 
@@ -97,30 +99,6 @@ func run() {
 	kafkaPollInterval := 500 * time.Millisecond
 
 	trafficUtils.InitVar("KAFKA_POLL_INTERVAL", &kafkaPollInterval)
-
-	go func() {
-		for {
-			time.Sleep(kafkaPollInterval)
-			if !isRunning {
-
-				mu.Lock()
-				if isRunning {
-					mu.Unlock()
-					return
-				}
-				isRunning = true
-				mu.Unlock()
-
-				connectionFactory.HandleReadyConnections()
-				kafkaUtil.LogKafkaError()
-
-				mu.Lock()
-				isRunning = false
-				mu.Unlock()
-
-			}
-		}
-	}()
 
 	callbacks := make([]*bpfwrapper.ProbeChannel, 0)
 
@@ -187,6 +165,47 @@ func run() {
 			}
 		}()
 	}
+
+	stopped := false
+	go func() {
+		for {
+			time.Sleep(kafkaPollInterval)
+			if stopped {
+				log.Println("resetting probe")
+				kafkaUtil.InitKafka()
+				connectionFactory.StartAgain()
+				stopped = false
+				continue
+			}
+			if !isRunning {
+
+				mu.Lock()
+				if isRunning {
+					mu.Unlock()
+					return
+				}
+				isRunning = true
+				mu.Unlock()
+
+				err := connectionFactory.HandleReadyConnections()
+				if err != nil {
+					fmt.Printf("Error: %v\n", err.Error())
+					stopped = true
+					kafkaUtil.Close()
+					trafficMetrics.InitTrafficMaps()
+					log.Println("sleeping....")
+					time.Sleep(10 * time.Second)
+					log.Println("SLEPT")
+				} else {
+					kafkaUtil.LogKafkaError()
+				}
+
+				mu.Lock()
+				isRunning = false
+				mu.Unlock()
+			}
+		}
+	}()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
