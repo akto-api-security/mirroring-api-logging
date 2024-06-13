@@ -23,7 +23,9 @@ FROM base
 WORKDIR /ebpf
 COPY --from=builder /ebpf/ebpf-logging /ebpf/ebpf-logging
 COPY --from=builder /ebpf/kernel/module.cc /ebpf/kernel/module.cc
+COPY ebpf-run.sh /ebpf/ebpf-run.sh
+RUN chmod +x /ebpf/ebpf-run.sh
 
 RUN apk add perf
 
-CMD "./ebpf-logging"
+CMD "./ebpf-run.sh"
