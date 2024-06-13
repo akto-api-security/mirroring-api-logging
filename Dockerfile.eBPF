@@ -9,6 +9,7 @@ RUN apk add go
 
 COPY ebpf ./ebpf
 COPY trafficUtil ./trafficUtil
+COPY ebpfCore ./ebpfCore
 WORKDIR /ebpf
 
 RUN go get
@@ -18,12 +19,15 @@ RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.2
 RUN sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN go build -o ebpf-logging
 
+WORKDIR /ebpfCore
+RUN go build -o ebpf-core
+
 FROM base
 
-WORKDIR /ebpf
-COPY --from=builder /ebpf/ebpf-logging /ebpf/ebpf-logging
-COPY --from=builder /ebpf/kernel/module.cc /ebpf/kernel/module.cc
+COPY --from=builder /ebpf/ebpf-logging /ebpf-logging
+COPY --from=builder /ebpf/kernel/module.cc /kernel/module.cc
+COPY --from=builder /ebpfCore/ebpf-core /ebpf-core
 
 RUN apk add perf
 
-CMD "./ebpf-logging"
+CMD "./ebpf-core"
