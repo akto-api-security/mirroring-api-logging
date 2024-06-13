@@ -66,9 +66,13 @@ func InitMaps(bpfModule *bcc.Module) {
 func getBccTable(addrType ProbeType) (*bcc.Table, error) {
 	switch addrType {
 	case GoTLS:
-		return goSymAddrsTable, nil
+		if goSymAddrsTable != nil {
+			return goSymAddrsTable, nil
+		}
 	case Node:
-		return nodeSymAddrsTable, nil
+		if nodeSymAddrsTable != nil {
+			return nodeSymAddrsTable, nil
+		}
 	}
 	return nil, fmt.Errorf("no table found")
 }
@@ -83,7 +87,10 @@ func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress,
 	}
 	fmt.Printf("byte arr: %v\n", asByteSlice)
 
-	table, _ := getBccTable(addrType)
+	table, err := getBccTable(addrType)
+	if err != nil {
+		return fmt.Errorf("table not found key %v failed: %v", pid, err)
+	}
 	key := fmt.Sprint(uint32(pid))
 	keyByte, _ := table.KeyStrToBytes(key)
 
@@ -96,7 +103,11 @@ func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress,
 }
 
 func DeletePidFromBPFMap(addrType ProbeType, pid int32) error {
-	table, _ := getBccTable(addrType)
+	table, err := getBccTable(addrType)
+	if err != nil {
+		return fmt.Errorf("table not found key %v failed: %v", pid, err)
+	}
+
 	key := fmt.Sprint(uint32(pid))
 	keyByte, _ := table.KeyStrToBytes(key)
 	if err := table.Delete(keyByte); err != nil {

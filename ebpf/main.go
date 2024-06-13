@@ -71,9 +71,9 @@ func run() {
 	}
 	source := string(byteString)
 
-	source = replaceArchType(source)
 	source = replaceBpfLogsMacros(source)
 	source = replaceMaxConnectionMapSize(source)
+	source = replaceArchType(source)
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
