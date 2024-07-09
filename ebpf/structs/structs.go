@@ -10,6 +10,7 @@ type ConnID struct {
 
 type SocketDataEventAttr struct {
 	ConnId           ConnID
+	Ssl              bool
 	Bytes_sent       int64
 	ReadEventsCount  uint32
 	WriteEventsCount uint32

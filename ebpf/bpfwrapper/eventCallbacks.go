@@ -115,6 +115,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
+		tracker.AddSsl(event)
 		tracker.AddDataEvent(event)
 
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))

@@ -92,10 +92,10 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelet
 	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
 	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
 
-	go tryReadFromBD(receiveBuffer, sentBuffer, isComplete)
+	go tryReadFromBD(receiveBuffer, sentBuffer, isComplete, 2)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		go tryReadFromBD(sentBuffer, receiveBuffer, isComplete)
+		go tryReadFromBD(sentBuffer, receiveBuffer, isComplete, 1)
 	}
 }
 

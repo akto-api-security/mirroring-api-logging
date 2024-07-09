@@ -160,7 +160,7 @@ func (s *myStream) ReassemblyComplete() {
 func tryReadFromBD(bd *bidi, isPending bool) {
 
 	kafkaUtil.ParseAndProduce(bd.a.bytes, bd.b.bytes,
-		bd.key.net.Src().String(), bd.vxlanID, isPending, bd.source, true)
+		bd.key.net.Src().String(), bd.vxlanID, isPending, bd.source, true, 1)
 
 }
 
