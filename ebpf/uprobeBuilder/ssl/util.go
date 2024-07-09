@@ -22,7 +22,7 @@ func FindModules(modules map[string]bool, names ...string) (map[string]string, e
 	return result, nil
 }
 
-func getExeSymLinkHostPath(pid int32) (string, error) {
+func GetExeSymLinkHostPath(pid int32) (string, error) {
 	pidAbsPath := fmt.Sprintf("/proc/%d/exe", pid)
 	pidExeFile := host.GetFileInHost(pidAbsPath)
 	symLink, err := os.Readlink(pidExeFile)

@@ -126,13 +126,18 @@ func run() {
 
 	captureSsl := os.Getenv("CAPTURE_SSL")
 	captureEgress := os.Getenv("CAPTURE_EGRESS")
+	captureAll := "true"
+	captureAllEnv := os.Getenv("CAPTURE_ALL")
+	if len(captureAllEnv) != 0 {
+		captureAll = captureAllEnv
+	}
 
 	hooks := make([]bpfwrapper.Kprobe, 0)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
-	if len(captureSsl) == 0 || captureSsl == "false" {
+	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
 			hooks = append(hooks, bpfwrapper.Level3hooksEgress...)
@@ -164,7 +169,7 @@ func run() {
 
 	ssl.InitMaps(bpfModule)
 
-	if captureSsl == "true" {
+	if captureSsl == "true" || captureAll == "true" {
 		go func() {
 			for {
 				if !isRunning_2 {

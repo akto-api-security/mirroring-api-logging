@@ -103,6 +103,7 @@ struct socket_data_event_t {
     int bytes_sent;
     u32 readEventsCount;
     u32 writeEventsCount;
+    bool ssl;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -334,6 +335,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->port = conn_info->port;
     socket_data_event->ip = conn_info->ip; 
     socket_data_event->bytes_sent = is_send ? 1 : -1;
+    socket_data_event->ssl = conn_info->ssl;
 
     if (is_send){
       conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;

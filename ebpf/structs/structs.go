@@ -15,6 +15,7 @@ type SocketDataEventAttr struct {
 	Bytes_sent       int32
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
+	Ssl              bool
 }
 
 /*

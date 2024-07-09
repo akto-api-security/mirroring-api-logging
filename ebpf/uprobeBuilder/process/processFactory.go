@@ -3,6 +3,7 @@ package process
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
@@ -82,6 +83,11 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 		_, ok := processFactory.processMap[pid]
 		if !ok {
 
+			if checkSelf(pid) {
+				fmt.Printf("Self process %v, skipping\n", pid)
+				continue
+			}
+
 			containers, err := CheckProcessCGroupBelongToKube(pid)
 			// probe only k8s processes
 			// TODO: check this once again.
@@ -145,4 +151,15 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 		}
 	}
+}
+
+func checkSelf(pid int32) bool {
+	symLinkHostPath, err := ssl.GetExeSymLinkHostPath(pid)
+	if err != nil {
+		return false
+	}
+	if strings.Contains(symLinkHostPath, "ebpf-logging") {
+		return true
+	}
+	return false
 }
