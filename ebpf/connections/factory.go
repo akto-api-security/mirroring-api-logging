@@ -3,13 +3,14 @@ package connections
 import (
 	"sort"
 
+	"sync"
+	"time"
+
+	"github.com/PraserX/ipconv"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-
-	"sync"
-	"time"
 )
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
@@ -89,10 +90,12 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelet
 	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
 	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
 
-	go tryReadFromBD(receiveBuffer, sentBuffer, isComplete)
+	ipStr := ipconv.IntToIPv4(connID.Ip)
+
+	go tryReadFromBD(ipStr.String(), receiveBuffer, sentBuffer, isComplete, 1)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		go tryReadFromBD(sentBuffer, receiveBuffer, isComplete)
+		go tryReadFromBD(ipStr.String(), sentBuffer, receiveBuffer, isComplete, 2)
 	}
 }
 

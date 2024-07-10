@@ -3,6 +3,7 @@ module github.com/akto-api-security/mirroring-api-logging/ebpf
 go 1.21
 
 require (
+	github.com/PraserX/ipconv v1.2.0
 	github.com/akto-api-security/mirroring-api-logging/trafficUtil v0.0.0-00010101000000-000000000000
 	github.com/iovisor/gobpf v0.2.1-0.20221005153822-16120a1bf4d4
 )
