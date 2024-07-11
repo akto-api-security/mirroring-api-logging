@@ -22,7 +22,7 @@ spec:
       hostPID: true
       containers:
       - name: akto-ebpf
-        image: coastaldemigod/ebpf:v72
+        image: coastaldemigod/ebpf:v84
         imagePullPolicy: Always
         resources:
           limits:
@@ -32,42 +32,44 @@ spec:
             cpu: 50m
             memory: 50Mi
         env: 
-          - name: AKTO_MODULE_DISCOVERY_CONFIG
-            value: '[{"key":{"eq":"x-forwarded-client-cert","ifAbsent":"reject"},"value":{"regex":".*bookinfo.*"}}]'
+          # - name: AKTO_MODULE_DISCOVERY_CONFIG
+            # value: '[{"key":{"eq":"x-forwarded-client-cert","ifAbsent":"reject"},"value":{"regex":".*bookinfo.*"}}]'
           - name: AKTO_TRAFFIC_BATCH_TIME_SECS
             value: "10"
           - name: AKTO_TRAFFIC_BATCH_SIZE
             value: "100"
           - name: AKTO_KAFKA_BROKER_MAL
-            value: "172.20.225.27:9092"
+            value: "172.20.80.9:9092"
           # - name: LOG_LEVEL
             # value: "0"
           - name: AKTO_MONGO_CONN
-            value: "mongodb://172.20.191.56:27017/admini"
+            value: "mongodb://10.0.134.212:27017/admini"
           - name: TRAFFIC_INACTIVITY_THRESHOLD
-            value: "60"
-          - name: TRAFFIC_COMPLETE_THRESHOLD
-            value: "0"
-          - name: TRAFFIC_MAX_ACTIVE_CONN
-            value: "8192"
+            value: "30"
+          - name: INGEST_LOGS
+            value: "true"
+          # - name: TRAFFIC_COMPLETE_THRESHOLD
+          #   value: "0"
+          # - name: TRAFFIC_MAX_ACTIVE_CONN
+          #   value: "8192"
           - name: PRINT_BPF_LOGS
             value: "true"
-          - name: TRAFFIC_MAX_BUFFER_PER_TRACKER
-            value: "20"
-          - name: KAFKA_POLL_INTERVAL
-            value: "1"
+          # - name: TRAFFIC_MAX_BUFFER_PER_TRACKER
+          #   value: "20"
+          # - name: KAFKA_POLL_INTERVAL
+          #   value: "1"
           - name: AKTO_MEM_THRESH_RESTART
-            value: "1000"
+            value: "900"
           # - name: TRAFFIC_SAMPLE_BUFFER_PER_MINUTE
             # value: "100"
-          # - name: DEBUG
-            # value: "true"
+          - name: DEBUG_MODE
+            value: "true"
           # - name: AKTO_DISABLE_ON_DB
             # value: "true"
           # - name: SAMPLE_LIMIT_PER_MIN
             # value:
-          # - name: CAPTURE_EGRESS
-            # value: "true"
+          - name: CAPTURE_SSL
+            value: "true"
         securityContext:
           capabilities:
             add:

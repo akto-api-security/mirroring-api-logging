@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 
 	"log"
@@ -18,6 +20,8 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -25,23 +29,6 @@ import (
 )
 
 var source string = ""
-
-func replaceOpensslMacros() {
-	opensslVersion := os.Getenv("OPENSSL_VERSION_AKTO")
-	fixed := false
-	if len(opensslVersion) > 0 {
-		split := strings.Split(opensslVersion, ".")
-		if len(split) == 3 {
-			if split[0] == "1" && (split[1] == "0" || strings.HasPrefix(split[2], "0")) {
-				source = strings.Replace(source, "RBIO_NUM_OFFSET", "0x28", 1)
-				fixed = true
-			}
-		}
-	}
-	if !fixed {
-		source = strings.Replace(source, "RBIO_NUM_OFFSET", "0x30", 1)
-	}
-}
 
 func replaceBpfLogsMacros() {
 
@@ -61,6 +48,16 @@ func replaceMaxConnectionMapSize() {
 	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
 }
 
+func replaceArchType() {
+	arch := runtime.GOARCH
+	archStr := "TARGET_ARCH_X86_64"
+	if strings.Contains(arch, "arm") {
+		archStr = "TARGET_ARCH_AARCH64"
+	}
+	fmt.Printf("arch type detected: %v\n", arch)
+	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
+}
+
 func main() {
 	run()
 }
@@ -73,9 +70,9 @@ func run() {
 	}
 	source = string(byteString)
 
-	replaceOpensslMacros()
 	replaceBpfLogsMacros()
 	replaceMaxConnectionMapSize()
+	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
@@ -156,28 +153,39 @@ func run() {
 		log.Panic(err)
 	}
 
-	if captureSsl == "true" {
-		opensslPath := os.Getenv("OPENSSL_PATH_AKTO")
-		if len(opensslPath) > 0 {
-			opensslPath = strings.Replace(opensslPath, "usr", "usr_host", 1)
-			if len(captureEgress) > 0 && captureEgress == "true" {
-				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooksEgress); err != nil {
-					log.Printf("%s", err.Error())
-				}
-			} else {
-				if err := bpfwrapper.AttachUprobes(opensslPath, -1, bpfModule, bpfwrapper.SslHooks); err != nil {
-					log.Printf("%s", err.Error())
-				}
-			}
-		}
+	processFactory := process.NewFactory()
 
-		boringLibsslPath := os.Getenv("BSSL_PATH_AKTO")
-		if len(boringLibsslPath) > 0 {
-			boringLibsslPath = strings.Replace(boringLibsslPath, "usr", "usr_host", 1)
-			if err := bpfwrapper.AttachUprobes(boringLibsslPath, -1, bpfModule, bpfwrapper.BoringsslHooks); err != nil {
-				log.Printf("%s", err.Error())
+	var isRunning_2 bool
+	var mu_2 = &sync.Mutex{}
+
+	pollInterval := 5 * time.Minute
+
+	trafficUtils.InitVar("UPROBE_POLL_INTERVAL", &pollInterval)
+
+	ssl.InitMaps(bpfModule)
+
+	if captureSsl == "true" {
+		go func() {
+			for {
+				if !isRunning_2 {
+					mu_2.Lock()
+					if isRunning_2 {
+						mu_2.Unlock()
+						return
+					}
+					isRunning_2 = true
+					mu_2.Unlock()
+
+					fmt.Printf("Entering\n")
+					processFactory.AddNewProcessesToProbe(bpfModule)
+					fmt.Printf("Exiting\n")
+					mu_2.Lock()
+					isRunning_2 = false
+					mu_2.Unlock()
+				}
+				time.Sleep(pollInterval)
 			}
-		}
+		}()
 	}
 
 	sig := make(chan os.Signal, 1)
