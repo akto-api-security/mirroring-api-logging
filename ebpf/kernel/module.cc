@@ -156,16 +156,16 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         bpf_probe_read_kernel(&sk, sizeof(sk),  &(args->sock_alloc_socket)->sk);
         struct sock_common* sk_common = &sk->__sk_common;
         uint16_t family = -1;
-        uint16_t lport = -1;
+        uint16_t rport = -1;
         u32 ip = 0;
         bpf_probe_read_kernel(&family, sizeof(family), &sk_common->skc_family);
-        bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
-        conn_info.port = lport;
+        bpf_probe_read_kernel(&rport, sizeof(rport), &sk_common->skc_dport);
+        conn_info.port = rport;
         if (family == AF_INET) {
-          bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_rcv_saddr);
+          bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
         } else if (family == AF_INET6) {
           struct in6_addr in_addr;
-          bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_rcv_saddr);
+          bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
           conn_info.ip = (in_addr.s6_addr32)[3];
         } else {
           return;

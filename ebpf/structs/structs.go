@@ -3,14 +3,16 @@ package structs
 type ConnID struct {
 	Id            uint64
 	Fd            uint32
+	Padding1      [4]byte
 	Conn_start_ns uint64
 	Port          uint16
+	Padding       [2]byte
 	Ip            uint32
 }
 
 type SocketDataEventAttr struct {
 	ConnId           ConnID
-	Bytes_sent       int64
+	Bytes_sent       int32
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
 }
