@@ -1,10 +1,10 @@
-
 package bpfwrapper
 
 import (
 	"fmt"
-	"github.com/iovisor/gobpf/bcc"
 	"log"
+
+	"github.com/iovisor/gobpf/bcc"
 )
 
 const (
@@ -15,8 +15,12 @@ const (
 type ProbeType int
 
 const (
-	EntryType  ProbeType = 0
-	ReturnType ProbeType = 1
+	EntryType ProbeType = iota
+	ReturnType
+	EntryType_Matching_Suf
+	ReturnType_Matching_Suf_Addr
+	EntryType_Matching_Pre
+	ReturnType_Matching_Pre
 )
 
 // Kprobe represents a single Kprobe hook.

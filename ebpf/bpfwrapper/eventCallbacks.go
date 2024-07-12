@@ -62,7 +62,7 @@ var (
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
 )
 
-func min(a, b int64) int64 {
+func min(a, b int32) int32 {
 	if a < b {
 		return a
 	}
@@ -91,8 +91,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		// the first 16 bits are relevant, but since we get more data, we use bitwise operation to extract the first 16 bits.
-		bytesSent := (event.Attr.Bytes_sent >> 32) >> 16
+		bytesSent := event.Attr.Bytes_sent
 
 		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
 		eventAttributesLogicalSize := 44
@@ -103,8 +102,8 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		connId := event.Attr.ConnId
 
-		event.Attr.ReadEventsCount = (event.Attr.ReadEventsCount >> 16)
-		event.Attr.WriteEventsCount = (event.Attr.WriteEventsCount >> 16)
+		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
+		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
 
 		tracker := connectionFactory.GetOrCreate(connId)
 

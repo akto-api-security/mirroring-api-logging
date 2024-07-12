@@ -63,7 +63,7 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	bytesSent := (event.Attr.Bytes_sent >> 32) >> 16
+	bytesSent := event.Attr.Bytes_sent
 
 	if bytesSent > 0 {
 		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)

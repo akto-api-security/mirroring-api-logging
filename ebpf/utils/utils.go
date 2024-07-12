@@ -1,6 +1,6 @@
 package utils
 
-func Abs(x int64) int64 {
+func Abs(x int32) int32 {
 	if x < 0 {
 		return -x
 	}

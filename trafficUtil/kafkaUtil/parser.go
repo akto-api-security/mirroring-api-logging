@@ -65,7 +65,7 @@ func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
-	sourceIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool) {
+	sourceIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool, direction int) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
@@ -253,6 +253,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			"akto_vxlan_id":   fmt.Sprint(vxlanID),
 			"is_pending":      fmt.Sprint(isPending),
 			"source":          trafficSource,
+			"direction":       fmt.Sprint(direction),
 		}
 
 		out, _ := json.Marshal(value)

@@ -38,6 +38,12 @@ var (
 			Type:           ReturnType,
 			IsSyscall:      true,
 		},
+		{
+			FunctionToHook: "sock_alloc",
+			HookName:       "probe_ret_sock_alloc",
+			Type:           ReturnType,
+			IsSyscall:      false,
+		},
 	}
 
 	Level1hooksType2 = []Kprobe{
