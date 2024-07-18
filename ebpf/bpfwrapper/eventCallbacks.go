@@ -30,7 +30,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		utils.LogIngest("Received open on: %v %v\n", connId.Fd, connId.Id)
+		utils.LogIngest("Received open fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
 		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
 
 	}
@@ -52,7 +52,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if tracker == nil {
 			continue
 		}
-		utils.LogIngest("Received close on: %v %v\n", connId.Fd, connId.Id)
+		utils.LogIngest("Received close on: fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
 		tracker.AddCloseEvent(event)
 	}
 }
@@ -86,6 +86,8 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		// Since the Msg field might be mostly empty, binary.read fails.
 		// So we split the loading into the fixed size attribute parts, and copying the message separately.
 
+		// fmt.Printf("data: %v\n", data)
+
 		if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
 			utils.LogIngest("Failed to decode received data: %+v", err)
 			continue
@@ -94,7 +96,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		bytesSent := event.Attr.Bytes_sent
 
 		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 44
+		eventAttributesLogicalSize := 45
 
 		if len(data) > eventAttributesLogicalSize {
 			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
@@ -114,10 +116,11 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
+		tracker.AddSsl(event)
 		tracker.AddDataEvent(event)
 
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
-		utils.LogIngest("Got data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+		utils.LogIngest("Got data fd: %v id: %v ts: %v ip: %v port: %v data: %v rc: %v wc: %v ssl: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port, dataStr, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount, event.Attr.Ssl)
 	}
 }

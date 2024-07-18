@@ -25,7 +25,7 @@ var (
 
 func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, error) {
 
-	symLinkHostPath, err := getExeSymLinkHostPath(pid)
+	symLinkHostPath, err := GetExeSymLinkHostPath(pid)
 	if err != nil {
 		return false, err
 	}

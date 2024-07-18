@@ -22,6 +22,7 @@ type Tracker struct {
 	recvBuf map[int][]byte
 	sentBuf map[int][]byte
 	mutex   sync.RWMutex
+	ssl     bool
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -30,6 +31,7 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		recvBuf: make(map[int][]byte),
 		sentBuf: make(map[int][]byte),
 		mutex:   sync.RWMutex{},
+		ssl:     false,
 	}
 }
 
@@ -59,9 +61,28 @@ func (conn *Tracker) MarkInactive(duration time.Duration) bool {
 	return inactive
 }
 
+func (conn *Tracker) AddSsl(event structs.SocketDataEvent) {
+	conn.mutex.Lock()
+	defer conn.mutex.Unlock()
+	if !conn.ssl && event.Attr.Ssl {
+		for k := range conn.sentBuf {
+			conn.sentBuf[k] = []byte{}
+		}
+		for k := range conn.recvBuf {
+			conn.recvBuf[k] = []byte{}
+		}
+		conn.sentBytes = 0
+		conn.recvBytes = 0
+		conn.ssl = event.Attr.Ssl
+	}
+}
+
 func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
+	if conn.ssl != event.Attr.Ssl {
+		return
+	}
 
 	bytesSent := event.Attr.Bytes_sent
 
