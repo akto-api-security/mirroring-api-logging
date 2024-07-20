@@ -44,6 +44,12 @@ var (
 			Type:           ReturnType,
 			IsSyscall:      false,
 		},
+		{
+			FunctionToHook: "tcp_connect",
+			HookName:       "probe_entry_tcp_connect",
+			Type:           EntryType,
+			IsSyscall:      false,
+		},
 	}
 
 	Level1hooksType2 = []Kprobe{

@@ -5,9 +5,11 @@ type ConnID struct {
 	Fd            uint32
 	Padding1      [4]byte
 	Conn_start_ns uint64
-	Port          uint16
-	Padding       [2]byte
-	Ip            uint32
+	// this is destination port / remote port
+	Port    uint16
+	Padding [2]byte
+	// this is destination IP / remote IP
+	Ip uint32
 }
 
 type SocketDataEventAttr struct {
@@ -38,7 +40,11 @@ type SocketDataEvent struct {
 }
 
 type SocketOpenEvent struct {
-	ConnId         ConnID
+	ConnId ConnID
+	// source IP and port
+	SrcIp          uint32
+	SrcPort        uint16
+	Padding        [2]byte
 	Socket_open_ns uint64
 }
 

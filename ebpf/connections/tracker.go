@@ -23,6 +23,10 @@ type Tracker struct {
 	sentBuf map[int][]byte
 	mutex   sync.RWMutex
 	ssl     bool
+
+	// source IP-Port / local IP-Port
+	srcIp   uint32
+	srcPort uint16
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -107,6 +111,8 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	}
 	conn.openTimestamp = now
 	conn.lastAccessTimestamp = now
+	conn.srcIp = event.SrcIp
+	conn.srcPort = event.SrcPort
 }
 
 func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
