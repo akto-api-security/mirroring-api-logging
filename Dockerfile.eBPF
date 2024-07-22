@@ -9,7 +9,11 @@ FROM base AS builder
 ARG GO_VERSION=1.21.11
 ARG TARGETARCH
 
-RUN if [ "$TARGETARCH" = "arm64" ]; then ARCH="arm64"; elif [ "$TARGETARCH" = "amd64" ]; then ARCH="amd64"; else ARCH="armv7"; fi && \
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ARCH="arm64"; \
+    elif [ "$TARGETARCH" = "amd64" ]; then \
+        ARCH="amd64"; \
+    fi && \
     wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz && \
     tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz && \
     rm go${GO_VERSION}.linux-${ARCH}.tar.gz
