@@ -463,7 +463,6 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
 
 int probe_ret_sock_alloc(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
-    bpf_trace_printk("probe_ret_sock_alloc: pid: %d", id);
   
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_ret_sock_alloc: pid: %d", id);
@@ -483,7 +482,6 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
 
 int probe_entry_tcp_connect(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
-    bpf_trace_printk("probe_entry_tcp_connect: pid: %d", id);
   
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_tcp_connect: pid: %d", id);
@@ -526,10 +524,12 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
     struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
 
     if (accept_args != NULL) {
-      struct sock *sock = accept_args->sock;
-      struct socket *s;
-      bpf_probe_read_kernel(&(s), sizeof(s), &sock->sk_socket);
-      accept_args->sock_alloc_socket = s;
+      if (accept_args->sock != NULL) {
+        struct sock *sock = accept_args->sock;
+        struct socket *s;
+        bpf_probe_read_kernel(&(s), sizeof(s), &sock->sk_socket);
+        accept_args->sock_alloc_socket = s;
+      }
       process_syscall_accept(ctx, accept_args, id, true);
     }
 
