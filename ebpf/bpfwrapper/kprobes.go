@@ -45,22 +45,26 @@ func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
 
 		probeFD, err := bpfModule.LoadKprobe(probe.HookName)
 		if err != nil {
-			return fmt.Errorf("failed to load %q due to: %v", probe.HookName, err)
+			fmt.Errorf("failed to load %q due to: %v, skipping", probe.HookName, err)
+			continue
 		}
 
 		switch probe.Type {
 		case EntryType:
 			log.Printf("Loading %q for %q as kprobe\n", probe.HookName, probe.FunctionToHook)
 			if err = bpfModule.AttachKprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
-				return fmt.Errorf("failed to attach kprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
+				fmt.Errorf("failed to attach kprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
+				continue
 			}
 		case ReturnType:
 			log.Printf("Loading %q for %q as kretprobe\n", probe.HookName, probe.FunctionToHook)
 			if err = bpfModule.AttachKretprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
-				return fmt.Errorf("failed to attach kretprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
+				fmt.Errorf("failed to attach kretprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
+				continue
 			}
 		default:
-			return fmt.Errorf("unknown Kprobe type %d given for %q", probe.Type, probe.HookName)
+			fmt.Errorf("unknown Kprobe type %d given for %q, skipping", probe.Type, probe.HookName)
+			continue
 		}
 	}
 	return nil

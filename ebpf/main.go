@@ -151,9 +151,6 @@ func run() {
 	hooks := make([]bpfwrapper.Kprobe, 0)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
-	if isAmdArch() {
-		hooks = append(hooks, bpfwrapper.Level1hooksAmd...)
-	}
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
@@ -174,7 +171,7 @@ func run() {
 	}
 
 	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
-		log.Panic(err)
+		fmt.Errorf("Error in attaching kprobes %v", err)
 	}
 
 	processFactory := process.NewFactory()
