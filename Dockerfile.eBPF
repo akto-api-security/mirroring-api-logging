@@ -5,7 +5,17 @@ RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 
 FROM base AS builder
 
-RUN apk add go
+# Set Go version
+ENV GO_VERSION=1.21.11
+
+# Determine architecture and download corresponding Go binary
+RUN ARCH=$(apk --print-arch) && \
+    if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; elif [ "$ARCH" = "aarch64" ]; then ARCH="arm64"; fi && \
+    wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${ARCH}.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 COPY ebpf ./ebpf
 COPY trafficUtil ./trafficUtil
@@ -33,4 +43,4 @@ RUN chmod +x /ebpf/ebpf-run.sh
 
 RUN apk add perf
 
-CMD "./ebpf-run.sh"
+CMD ["./ebpf-run.sh"]
