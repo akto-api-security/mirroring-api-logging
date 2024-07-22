@@ -5,20 +5,14 @@ RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 
 FROM base AS builder
 
-# Set Go version
-ENV GO_VERSION=1.21.11
-
-# Use build argument TARGETARCH provided by Docker to specify architecture
+# Install Go based on architecture
+ARG GO_VERSION=1.21.11
 ARG TARGETARCH
 
-# Download and install Go based on the architecture
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-        wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz; \
-    elif [ "$TARGETARCH" = "arm64" ]; then \
-        wget https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz; \
-    fi && \
-    tar -C /usr/local -xzf go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
-    rm go${GO_VERSION}.linux-${TARGETARCH}.tar.gz
+RUN if [ "$TARGETARCH" = "arm64" ]; then ARCH="arm64"; elif [ "$TARGETARCH" = "amd64" ]; then ARCH="amd64"; else ARCH="armv7"; fi && \
+    wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${ARCH}.tar.gz
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 
@@ -28,14 +22,12 @@ WORKDIR /ebpf
 
 RUN go get
 RUN go mod download
-# This marks all kprobes deployed by akto
 RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/attachUProbe(/AttachUProbeInternal(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/symbol.go
 RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 
-# TODO: mark the same for user probes as well
 RUN go build -o ebpf-logging
 
 FROM base
