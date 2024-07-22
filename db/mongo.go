@@ -2,11 +2,12 @@ package db
 
 import (
 	"context"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"os"
 	"strconv"
 	"sync"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var (
@@ -18,6 +19,7 @@ var (
 var AccountID = strconv.Itoa(1_000_000)
 var TrafficMetricsCollectionName = "traffic_metrics"
 var AccountSettingsCollectionName = "accounts_settings"
+var LogsCollectionName = "logs_runtime"
 
 func GetMongoClient() (*mongo.Client, error) {
 	once.Do(func() {
