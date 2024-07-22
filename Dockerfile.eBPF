@@ -44,4 +44,4 @@ RUN chmod +x /ebpf/ebpf-run.sh
 
 RUN apk add perf
 
-CMD ["./ebpf-run.sh"]
+CMD "./ebpf-run.sh"
