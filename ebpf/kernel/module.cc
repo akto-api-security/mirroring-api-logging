@@ -58,6 +58,7 @@ union sockaddr_t {
 
 struct accept_args_t {
     struct sockaddr* addr;
+    struct sock *sock;
     struct socket* sock_alloc_socket;
     u32 fd;
 };
@@ -82,6 +83,8 @@ struct socket_open_event_t {
     u64 conn_start_ns;
     unsigned short port;
     u32 ip;
+    u32 src_ip;
+    unsigned short src_port;
     u64 socket_open_ns;
 };
 
@@ -149,9 +152,19 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     struct conn_info_t conn_info = {};
     bool socketConn = false;
 
+    u32 srcIp = 0;
+    uint16_t lport = 0;
+
     if(args->addr != NULL){
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("sock addr found, processing");
+      }
         addr = (union sockaddr_t*)args->addr;
-    } else if(args->sock_alloc_socket !=NULL){
+    }
+    if(args->sock_alloc_socket !=NULL){
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("sock alloc found, processing");
+      }
         socketConn = true;
         struct sock* sk = NULL;
         bpf_probe_read_kernel(&sk, sizeof(sk),  &(args->sock_alloc_socket)->sk);
@@ -161,15 +174,30 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         u32 ip = 0;
         bpf_probe_read_kernel(&family, sizeof(family), &sk_common->skc_family);
         bpf_probe_read_kernel(&rport, sizeof(rport), &sk_common->skc_dport);
+        bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
         conn_info.port = rport;
         if (family == AF_INET) {
+          if (PRINT_BPF_LOGS){
+            bpf_trace_printk("sock alloc found ipv4, processing");
+          }
           bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
+          bpf_probe_read_kernel(&(srcIp), sizeof(srcIp), &sk_common->skc_rcv_saddr);
         } else if (family == AF_INET6) {
+          if (PRINT_BPF_LOGS){
+            bpf_trace_printk("sock alloc found ipv6, processing");
+          }
           struct in6_addr in_addr;
+          struct in6_addr in_addr_2;
           bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
+          bpf_probe_read_kernel(&(in_addr_2), sizeof(in_addr_2), &sk_common->skc_v6_rcv_saddr);
           conn_info.ip = (in_addr.s6_addr32)[3];
+          srcIp = (in_addr_2.s6_addr32)[3];
         } else {
           return;
+        }
+        if (PRINT_BPF_LOGS){
+          bpf_trace_printk("sock alloc found, processed: id: %llu ip: %llu port: %d", id, conn_info.ip, conn_info.port);
+          bpf_trace_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d", id, srcIp, lport);
         }
     }
 
@@ -249,6 +277,14 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     socket_open_event.conn_start_ns = conn_info.conn_start_ns;
     socket_open_event.port = conn_info.port;
     socket_open_event.ip = conn_info.ip;
+    socket_open_event.src_ip = srcIp;
+    socket_open_event.src_port = lport;
+
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("accept call: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
+      bpf_trace_printk("accept call 2: %llu %d %d", socket_open_event.ip, socket_open_event.port, isConnect);
+      bpf_trace_printk("accept call 3: %llu %d %d", socket_open_event.src_ip, socket_open_event.src_port, isConnect);
+    }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
     socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
@@ -444,6 +480,25 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
   return 0;
 }
 
+int probe_entry_tcp_connect(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_tcp_connect: pid: %d", id);
+  }
+  // Only trace sock_alloc() called by accept()/accept4().
+  struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
+  if (accept_args == NULL) {
+    return 0;
+  }
+
+  if (accept_args->sock == NULL){
+    accept_args->sock = (void *)PT_REGS_PARM1(ctx);
+  }
+
+  return 0;
+}
+
 int syscall__probe_entry_connect(struct pt_regs* ctx, int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
     u64 id = bpf_get_current_pid_tgid();
 
@@ -469,7 +524,13 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
     struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
 
     if (accept_args != NULL) {
-        process_syscall_accept(ctx, accept_args, id, true);
+      if (accept_args->sock != NULL) {
+        struct sock *sock = accept_args->sock;
+        struct socket *s;
+        bpf_probe_read_kernel(&(s), sizeof(s), &sock->sk_socket);
+        accept_args->sock_alloc_socket = s;
+      }
+      process_syscall_accept(ctx, accept_args, id, true);
     }
 
     active_accept_args_map.delete(&id);

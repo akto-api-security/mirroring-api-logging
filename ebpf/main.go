@@ -49,13 +49,29 @@ func replaceMaxConnectionMapSize() {
 }
 
 func replaceArchType() {
-	arch := runtime.GOARCH
 	archStr := "TARGET_ARCH_X86_64"
-	if strings.Contains(arch, "arm") {
+	if isArmArch() {
 		archStr = "TARGET_ARCH_AARCH64"
 	}
-	fmt.Printf("arch type detected: %v\n", arch)
 	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
+}
+
+func isArmArch() bool {
+	arch := runtime.GOARCH
+	fmt.Printf("arch type detected: %v\n", arch)
+	if strings.Contains(arch, "arm") {
+		return true
+	}
+	return false
+}
+
+func isAmdArch() bool {
+	arch := runtime.GOARCH
+	fmt.Printf("arch type detected: %v\n", arch)
+	if strings.Contains(arch, "amd") {
+		return true
+	}
+	return false
 }
 
 func main() {
@@ -155,7 +171,7 @@ func run() {
 	}
 
 	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
-		log.Panic(err)
+		fmt.Errorf("Error in attaching kprobes %v", err)
 	}
 
 	processFactory := process.NewFactory()

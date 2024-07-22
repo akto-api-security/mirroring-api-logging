@@ -65,7 +65,7 @@ func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
-	sourceIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool, direction int) {
+	sourceIp string, destIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool, direction int) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
@@ -245,6 +245,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			"requestPayload":  requestsContent[i],
 			"responsePayload": responsesContent[i],
 			"ip":              sourceIp,
+			"destIp":          destIp,
 			"time":            fmt.Sprint(time.Now().Unix()),
 			"statusCode":      fmt.Sprint(resp.StatusCode),
 			"type":            string(req.Proto),

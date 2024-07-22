@@ -2,6 +2,7 @@ package connections
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"sort"
 
@@ -97,12 +98,18 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelet
 	binary.LittleEndian.PutUint32(byteSlice, originalInt)
 	// Convert the byte slice to an IP address
 	ip := net.IP(byteSlice)
-	ipStr := ip.String()
+	destIpStr := ip.String() + ":" + fmt.Sprint(connID.Port)
 
-	go tryReadFromBD(ipStr, receiveBuffer, sentBuffer, isComplete, 1)
+	originalInt = uint32(tracker.srcIp)
+	byteSlice = make([]byte, 4)
+	binary.LittleEndian.PutUint32(byteSlice, originalInt)
+	ip = net.IP(byteSlice)
+	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
+
+	go tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		go tryReadFromBD(ipStr, sentBuffer, receiveBuffer, isComplete, 2)
+		go tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2)
 	}
 }
 
