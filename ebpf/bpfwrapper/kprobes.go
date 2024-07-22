@@ -1,7 +1,6 @@
 package bpfwrapper
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/iovisor/gobpf/bcc"
@@ -45,25 +44,39 @@ func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
 
 		probeFD, err := bpfModule.LoadKprobe(probe.HookName)
 		if err != nil {
-			fmt.Errorf("failed to load %q due to: %v, skipping", probe.HookName, err)
+			log.Printf("failed to load %q due to: %v, skipping", probe.HookName, err)
 			continue
 		}
 
 		switch probe.Type {
 		case EntryType:
-			log.Printf("Loading %q for %q as kprobe\n", probe.HookName, probe.FunctionToHook)
+			log.Printf("Loading %q for %q as kprobe\n", probe.HookName, functionToHook)
 			if err = bpfModule.AttachKprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
-				fmt.Errorf("failed to attach kprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
-				continue
+				log.Printf("failed to attach kprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
+				if probe.IsSyscall {
+					log.Printf("Syscall loading failed, trying non-syscall loading %q for %q as kprobe", probe.HookName, probe.FunctionToHook)
+					log.Printf("Loading %q for %q as kprobe\n", probe.HookName, probe.FunctionToHook)
+					if err = bpfModule.AttachKprobe(probe.FunctionToHook, probeFD, maxActiveConnections); err != nil {
+						log.Printf("failed to attach kprobe %q to %q due to: %v, skipping", probe.HookName, probe.FunctionToHook, err)
+					}
+				}
 			}
+			continue
 		case ReturnType:
-			log.Printf("Loading %q for %q as kretprobe\n", probe.HookName, probe.FunctionToHook)
+			log.Printf("Loading %q for %q as kretprobe\n", probe.HookName, functionToHook)
 			if err = bpfModule.AttachKretprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
-				fmt.Errorf("failed to attach kretprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
-				continue
+				log.Printf("failed to attach kretprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
+				if probe.IsSyscall {
+					log.Printf("Syscall loading failed, trying non-syscall loading %q for %q as kretprobe", probe.HookName, probe.FunctionToHook)
+					log.Printf("Loading %q for %q as kretprobe\n", probe.HookName, probe.FunctionToHook)
+					if err = bpfModule.AttachKretprobe(probe.FunctionToHook, probeFD, maxActiveConnections); err != nil {
+						log.Printf("failed to attach kretprobe %q to %q due to: %v, skipping", probe.HookName, probe.FunctionToHook, err)
+					}
+				}
 			}
+			continue
 		default:
-			fmt.Errorf("unknown Kprobe type %d given for %q, skipping", probe.Type, probe.HookName)
+			log.Printf("unknown Kprobe type %d given for %q, skipping", probe.Type, probe.HookName)
 			continue
 		}
 	}
