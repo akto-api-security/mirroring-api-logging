@@ -156,11 +156,15 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     uint16_t lport = 0;
 
     if(args->addr != NULL){
-        // bpf_trace_printk("sock addr found, processing");
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("sock addr found, processing");
+      }
         addr = (union sockaddr_t*)args->addr;
     }
     if(args->sock_alloc_socket !=NULL){
+      if (PRINT_BPF_LOGS){
         bpf_trace_printk("sock alloc found, processing");
+      }
         socketConn = true;
         struct sock* sk = NULL;
         bpf_probe_read_kernel(&sk, sizeof(sk),  &(args->sock_alloc_socket)->sk);
@@ -173,11 +177,15 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
         conn_info.port = rport;
         if (family == AF_INET) {
-          bpf_trace_printk("sock alloc found ipv4, processing");
+          if (PRINT_BPF_LOGS){
+            bpf_trace_printk("sock alloc found ipv4, processing");
+          }
           bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
           bpf_probe_read_kernel(&(srcIp), sizeof(srcIp), &sk_common->skc_rcv_saddr);
         } else if (family == AF_INET6) {
-        bpf_trace_printk("sock alloc found ipv6, processing");
+          if (PRINT_BPF_LOGS){
+            bpf_trace_printk("sock alloc found ipv6, processing");
+          }
           struct in6_addr in_addr;
           struct in6_addr in_addr_2;
           bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
@@ -187,8 +195,10 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         } else {
           return;
         }
-        bpf_trace_printk("sock alloc found, processed: id: %llu ip: %llu port: %d", id, conn_info.ip, conn_info.port);
-        bpf_trace_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d", id, srcIp, lport);
+        if (PRINT_BPF_LOGS){
+          bpf_trace_printk("sock alloc found, processed: id: %llu ip: %llu port: %d", id, conn_info.ip, conn_info.port);
+          bpf_trace_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d", id, srcIp, lport);
+        }
     }
 
     if ( !socketConn && addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6 ) {
@@ -270,9 +280,11 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     socket_open_event.src_ip = srcIp;
     socket_open_event.src_port = lport;
 
-    bpf_trace_printk("accept call: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
-    bpf_trace_printk("accept call 2: %llu %d %d", socket_open_event.ip, socket_open_event.port, isConnect);
-    bpf_trace_printk("accept call 3: %llu %d %d", socket_open_event.src_ip, socket_open_event.src_port, isConnect);
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("accept call: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
+      bpf_trace_printk("accept call 2: %llu %d %d", socket_open_event.ip, socket_open_event.port, isConnect);
+      bpf_trace_printk("accept call 3: %llu %d %d", socket_open_event.src_ip, socket_open_event.src_port, isConnect);
+    }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
     socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));

@@ -49,13 +49,29 @@ func replaceMaxConnectionMapSize() {
 }
 
 func replaceArchType() {
-	arch := runtime.GOARCH
 	archStr := "TARGET_ARCH_X86_64"
-	if strings.Contains(arch, "arm") {
+	if isArmArch() {
 		archStr = "TARGET_ARCH_AARCH64"
 	}
-	fmt.Printf("arch type detected: %v\n", arch)
 	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
+}
+
+func isArmArch() bool {
+	arch := runtime.GOARCH
+	fmt.Printf("arch type detected: %v\n", arch)
+	if strings.Contains(arch, "arm") {
+		return true
+	}
+	return false
+}
+
+func isAmdArch() bool {
+	arch := runtime.GOARCH
+	fmt.Printf("arch type detected: %v\n", arch)
+	if strings.Contains(arch, "amd") {
+		return true
+	}
+	return false
 }
 
 func main() {
@@ -135,6 +151,9 @@ func run() {
 	hooks := make([]bpfwrapper.Kprobe, 0)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
+	if isAmdArch() {
+		hooks = append(hooks, bpfwrapper.Level1hooksAmd...)
+	}
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {

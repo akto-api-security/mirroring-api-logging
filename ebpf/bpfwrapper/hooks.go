@@ -44,6 +44,9 @@ var (
 			Type:           ReturnType,
 			IsSyscall:      false,
 		},
+	}
+
+	Level1hooksAmd = []Kprobe{
 		{
 			FunctionToHook: "tcp_connect",
 			HookName:       "probe_entry_tcp_connect",
