@@ -47,7 +47,7 @@ func logsInstance() (*mongo.Collection, error) {
 func InsertLog(logString string, key string) {
 	log.Println(logString)
 
-	logString += "MIRRORING: " + logString
+	logString = "MIRRORING: " + logString
 
 	logDoc := LogDocument{
 		Log:       logString,
