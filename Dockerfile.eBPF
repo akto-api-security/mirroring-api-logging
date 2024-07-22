@@ -5,7 +5,20 @@ RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 
 FROM base AS builder
 
-RUN apk add go
+# Install Go based on architecture
+ARG GO_VERSION=1.21.11
+ARG TARGETARCH
+
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ARCH="arm64"; \
+    elif [ "$TARGETARCH" = "amd64" ]; then \
+        ARCH="amd64"; \
+    fi && \
+    wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${ARCH}.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 COPY ebpf ./ebpf
 COPY trafficUtil ./trafficUtil
@@ -13,14 +26,12 @@ WORKDIR /ebpf
 
 RUN go get
 RUN go mod download
-# This marks all kprobes deployed by akto
 RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/attachUProbe(/AttachUProbeInternal(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/symbol.go
 RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 
-# TODO: mark the same for user probes as well
 RUN go build -o ebpf-logging
 
 FROM base
