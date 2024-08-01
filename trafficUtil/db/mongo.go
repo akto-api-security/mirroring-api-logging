@@ -2,10 +2,10 @@ package db
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"sync"
 
+	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -24,7 +24,8 @@ func GetMongoClient() (*mongo.Client, error) {
 	once.Do(func() {
 
 		//os.Setenv("AKTO_MONGO_CONN", "mongodb://localhost:27017/admini")
-		mongoUrl := os.Getenv("AKTO_MONGO_CONN")
+		mongoUrl := "mongodb://0.0.0.0:27017/admini"
+		trafficUtils.InitVar("AKTO_MONGO_CONN", &mongoUrl)
 
 		// Define MongoDB client options
 		clientOptions := options.Client().ApplyURI(mongoUrl)
