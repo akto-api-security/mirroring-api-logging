@@ -537,12 +537,14 @@ func main() {
 		isGcp = (infra_mirroring_mode_input == "gcp")
 	}
 
-	interfaceName := "eth0"
-
-	if isGcp {
-		interfaceName = "ens4"
+	interfaceName := os.Getenv("MIRRORING_INTERFACE")
+	if len(interfaceName) == 0 {
+		interfaceName := "eth0"
+		if isGcp {
+			interfaceName = "ens4"
+		}
 	}
-
+	
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
