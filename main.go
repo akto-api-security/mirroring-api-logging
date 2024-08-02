@@ -539,7 +539,7 @@ func main() {
 
 	interfaceName := os.Getenv("MIRRORING_INTERFACE")
 	if len(interfaceName) == 0 {
-		interfaceName := "eth0"
+		interfaceName = "eth0"
 		if isGcp {
 			interfaceName = "ens4"
 		}
