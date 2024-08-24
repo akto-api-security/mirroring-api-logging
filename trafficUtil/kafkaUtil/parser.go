@@ -27,6 +27,17 @@ var (
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
+	methodsMap                 = map[string]bool{
+		"GET":     true,
+		"HEAD":    true,
+		"POST":    true,
+		"PUT":     true,
+		"DELETE":  true,
+		"CONNECT": true,
+		"OPTIONS": true,
+		"TRACE":   true,
+		"TRACK":   true,
+		"PATCH":   true}
 )
 
 const ONE_MINUTE = 60
@@ -62,6 +73,11 @@ func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
 		}
 	}
 	return skip
+}
+
+func IsValidMethod(method string) bool {
+	_, ok := methodsMap[strings.ToUpper(method)]
+	return ok
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
@@ -183,6 +199,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 
 		req := &requests[i]
 		resp := &responses[i]
+
+		if !IsValidMethod(req.Method) {
+			continue
+		}
 
 		id := ""
 
