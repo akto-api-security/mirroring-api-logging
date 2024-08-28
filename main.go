@@ -25,8 +25,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/akto-api-security/mirroring-api-logging/api"
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -48,9 +52,11 @@ var kafkaErrMsgCount = 0
 var kafkaErrMsgEpoch = time.Now()
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
+var trafficCollectorCount utils.TrafficCollectorCounter
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
 var maintainTrafficIpMap = false
 var aktoMemThreshRestart = 500
+var trafficCollectorLock sync.Mutex
 
 var filterHeaderValueMap = make(map[string]string)
 
@@ -350,6 +356,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
+		trafficCollectorCount.Inc(1)
+
 		//printLog("req-resp.String() " + string(out))
 		go Produce(kafkaWriter, ctx, string(out))
 		i++
@@ -594,11 +602,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 }
 
 func initKafka() {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
-	}
+	kafka_url := getKafkaUrl()
 	printLog("kafka_url: " + kafka_url)
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
@@ -707,7 +711,54 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	}
 }
 
+func getKafkaUrl() string {
+	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
+	if len(kafka_url) == 0 {
+		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
+	}
+
+	return kafka_url
+}
+
+var credential Credential
+
+const collectorIdFile = "/collector_id_file"
+
+func getCollectorId() (string, error) {
+	data, err := os.ReadFile(collectorIdFile)
+	if err == nil {
+		// File exists and was read successfully
+		content := string(data)
+		if len(content) > 0 {
+			// Return the content if it's not empty
+			return content, nil
+		}
+	}
+
+	// If the file doesn't exist or is empty, generate a new UUID
+	newUUID := uuid.New().String()
+
+	// Write the UUID to the file
+	err = os.WriteFile(collectorIdFile, []byte(newUUID), 0644)
+	if err != nil {
+		return newUUID, fmt.Errorf("failed to write to file: %v", err)
+	}
+
+	// Return the new UUID
+	return newUUID, nil
+}
+
+var groupId = uuid.New().String()
+
+var collectorId string
+
 func main() {
+	collectorId, err = getCollectorId()
+	if err != nil {
+		log.Println(err.Error())
+	}
+	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
+
 	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
 	disableOnDbFlag := disableOnDb == "true"
 
@@ -781,10 +832,25 @@ func main() {
 
 func tickerCode() {
 	log.Println("Running ticker")
+
+	if credential.URL == "" {
+		kafkaUrl := getKafkaUrl()
+		printLog("kafkaUrl: " + kafkaUrl)
+		credential = GetCredential(kafkaUrl, groupId, "credentials")
+	}
+
 	db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
 	incomingCountMap = make(map[string]utils.IncomingCounter)
 	outgoingCountMap = make(map[string]utils.OutgoingCounter)
 	filterHeaderValueMap = db.FetchFilterHeaderMap()
+
+	trafficCollectorLock.Lock()
+	defer trafficCollectorLock.Unlock()
+
+	if credential.URL != "" {
+		api.SendTrafficDataToAPI(trafficCollectorCount, credential.URL, credential.Token)
+	}
+	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
 }
 
 func printLog(val string) {
