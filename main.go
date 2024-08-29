@@ -333,7 +333,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
+// 		ctx := context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
@@ -350,8 +350,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			outgoingCountMap[oc.OutgoingCounterKey()] = oc
 		}
 
-		//printLog("req-resp.String() " + string(out))
-		go Produce(kafkaWriter, ctx, string(out))
+		printLog("req-resp.String() " + string(out))
+// 		go Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -485,7 +485,15 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	var bytesInEpoch = time.Now()
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
-
+		pb, ok := packet.(gopacket.PacketBuilder)
+		if !ok {
+			panic("Not a PacketBuilder")
+		}
+		ipv4 := &layers.IPv4{}
+		ipv4.DecodeFromBytes(packet.Data()[20:], pb)
+		pb.AddLayer(ipv4)
+		pb.SetNetworkLayer(ipv4)
+		pb.NextDecoder(ipv4.NextLayerType())
 		innerPacket := packet
 		vxlanID := apiCollectionId
 		if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
@@ -565,7 +573,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			if time.Now().Sub(bytesInEpoch).Seconds() > 3 {
 				bytesInEpoch = time.Now()
-				flushAll()
+// 				flushAll()
 				logMemoryStats()
 				logKafkaStats()
 			}
@@ -636,19 +644,20 @@ func initKafka() {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
-		err := Produce(kafkaWriter, ctx, string(out))
-		log.Println("logging kafka stats post pushing message")
-		logKafkaStats()
-		if err != nil {
-			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
-			kafkaWriter.Close()
-			time.Sleep(time.Second * 2)
-		} else {
-			log.Println("connection establishing with kafka successfully")
-			kafkaWriter.Completion = kafkaCompletion()
-			break
-		}
+		log.Println(out)
+// 		ctx := context.Background()
+// 		err := Produce(kafkaWriter, ctx, string(out))
+// 		log.Println("logging kafka stats post pushing message")
+// 		logKafkaStats()
+// 		if err != nil {
+// 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
+// 			kafkaWriter.Close()
+// 			time.Sleep(time.Second * 2)
+// 		} else {
+// 			log.Println("connection establishing with kafka successfully")
+// 			kafkaWriter.Completion = kafkaCompletion()
+// 			break
+// 		}
 	}
 }
 
@@ -761,10 +770,12 @@ func main() {
 	}
 	initKafka()
 	for {
-		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
+		if handle, err := pcap.OpenOffline("/Users/ankushjain/Downloads/akto-debug-capture (1).pcap"); err != nil {
 			log.Fatal(err)
 		} else {
+		    log.Println("graphql")
 			run(handle, -1, "MIRRORING")
+			flushAll()
 			log.Println("closing pcap connection....")
 			handle.Close()
 			log.Println("sleeping....")
@@ -773,7 +784,7 @@ func main() {
 			outgoingCountMap = make(map[string]utils.OutgoingCounter)
 			time.Sleep(10 * time.Second)
 			log.Println("SLEPT")
-			initKafka()
+// 			initKafka()
 		}
 	}
 

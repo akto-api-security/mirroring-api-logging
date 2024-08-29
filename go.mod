@@ -3,7 +3,6 @@ module github.com/akto-api-security/mirroring-api-logging
 go 1.17
 
 require (
-	github.com/akto-api-security/gomiddleware v0.1.0
 	github.com/google/gopacket v1.1.19
 	github.com/segmentio/kafka-go v0.4.25
 	go.mongodb.org/mongo-driver v1.11.3
