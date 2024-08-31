@@ -190,26 +190,87 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
 	requests := []http.Request{}
+	allRequests := []http.Request{}
 	requestsContent := []string{}
-
+	allRequestsContent := []string{}
+	var done bool
 	for {
 		req, err := http.ReadRequest(reader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
+			done = true
 			printLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return
+			continue
 		}
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
 			printLog(fmt.Sprintf("Got body err: %s\n", err))
+			done = true
+			continue
+		}
+
+		if !done {
+			requests = append(requests, *req)
+			requestsContent = append(requestsContent, string(body))
+		}
+		allRequests = append(allRequests, *req)
+		allRequestsContent = append(allRequestsContent, string(body))
+		i++
+	}
+
+	// send all requests to a different kafka topic
+	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
+	if len(requestProtectionEnabled) > 0 {
+		if len(allRequests) == 0 {
 			return
 		}
 
-		requests = append(requests, *req)
-		requestsContent = append(requestsContent, string(body))
-		i++
+		i = 0
+
+		// converting all requests to akto format
+		for {
+			if len(allRequests) < (i + 1) {
+				break
+			}
+			currentReq := &allRequests[i]
+			currentReqHeader := make(map[string]string)
+
+			for name, values := range currentReq.Header {
+				// Loop over all values for the name.
+				for _, value := range values {
+					currentReqHeader[name] = value
+				}
+			}
+
+			currentReqHeader["host"] = currentReq.Host
+
+			if ignoreCloudMetadataCalls && currentReq.Host == "169.254.169.254" {
+				i++
+				continue
+			}
+
+			currentReqHeaderString, _ := json.Marshal(currentReqHeader)
+			value := map[string]string{
+				"path":           currentReq.URL.String(),
+				"requestHeaders": string(currentReqHeaderString),
+				"method":         currentReq.Method,
+				"requestPayload": allRequestsContent[i],
+				"ip":             bd.key.net.Src().String(),
+				"time":           fmt.Sprint(time.Now().Unix()),
+				"type":           string(currentReq.Proto),
+				"akto_vxlan_id":  fmt.Sprint(bd.vxlanID),
+				"is_pending":     fmt.Sprint(isPending),
+				"source":         bd.source,
+			}
+
+			out, _ := json.Marshal(value)
+			ctx := context.Background()
+			go Produce(allRequestsKafkaWriter, ctx, string(out))
+			i++
+		}
+
 	}
 
 	if len(requests) == 0 {
@@ -351,6 +412,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		//printLog("req-resp.String() " + string(out))
+
+		// send function.
 		go Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
@@ -409,6 +472,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 }
 
 var kafkaWriter *kafka.Writer
+var allRequestsKafkaWriter *kafka.Writer
 
 func flushAll() {
 	for _, v := range assemblerMap {
@@ -595,11 +659,16 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 
 func initKafka() {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
+	kafka_protection_url := os.Getenv("AKTO_KAFKA_PROTECTION_URL")
 
 	if len(kafka_url) == 0 {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
 	printLog("kafka_url: " + kafka_url)
+
+	if len(kafka_protection_url) == 0 {
+		kafka_protection_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
+	}
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
@@ -628,6 +697,7 @@ func initKafka() {
 
 	for {
 		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		allRequestsKafkaWriter = GetKafkaWriter(kafka_protection_url, "akto.api.protection", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
 		log.Println("logging kafka stats before pushing message")
 		logKafkaStats()
