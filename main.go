@@ -837,6 +837,13 @@ func tickerCode() {
 		kafkaUrl := getKafkaUrl()
 		printLog("kafkaUrl: " + kafkaUrl)
 		credential = GetCredential(kafkaUrl, groupId, "credentials")
+		log.Println("Credential URL: " + credential.URL)
+		log.Println("Credential Mini Runtime ID: " + credential.ID)
+		if len(credential.Token) > 0 {
+			log.Println("Credential Token found")
+		} else {
+			log.Println("Credential Token not found")
+		}
 	}
 
 	db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)

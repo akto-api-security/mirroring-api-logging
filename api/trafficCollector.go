@@ -6,6 +6,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"log"
 	"net/http"
+	"strings"
 )
 
 func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url string, token string) {
@@ -20,7 +21,13 @@ func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url st
 		return
 	}
 
+	if strings.HasSuffix(url, "/") {
+		url = strings.TrimSuffix(url, "/")
+	}
+
 	fullUrl := url + "/api/updateTrafficCollectorMetrics"
+
+	log.Println("Full url: " + fullUrl)
 
 	req, err := http.NewRequest("POST", fullUrl, bytes.NewBuffer(jsonData))
 	if err != nil {

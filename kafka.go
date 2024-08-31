@@ -76,6 +76,8 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 				log.Fatalf("could not read message: %v", err)
 			}
 
+			log.Println("Found message: " + string(m.Value))
+
 			err = json.Unmarshal(m.Value, &msg)
 			if err != nil {
 				log.Fatalf("could not unmarshal message: %v", err)
