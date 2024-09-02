@@ -222,12 +222,14 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 	// send all requests to a different kafka topic
 	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
+	printLog("REQUEST_PROTECTION: " + requestProtectionEnabled)
 	if len(requestProtectionEnabled) > 0 {
 		if len(allRequests) == 0 {
 			return
 		}
 
 		i = 0
+		printLog("Inside all requests loop")
 
 		// converting all requests to akto format
 		for {
@@ -267,6 +269,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 			out, _ := json.Marshal(value)
 			ctx := context.Background()
+			printLog("Trying to send to new topic")
 			go Produce(allRequestsKafkaWriter, ctx, string(out))
 			i++
 		}
@@ -670,6 +673,8 @@ func initKafka() {
 		kafka_protection_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
 
+	printLog("kafka_protection_url: " +  kafka_protection_url)
+
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
 		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
@@ -697,6 +702,8 @@ func initKafka() {
 
 	for {
 		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+
+		printLog("set new topic reached")
 		allRequestsKafkaWriter = GetKafkaWriter(kafka_protection_url, "akto.api.protection", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
 		log.Println("logging kafka stats before pushing message")
