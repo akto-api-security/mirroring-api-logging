@@ -855,7 +855,7 @@ func tickerCode() {
 	defer trafficCollectorLock.Unlock()
 
 	if credential.URL != "" {
-		api.SendTrafficDataToAPI(trafficCollectorCount, credential.URL, credential.Token)
+		api.SendTrafficDataToAPI(trafficCollectorCount, credential.URL, credential.Token, credential.ID)
 	}
 	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
 }

@@ -9,7 +9,8 @@ import (
 	"strings"
 )
 
-func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url string, token string) {
+func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url string, token string, miniRuntimeId string) {
+	trafficCollector.RuntimeId = miniRuntimeId
 	wrappedData := map[string]interface{}{
 		"trafficCollectorMetrics": trafficCollector,
 	}
