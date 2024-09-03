@@ -220,9 +220,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		i++
 	}
 
+	printLog(fmt.Sprintf("total requests handled: %d\n" , i))
+	printLog(fmt.Sprintf("found total requests: %d\n", len(allRequestsContent)))
 	// send all requests to a different kafka topic
 	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
-	printLog("REQUEST_PROTECTION: " + requestProtectionEnabled)
 	if len(requestProtectionEnabled) > 0 {
 		if len(allRequests) == 0 {
 			return
@@ -269,10 +270,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 			out, _ := json.Marshal(value)
 			ctx := context.Background()
-			printLog("Trying to send to new topic")
 			go Produce(allRequestsKafkaWriter, ctx, string(out))
 			i++
 		}
+
+		printLog(fmt.Sprintf("Requests sent to new kafka topic: %d\n" , i))
 
 	}
 
