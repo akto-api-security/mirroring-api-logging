@@ -187,6 +187,7 @@ func checkIfIp(host string) bool {
 }
 
 func tryReadFromBD(bd *bidi, isPending bool) {
+	printLog("read from bd called")
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
 	requests := []http.Request{}
@@ -195,6 +196,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	allRequestsContent := []string{}
 	var done bool
 	for {
+		printLog("inside for loop")
 		req, err := http.ReadRequest(reader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
@@ -218,6 +220,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		allRequests = append(allRequests, *req)
 		allRequestsContent = append(allRequestsContent, string(body))
 		i++
+		printLog(fmt.Sprintf("reached end of loop for : %d\n" , i))
 	}
 
 	printLog(fmt.Sprintf("total requests handled: %d\n" , i))
