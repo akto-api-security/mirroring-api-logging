@@ -186,8 +186,59 @@ func checkIfIp(host string) bool {
 	return net.ParseIP(chunks[0]) != nil
 }
 
+func processAllRequests(bd *bidi, isPending bool, allRequests []http.Request, allRequestsContent []string, ignoreCloudMetadataCalls bool) {
+	if len(allRequests) == 0 {
+		return
+	}
+
+	i := 0
+
+	for {
+		if len(allRequests) < (i + 1) {
+			break
+		}
+		currentReq := &allRequests[i]
+		currentReqHeader := make(map[string]string)
+				// Loop over all values for the name.
+		for name, values := range currentReq.Header {
+				// Loop over all values for the name.
+			for _, value := range values {
+				currentReqHeader[name] = value
+			}
+		}
+
+		currentReqHeader["host"] = currentReq.Host
+
+		if ignoreCloudMetadataCalls && currentReq.Host == "169.254.169.254" {
+			i++
+			continue
+		}
+
+		currentReqHeaderString, _ := json.Marshal(currentReqHeader)
+		value := map[string]string{
+			"path":           currentReq.URL.String(),
+			"requestHeaders": string(currentReqHeaderString),
+			"method":         currentReq.Method,
+			"requestPayload": allRequestsContent[i],
+			"ip":             bd.key.net.Src().String(),
+			"time":           fmt.Sprint(time.Now().Unix()),
+			"type":           currentReq.Proto,
+			"akto_vxlan_id":  fmt.Sprint(bd.vxlanID),
+			"is_pending":     fmt.Sprint(isPending),
+			"source":         bd.source,
+		}
+
+		out, _ := json.Marshal(value)
+		ctx := context.Background()
+		go Produce(allRequestsKafkaWriter, ctx, string(out)) // Replace `nil` with the actual Kafka writer
+
+		i++
+	}
+
+	printLog(fmt.Sprintf("Requests sent to new Kafka topic: %d\n", i))
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
-	printLog("read from bd called")
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
 	requests := []http.Request{}
@@ -196,7 +247,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	allRequestsContent := []string{}
 	var done bool
 	for {
-		printLog("inside for loop")
 		req, err := http.ReadRequest(reader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
@@ -220,68 +270,17 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		allRequests = append(allRequests, *req)
 		allRequestsContent = append(allRequestsContent, string(body))
 		i++
-		printLog(fmt.Sprintf("reached end of loop for : %d\n" , i))
 	}
-
-	printLog(fmt.Sprintf("total requests handled: %d\n" , i))
+	
 	printLog(fmt.Sprintf("found total requests: %d\n", len(allRequestsContent)))
-	// send all requests to a different kafka topic
 	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
-	if len(requestProtectionEnabled) > 0 {
-		if len(allRequests) == 0 {
-			return
-		}
-
-		i = 0
-		printLog("Inside all requests loop")
-
-		// converting all requests to akto format
-		for {
-			if len(allRequests) < (i + 1) {
-				break
-			}
-			currentReq := &allRequests[i]
-			currentReqHeader := make(map[string]string)
-
-			for name, values := range currentReq.Header {
-				// Loop over all values for the name.
-				for _, value := range values {
-					currentReqHeader[name] = value
-				}
-			}
-
-			currentReqHeader["host"] = currentReq.Host
-
-			if ignoreCloudMetadataCalls && currentReq.Host == "169.254.169.254" {
-				i++
-				continue
-			}
-
-			currentReqHeaderString, _ := json.Marshal(currentReqHeader)
-			value := map[string]string{
-				"path":           currentReq.URL.String(),
-				"requestHeaders": string(currentReqHeaderString),
-				"method":         currentReq.Method,
-				"requestPayload": allRequestsContent[i],
-				"ip":             bd.key.net.Src().String(),
-				"time":           fmt.Sprint(time.Now().Unix()),
-				"type":           string(currentReq.Proto),
-				"akto_vxlan_id":  fmt.Sprint(bd.vxlanID),
-				"is_pending":     fmt.Sprint(isPending),
-				"source":         bd.source,
-			}
-
-			out, _ := json.Marshal(value)
-			ctx := context.Background()
-			go Produce(allRequestsKafkaWriter, ctx, string(out))
-			i++
-		}
-
-		printLog(fmt.Sprintf("Requests sent to new kafka topic: %d\n" , i))
-
-	}
+	var shouldSendAllRequests = len(requestProtectionEnabled) > 0
 
 	if len(requests) == 0 {
+		if(shouldSendAllRequests){
+			printLog("Sending data when valid requests are empty")
+			processAllRequests(bd, isPending, allRequests, allRequestsContent, ignoreCloudMetadataCalls)
+		}
 		return
 	}
 
@@ -291,6 +290,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	responses := []http.Response{}
 	responsesContent := []string{}
 
+	var validResponses = true
+
 	for {
 
 		resp, err := http.ReadResponse(reader, nil)
@@ -298,13 +299,15 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			break
 		} else if err != nil {
 			printLog(fmt.Sprintf("HTTP Request error: %s\n", err))
-			return
+			validResponses = false
+			break
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			printLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
+			validResponses = false
+			break
 		}
 		encoding := resp.Header["Content-Encoding"]
 		var r io.Reader
@@ -313,7 +316,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			r, err = gzip.NewReader(r)
 			if err != nil {
 				printLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return
+				validResponses = false
+				break
 			}
 		}
 		if err == nil {
@@ -330,7 +334,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		i++
 	}
 
-	if len(requests) != len(responses) {
+	if !validResponses || len(requests) != len(responses) {
+		if(shouldSendAllRequests){
+			printLog("Sending requests to protection topic when requests and response don't match")
+			processAllRequests(bd, isPending, allRequests, allRequestsContent, ignoreCloudMetadataCalls)
+		}
 		return
 	}
 
@@ -423,6 +431,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		// send function.
 		go Produce(kafkaWriter, ctx, string(out))
+		if(shouldSendAllRequests){
+			printLog("Sending requests and response to threat detection topic")
+			go Produce(allRequestsKafkaWriter, ctx, string(out))
+		}
 		i++
 	}
 }
