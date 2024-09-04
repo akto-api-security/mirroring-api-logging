@@ -234,8 +234,6 @@ func processAllRequests(bd *bidi, isPending bool, allRequests []http.Request, al
 
 		i++
 	}
-
-	printLog(fmt.Sprintf("Requests sent to new Kafka topic: %d\n", i))
 }
 
 func tryReadFromBD(bd *bidi, isPending bool) {
@@ -245,13 +243,13 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	allRequests := []http.Request{}
 	requestsContent := []string{}
 	allRequestsContent := []string{}
-	var done bool
+	var invalidRequestsFound bool
 	for {
 		req, err := http.ReadRequest(reader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			done = true
+			invalidRequestsFound = true
 			printLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			continue
 		}
@@ -259,11 +257,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		req.Body.Close()
 		if err != nil {
 			printLog(fmt.Sprintf("Got body err: %s\n", err))
-			done = true
+			invalidRequestsFound = true
 			continue
 		}
 
-		if !done {
+		if !invalidRequestsFound {
 			requests = append(requests, *req)
 			requestsContent = append(requestsContent, string(body))
 		}
@@ -271,14 +269,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		allRequestsContent = append(allRequestsContent, string(body))
 		i++
 	}
-	
-	printLog(fmt.Sprintf("found total requests: %d\n", len(allRequestsContent)))
+
 	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
 	var shouldSendAllRequests = len(requestProtectionEnabled) > 0
 
-	if len(requests) == 0 {
+	if len(requests) == 0 || invalidRequestsFound {
 		if(shouldSendAllRequests){
-			printLog("Sending data when valid requests are empty")
 			processAllRequests(bd, isPending, allRequests, allRequestsContent, ignoreCloudMetadataCalls)
 		}
 		return
@@ -336,7 +332,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 	if !validResponses || len(requests) != len(responses) {
 		if(shouldSendAllRequests){
-			printLog("Sending requests to protection topic when requests and response don't match")
 			processAllRequests(bd, isPending, allRequests, allRequestsContent, ignoreCloudMetadataCalls)
 		}
 		return
@@ -719,8 +714,6 @@ func initKafka() {
 
 	for {
 		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
-
-		printLog("set new topic reached")
 		allRequestsKafkaWriter = GetKafkaWriter(kafka_protection_url, "akto.api.protection", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
 		log.Println("logging kafka stats before pushing message")
