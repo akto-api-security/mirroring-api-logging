@@ -53,7 +53,7 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	defer func(r *kafka.Reader) {
 		err := r.Close()
 		if err != nil {
-			log.Fatalf("could not close reader: %v", err)
+			log.Printf("could not close reader: %v", err)
 		}
 	}(r)
 
@@ -73,14 +73,16 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 					log.Println("Timeout reached, no message received.")
 					return msg
 				}
-				log.Fatalf("could not read message: %v", err)
+				log.Printf("could not read message: %v", err)
+				return msg // Return empty Credential on read error
 			}
 
 			log.Println("Found message: " + string(m.Value))
 
 			err = json.Unmarshal(m.Value, &msg)
 			if err != nil {
-				log.Fatalf("could not unmarshal message: %v", err)
+				log.Printf("could not unmarshal message: %v", err)
+				return msg // Return empty Credential on unmarshal error
 			}
 
 			return msg // Return early if a message is received
