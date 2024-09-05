@@ -15,8 +15,6 @@ func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url st
 		"trafficCollectorMetrics": trafficCollector,
 	}
 	jsonData, err := json.Marshal(wrappedData)
-
-	log.Println(string(jsonData))
 	if err != nil {
 		log.Printf("Error marshalling data: %v", err)
 		return
@@ -27,8 +25,7 @@ func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url st
 	}
 
 	fullUrl := url + "/api/updateTrafficCollectorMetrics"
-
-	log.Println("Full url: " + fullUrl)
+	log.Println("Full URL:", fullUrl)
 
 	req, err := http.NewRequest("POST", fullUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -44,7 +41,11 @@ func SendTrafficDataToAPI(trafficCollector utils.TrafficCollectorCounter, url st
 		log.Printf("Error sending request: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("API call failed with status: %d", resp.StatusCode)

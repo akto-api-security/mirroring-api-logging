@@ -733,6 +733,9 @@ func getCollectorId() (string, error) {
 			// Return the content if it's not empty
 			return content, nil
 		}
+	} else {
+		// Log an error if the file read fails, but continue processing
+		log.Printf("Error reading collector ID file: %v", err)
 	}
 
 	// If the file doesn't exist or is empty, generate a new UUID
@@ -741,8 +744,13 @@ func getCollectorId() (string, error) {
 	// Write the UUID to the file
 	err = os.WriteFile(collectorIdFile, []byte(newUUID), 0644)
 	if err != nil {
+		// Log the error and return the new UUID with an error
+		log.Printf("Failed to write new UUID to file: %v", err)
 		return newUUID, fmt.Errorf("failed to write to file: %v", err)
 	}
+
+	// Log the successful creation of a new UUID
+	log.Println("Generated and saved new collector ID:", newUUID)
 
 	// Return the new UUID
 	return newUUID, nil
@@ -837,8 +845,18 @@ func tickerCode() {
 		kafkaUrl := getKafkaUrl()
 		printLog("kafkaUrl: " + kafkaUrl)
 		credential = GetCredential(kafkaUrl, groupId, "credentials")
-		log.Println("Credential URL: " + credential.URL)
-		log.Println("Credential Mini Runtime ID: " + credential.ID)
+		if credential.URL != "" {
+			log.Println("Credential URL: " + credential.URL)
+		} else {
+			log.Println("Credential URL not found")
+		}
+
+		if credential.ID != "" {
+			log.Println("Credential Mini Runtime ID: " + credential.ID)
+		} else {
+			log.Println("Credential Mini Runtime ID not found")
+		}
+
 		if len(credential.Token) > 0 {
 			log.Println("Credential Token found")
 		} else {
@@ -854,10 +872,21 @@ func tickerCode() {
 	trafficCollectorLock.Lock()
 	defer trafficCollectorLock.Unlock()
 
+	// Check if the credential URL is not empty before sending data
 	if credential.URL != "" {
 		api.SendTrafficDataToAPI(trafficCollectorCount, credential.URL, credential.Token, credential.ID)
+		if err != nil {
+			log.Printf("Error sending traffic data to API: %v", err)
+		}
+	} else {
+		log.Println("Credential URL is empty, skipping API call.")
 	}
 	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
+	if err != nil {
+		log.Printf("Error generating collector counter: %v", err)
+	} else {
+		log.Println("Successfully generated new collector counter.")
+	}
 }
 
 func printLog(val string) {
