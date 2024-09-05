@@ -5,12 +5,21 @@ import (
 )
 
 type HoursToCountMap map[int]int
+type MinutesToCountMap map[int]int
 type IncomingCounter struct {
 	VxlanID               int
 	Ip                    string
 	BucketStartEpoch      int
 	BucketEndEpoch        int
 	PacketHoursToCountMap HoursToCountMap
+}
+
+type TrafficCollectorCounter struct {
+	Id                        string            `json:"id"`
+	RuntimeId                 string            `json:"runtimeId"`
+	RequestsCountMapPerMinute MinutesToCountMap `json:"requestsCountMapPerMinute"`
+	BucketStartEpoch          int               `json:"bucketStartEpoch"`
+	BucketEndEpoch            int               `json:"bucketEndEpoch"`
 }
 
 func (i *IncomingCounter) IncomingCounterKey() string {
@@ -20,6 +29,27 @@ func (i *IncomingCounter) IncomingCounterKey() string {
 func GenerateIncomingCounter(vxlanID int, ip string) IncomingCounter {
 	d, u := EpochDays()
 	return IncomingCounter{VxlanID: vxlanID, Ip: ip, BucketStartEpoch: d, BucketEndEpoch: u, PacketHoursToCountMap: make(HoursToCountMap)}
+}
+
+func GenerateCollectorCounter(collectorId string) TrafficCollectorCounter {
+	d, u := EpochDays()
+	return TrafficCollectorCounter{Id: collectorId, BucketStartEpoch: d, BucketEndEpoch: u, RequestsCountMapPerMinute: make(MinutesToCountMap)}
+}
+
+func (t *TrafficCollectorCounter) Inc(value int) {
+	d, _ := EpochDays()
+	if t.BucketStartEpoch != d {
+		// if traffic doesn't fall in bucket eat it.
+		// worst case every day we will lose 60 seconds of data
+		return
+	}
+
+	roundedDown, _ := EpochMinutes()
+	_, exists := t.RequestsCountMapPerMinute[roundedDown]
+	if !exists {
+		t.RequestsCountMapPerMinute[roundedDown] = 0
+	}
+	t.RequestsCountMapPerMinute[roundedDown] += value
 }
 
 func (i *IncomingCounter) Inc(value int) {
