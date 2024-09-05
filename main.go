@@ -232,6 +232,11 @@ func processAllRequests(bd *bidi, isPending bool, allRequests []http.Request, al
 			"akto_vxlan_id":  fmt.Sprint(bd.vxlanID),
 			"is_pending":     fmt.Sprint(isPending),
 			"source":         bd.source,
+			"responseHeaders": "",
+			"responsePayload": "",
+			"statusCode": fmt.Sprint(-1),
+			"status": "",
+			"akto_account_id": fmt.Sprint(1000000),
 		}
 
 		out, _ := json.Marshal(value)
@@ -435,7 +440,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		// send function.
 		go Produce(kafkaWriter, ctx, string(out))
 		if(shouldSendAllRequests){
-			printLog("Sending requests and response to threat detection topic")
 			go Produce(allRequestsKafkaWriter, ctx, string(out))
 		}
 		i++
