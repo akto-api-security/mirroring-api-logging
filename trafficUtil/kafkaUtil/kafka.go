@@ -16,6 +16,7 @@ var kafkaWriter *kafka.Writer
 var KafkaErrMsgCount = 0
 var KafkaErrMsgEpoch = time.Now()
 var BytesInThreshold = 500 * 1024 * 1024
+var allRequestsKafkaWriter *kafka.Writer
 
 func InitKafka() {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
@@ -24,6 +25,14 @@ func InitKafka() {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
 	utils.PrintLog("kafka_url: " + kafka_url)
+
+	kafka_protection_url := os.Getenv("AKTO_KAFKA_PROTECTION_URL")
+
+	if len(kafka_protection_url) == 0 {
+		kafka_protection_url = kafka_url
+	}
+
+	utils.PrintLog("kafka_protection_ url: " + kafka_protection_url)
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
@@ -52,6 +61,7 @@ func InitKafka() {
 
 	for {
 		kafkaWriter = getKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		allRequestsKafkaWriter = getKafkaWriter(kafka_protection_url, "akto.api.protection", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		utils.LogMemoryStats()
 		utils.PrintLog("logging kafka stats before pushing message")
 		LogKafkaStats()
@@ -61,16 +71,18 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
-		err := Produce(ctx, string(out))
+		err := Produce(ctx, string(out), false)
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			kafkaWriter.Close()
+			allRequestsKafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
+			allRequestsKafkaWriter.Completion = kafkaCompletion()
 			break
 		}
 	}
@@ -111,17 +123,28 @@ func LogKafkaError() {
 	}
 }
 
-func Produce(ctx context.Context, message string) error {
+func Produce(ctx context.Context, message string, useRequestWriter bool) error {
 	// intialize the writer with the broker addresses, and the topic
 	msg := kafka.Message{
 		Value: []byte(message),
 	}
-	err := kafkaWriter.WriteMessages(ctx, msg)
+	
+	if(useRequestWriter){
+		err := allRequestsKafkaWriter.WriteMessages(ctx, msg)
+		if err != nil {
+			log.Println("ERROR while writing messages in threat detection topic: ", err)
+			return err
+		}
 
-	if err != nil {
-		log.Println("ERROR while writing messages: ", err)
-		return err
+	}else{
+		err := kafkaWriter.WriteMessages(ctx, msg)
+		if err != nil {
+			log.Println("ERROR while writing messages: ", err)
+			return err
+		}
 	}
+
+	
 	return nil
 }
 
