@@ -651,6 +651,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
 				kafkaWriter.Close()
+				allRequestsKafkaWriter.Close()
 				break
 			}
 
@@ -739,10 +740,12 @@ func initKafka() {
 		if err != nil {
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			kafkaWriter.Close()
+			allRequestsKafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
 			log.Println("connection establishing with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
+			allRequestsKafkaWriter.Completion = kafkaCompletion()
 			break
 		}
 	}
