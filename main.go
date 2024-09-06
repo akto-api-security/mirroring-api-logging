@@ -192,33 +192,102 @@ func checkIfIp(host string) bool {
 	return net.ParseIP(chunks[0]) != nil
 }
 
+func processAllRequests(bd *bidi, isPending bool, allRequests []http.Request, allRequestsContent []string, ignoreCloudMetadataCalls bool) {
+	if len(allRequests) == 0 {
+		return
+	}
+
+	i := 0
+
+	for {
+		if len(allRequests) < (i + 1) {
+			break
+		}
+		currentReq := &allRequests[i]
+		currentReqHeader := make(map[string]string)
+				// Loop over all values for the name.
+		for name, values := range currentReq.Header {
+				// Loop over all values for the name.
+			for _, value := range values {
+				currentReqHeader[name] = value
+			}
+		}
+
+		currentReqHeader["host"] = currentReq.Host
+
+		if ignoreCloudMetadataCalls && currentReq.Host == "169.254.169.254" {
+			i++
+			continue
+		}
+
+		currentReqHeaderString, _ := json.Marshal(currentReqHeader)
+		value := map[string]string{
+			"path":           currentReq.URL.String(),
+			"requestHeaders": string(currentReqHeaderString),
+			"method":         currentReq.Method,
+			"requestPayload": allRequestsContent[i],
+			"ip":             bd.key.net.Src().String(),
+			"time":           fmt.Sprint(time.Now().Unix()),
+			"type":           currentReq.Proto,
+			"akto_vxlan_id":  fmt.Sprint(bd.vxlanID),
+			"is_pending":     fmt.Sprint(isPending),
+			"source":         bd.source,
+			"responseHeaders": "",
+			"responsePayload": "",
+			"statusCode": fmt.Sprint(-1),
+			"status": "",
+			"akto_account_id": fmt.Sprint(1000000),
+		}
+
+		out, _ := json.Marshal(value)
+		ctx := context.Background()
+		go Produce(allRequestsKafkaWriter, ctx, string(out)) // Replace `nil` with the actual Kafka writer
+
+		i++
+	}
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
 	requests := []http.Request{}
+	allRequests := []http.Request{}
 	requestsContent := []string{}
-
+	allRequestsContent := []string{}
+	var invalidRequestsFound bool
 	for {
 		req, err := http.ReadRequest(reader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
+			invalidRequestsFound = true
 			printLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return
+			continue
 		}
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
 			printLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
+			invalidRequestsFound = true
+			continue
 		}
 
-		requests = append(requests, *req)
-		requestsContent = append(requestsContent, string(body))
+		if !invalidRequestsFound {
+			requests = append(requests, *req)
+			requestsContent = append(requestsContent, string(body))
+		}
+		allRequests = append(allRequests, *req)
+		allRequestsContent = append(allRequestsContent, string(body))
 		i++
 	}
 
-	if len(requests) == 0 {
+	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
+	var shouldSendAllRequests = len(requestProtectionEnabled) > 0
+
+	if len(requests) == 0 || invalidRequestsFound {
+		if(shouldSendAllRequests){
+			processAllRequests(bd, isPending, allRequests, allRequestsContent, ignoreCloudMetadataCalls)
+		}
 		return
 	}
 
@@ -228,6 +297,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	responses := []http.Response{}
 	responsesContent := []string{}
 
+	var validResponses = true
+
 	for {
 
 		resp, err := http.ReadResponse(reader, nil)
@@ -235,13 +306,15 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			break
 		} else if err != nil {
 			printLog(fmt.Sprintf("HTTP Request error: %s\n", err))
-			return
+			validResponses = false
+			break
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			printLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
+			validResponses = false
+			break
 		}
 		encoding := resp.Header["Content-Encoding"]
 		var r io.Reader
@@ -250,7 +323,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			r, err = gzip.NewReader(r)
 			if err != nil {
 				printLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return
+				validResponses = false
+				break
 			}
 		}
 		if err == nil {
@@ -267,7 +341,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		i++
 	}
 
-	if len(requests) != len(responses) {
+	if !validResponses || len(requests) != len(responses) {
+		if(shouldSendAllRequests){
+			processAllRequests(bd, isPending, allRequests, allRequestsContent, ignoreCloudMetadataCalls)
+		}
 		return
 	}
 
@@ -359,7 +436,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		trafficCollectorCount.Inc(1)
 
 		//printLog("req-resp.String() " + string(out))
+
+		// send function.
 		go Produce(kafkaWriter, ctx, string(out))
+		if(shouldSendAllRequests){
+			go Produce(allRequestsKafkaWriter, ctx, string(out))
+		}
 		i++
 	}
 }
@@ -417,6 +499,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 }
 
 var kafkaWriter *kafka.Writer
+var allRequestsKafkaWriter *kafka.Writer
 
 func flushAll() {
 	for _, v := range assemblerMap {
@@ -568,6 +651,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				bytesInEpoch = time.Now()
 				time.Sleep(10 * time.Second)
 				kafkaWriter.Close()
+				allRequestsKafkaWriter.Close()
 				break
 			}
 
@@ -605,6 +689,14 @@ func initKafka() {
 	kafka_url := getKafkaUrl()
 	printLog("kafka_url: " + kafka_url)
 
+	kafka_protection_url := os.Getenv("AKTO_KAFKA_PROTECTION_URL")
+
+	if len(kafka_protection_url) == 0 {
+		kafka_protection_url = kafka_url
+	}
+
+	printLog("kafka_protection_url: " +  kafka_protection_url)
+
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
 		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
@@ -632,6 +724,7 @@ func initKafka() {
 
 	for {
 		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		allRequestsKafkaWriter = GetKafkaWriter(kafka_protection_url, "akto.api.protection", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
 		log.Println("logging kafka stats before pushing message")
 		logKafkaStats()
@@ -647,10 +740,12 @@ func initKafka() {
 		if err != nil {
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			kafkaWriter.Close()
+			allRequestsKafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
 			log.Println("connection establishing with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
+			allRequestsKafkaWriter.Completion = kafkaCompletion()
 			break
 		}
 	}
