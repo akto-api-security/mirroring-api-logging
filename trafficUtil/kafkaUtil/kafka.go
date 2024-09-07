@@ -71,17 +71,27 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
+		ctx1 := context.Background()
 		err := Produce(ctx, string(out), false)
+		err1 := Produce(ctx1, string(out), true)
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
+		
 		if err != nil {
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			kafkaWriter.Close()
-			allRequestsKafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
+		}
+
+		if err1 != nil {
+			log.Println("error establishing connection with kafka new , sending message failed, retrying in 2 seconds", err)
+			allRequestsKafkaWriter.Close()
+			time.Sleep(time.Second * 2)
+		} else {
+			utils.PrintLog("connection establishing with kafka new successfully")
 			allRequestsKafkaWriter.Completion = kafkaCompletion()
 			break
 		}
