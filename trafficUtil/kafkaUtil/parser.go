@@ -407,7 +407,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 
 		go Produce(ctx, string(out), false)
 		if(shouldSendAllRequests){
-			go Produce(ctx, string(out), true)
+			ctxCopy := context.Background()
+			go Produce(ctxCopy, string(out), true)
 		}
 		i++
 	}
