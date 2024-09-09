@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,73 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
+func ParseAndProduceAllRequests(allRequests []http.Request, allRequestsContent []string, sourceIp string, destIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool, direction int){
+	if len(allRequests) == 0 {
+		return
+	}
+
+	i := 0
+
+	for {
+		if len(allRequests) < (i + 1) {
+			break
+		}
+
+		req := &allRequests[i]
+
+		if !IsValidMethod(req.Method) {
+			continue
+		}
+
+		currentReq := &allRequests[i]
+		currentReqHeader := make(map[string]string)
+
+		for name, values := range currentReq.Header {
+				// Loop over all values for the name.
+			for _, value := range values {
+				currentReqHeader[name] = value
+			}
+		}
+
+		currentReqHeader["host"] = currentReq.Host
+		if utils.IgnoreIpTraffic && utils.CheckIfIp(req.Host) {
+			i++
+			continue
+		}
+
+		if utils.IgnoreCloudMetadataCalls && req.Host == "169.254.169.254" {
+			i++
+			continue
+		}
+
+		reqHeaderString, _ := json.Marshal(currentReqHeader)
+
+		value := map[string]string{
+			"path":            req.URL.String(),
+			"requestHeaders":  string(reqHeaderString),
+			"responseHeaders": "",
+			"method":          req.Method,
+			"requestPayload":  allRequestsContent[i],
+			"responsePayload": "",
+			"ip":              sourceIp,
+			"destIp":          destIp,
+			"time":            fmt.Sprint(time.Now().Unix()),
+			"statusCode":      fmt.Sprint(-1),
+			"type":            string(req.Proto),
+			"status":          "",
+			"akto_account_id": fmt.Sprint(1000000),
+			"akto_vxlan_id":   fmt.Sprint(vxlanID),
+			"is_pending":      fmt.Sprint(isPending),
+			"source":          trafficSource,
+			"direction":       fmt.Sprint(direction),
+		}
+
+		out, _ := json.Marshal(value)
+		ctx := context.Background()
+		go Produce(ctx, string(out), true)
+	}
+}
+
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	sourceIp string, destIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool, direction int) {
 
@@ -95,7 +163,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
 	i := 0
 	requests := []http.Request{}
+	allRequests := []http.Request{}
 	requestsContent := []string{}
+	allRequestsContent := []string{}
+	var invalidRequestsFound bool
 
 	for {
 		req, err := http.ReadRequest(reader)
@@ -103,24 +174,40 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			break
 		} else if err != nil {
 			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return
+			invalidRequestsFound = true
+			continue
 		}
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
+			invalidRequestsFound = true
+			continue
 		}
 
-		requests = append(requests, *req)
-		requestsContent = append(requestsContent, string(body))
+		if !invalidRequestsFound{
+			requests = append(requests, *req)
+			requestsContent = append(requestsContent, string(body))
+		}
+
+		allRequests = append(allRequests, *req)
+		allRequestsContent = append(allRequestsContent, string(body))
+		
 		i++
 	}
 
 	if shouldPrint {
 		fmt.Printf("ParseAndProduce: Found count of requests: %v\n", i)
 	}
-	if len(requests) == 0 {
+
+	requestProtectionEnabled := os.Getenv("REQUEST_PROTECTION_ENABLED")
+	var shouldSendAllRequests = len(requestProtectionEnabled) > 0
+
+
+	if invalidRequestsFound ||  len(requests) == 0 {
+		if(shouldSendAllRequests){
+			ParseAndProduceAllRequests(allRequests, allRequestsContent, sourceIp, destIp, vxlanID, isPending, trafficSource, isComplete, direction)
+		}
 		return
 	}
 
@@ -130,6 +217,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	responses := []http.Response{}
 	responsesContent := []string{}
 
+	var invalidResponsesFound bool
+
 	for {
 
 		resp, err := http.ReadResponse(reader, nil)
@@ -137,13 +226,15 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			break
 		} else if err != nil {
 			utils.PrintLog(fmt.Sprintf("HTTP Request error: %s\n", err))
-			return
+			invalidResponsesFound = true
+			break
 		}
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
+			invalidResponsesFound = true
+			break
 		}
 		encoding := resp.Header["Content-Encoding"]
 		var r io.Reader
@@ -152,7 +243,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			r, err = gzip.NewReader(r)
 			if err != nil {
 				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return
+				invalidResponsesFound = true
+				break
 			}
 		}
 		if err == nil {
@@ -173,12 +265,17 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 
 		fmt.Printf("ParseAndProduce: Found count of responses: %v\n", i)
 	}
-	if len(requests) != len(responses) {
+	if len(requests) != len(responses) || invalidResponsesFound {
 		if shouldPrint {
 			fmt.Printf("Len req-res mismatch: lens: %v %v %v %v isComplete: %v\n",
 				len(requests), len(responses),
 				len(receiveBuffer), len(sentBuffer), isComplete)
 		}
+
+		if(shouldSendAllRequests){
+			ParseAndProduceAllRequests(allRequests, allRequestsContent, sourceIp, destIp, vxlanID, isPending, trafficSource, isComplete, direction)
+		}
+
 		if isComplete {
 			return
 		}
@@ -308,7 +405,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			}
 		}
 
-		go Produce(ctx, string(out))
+		go Produce(ctx, string(out), false)
+		if(shouldSendAllRequests){
+			ctxCopy := context.Background()
+			go Produce(ctxCopy, string(out), true)
+		}
 		i++
 	}
 }
