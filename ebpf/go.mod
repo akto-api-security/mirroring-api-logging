@@ -3,7 +3,6 @@ module github.com/akto-api-security/mirroring-api-logging/ebpf
 go 1.21
 
 require (
-	github.com/PraserX/ipconv v1.2.0
 	github.com/akto-api-security/mirroring-api-logging/trafficUtil v0.0.0-00010101000000-000000000000
 	github.com/iovisor/gobpf v0.2.1-0.20221005153822-16120a1bf4d4
 	github.com/shirou/gopsutil v3.21.11+incompatible
@@ -14,8 +13,8 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/klauspost/compress v1.17.7 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
-	github.com/pierrec/lz4/v4 v4.1.21 // indirect
-	github.com/segmentio/kafka-go v0.4.47 // indirect
+	github.com/pierrec/lz4 v2.6.0+incompatible // indirect
+	github.com/segmentio/kafka-go v0.4.25 // indirect
 	github.com/tklauser/go-sysconf v0.3.13 // indirect
 	github.com/tklauser/numcpus v0.7.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
