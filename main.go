@@ -882,7 +882,7 @@ func tickerCode() {
 	} else {
 		log.Println("Credential URL is empty, skipping API call.")
 	}
-	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
+	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId, version)
 	if err != nil {
 		log.Printf("Error generating collector counter: %v", err)
 	} else {
