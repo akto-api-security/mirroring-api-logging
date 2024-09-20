@@ -40,7 +40,10 @@ jobs:
           go-version: '^1.16.1' # The Go version to download (if necessary) and use.
       - name: install required packages
         run: sudo apt install libpcap-dev expect
-      - run: go build -o ./mirroring-api-logging
+        run: |
+            TAG=${{ github.event.inputs.Tag }}
+            TIMESTAMP=$(date +%s)
+            go build -ldflags "-X main.version=$TAG -X main.buildDate=$TIMESTAMP" -o ./mirroring-api-logging
 
       - name: Configure AWS credentials
         if: ${{ github.event.inputs.Environment == 'prod' }}
