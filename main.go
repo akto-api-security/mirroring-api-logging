@@ -759,13 +759,14 @@ func getCollectorId() (string, error) {
 var groupId = uuid.New().String()
 
 var collectorId string
+var version string
 
 func main() {
 	collectorId, err = getCollectorId()
 	if err != nil {
 		log.Println(err.Error())
 	}
-	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
+	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId, version)
 
 	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
 	disableOnDbFlag := disableOnDb == "true"
@@ -881,7 +882,7 @@ func tickerCode() {
 	} else {
 		log.Println("Credential URL is empty, skipping API call.")
 	}
-	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId)
+	trafficCollectorCount = utils.GenerateCollectorCounter(collectorId, version)
 	if err != nil {
 		log.Printf("Error generating collector counter: %v", err)
 	} else {
