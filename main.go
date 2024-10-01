@@ -634,6 +634,7 @@ func initKafka() {
 		kafkaWriter = GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		logMemoryStats()
 		log.Println("logging kafka stats before pushing message")
+		log.Println("logging kafka url ", kafka_url)
 		logKafkaStats()
 		value := map[string]string{
 			"testConnectionString": "kafkaInit",
