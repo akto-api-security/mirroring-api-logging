@@ -60,6 +60,17 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 var (
 	// this also includes space lost in padding.
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
+	ignorePortsMap      = map[uint16]bool{
+		// kafka
+		9092:  true,
+		19092: true,
+		29092: true,
+		// zookeeper
+		2181: true,
+		// mongo
+		27017: true,
+		// redis
+		6379: true}
 )
 
 func min(a, b int32) int32 {
@@ -103,6 +114,12 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		connId := event.Attr.ConnId
+
+		_, ok := ignorePortsMap[connId.Port]
+		if ok {
+			utils.LogIngest("Ignoring data for ignore port fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+			continue
+		}
 
 		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
 		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount

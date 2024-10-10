@@ -19,16 +19,16 @@ var (
 var AccountID = strconv.Itoa(1_000_000)
 var TrafficMetricsCollectionName = "traffic_metrics"
 var AccountSettingsCollectionName = "accounts_settings"
+var MongoUrl = "mongodb://0.0.0.0:27017/admini"
 
 func GetMongoClient() (*mongo.Client, error) {
 	once.Do(func() {
 
 		//os.Setenv("AKTO_MONGO_CONN", "mongodb://localhost:27017/admini")
-		mongoUrl := "mongodb://0.0.0.0:27017/admini"
-		trafficUtils.InitVar("AKTO_MONGO_CONN", &mongoUrl)
+		trafficUtils.InitVar("AKTO_MONGO_CONN", &MongoUrl)
 
 		// Define MongoDB client options
-		clientOptions := options.Client().ApplyURI(mongoUrl)
+		clientOptions := options.Client().ApplyURI(MongoUrl)
 
 		// Connect to MongoDB
 		client, err := mongo.Connect(context.Background(), clientOptions)

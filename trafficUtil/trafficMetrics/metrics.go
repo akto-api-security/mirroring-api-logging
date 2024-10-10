@@ -2,6 +2,7 @@ package trafficMetrics
 
 import (
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ func InitTrafficMaps() {
 }
 
 func SubmitIncomingTrafficMetrics(ic utils.IncomingCounter, payloadLength int) {
+	// If calling from go routines, add mutex as well.
 	existingIC, ok := incomingCountMap[ic.IncomingCounterKey()]
 	if ok {
 		existingIC.Inc(payloadLength)
@@ -45,9 +47,16 @@ var FilterHeaderValueMap = make(map[string]string)
 
 func tickerCode() {
 	log.Println("Running ticker")
-	db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+	outgoingCountMapMutex.Lock()
+	defer outgoingCountMapMutex.Unlock()
+	if !strings.Contains(db.MongoUrl, "0.0.0.0") {
+		db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+	}
 	InitTrafficMaps()
-	FilterHeaderValueMap = db.FetchFilterHeaderMap()
+	if !strings.Contains(db.MongoUrl, "0.0.0.0") {
+		FilterHeaderValueMap = db.FetchFilterHeaderMap()
+	}
+	log.Println("Finished ticker")
 }
 
 func StartMetricsTicker() {

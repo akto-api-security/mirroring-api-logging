@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"bytes"
 	"sync"
 	"time"
 
@@ -27,15 +28,18 @@ type Tracker struct {
 	// source IP-Port / local IP-Port
 	srcIp   uint32
 	srcPort uint16
+
+	foundHTTP bool
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
 	return &Tracker{
-		connID:  connID,
-		recvBuf: make(map[int][]byte),
-		sentBuf: make(map[int][]byte),
-		mutex:   sync.RWMutex{},
-		ssl:     false,
+		connID:    connID,
+		recvBuf:   make(map[int][]byte),
+		sentBuf:   make(map[int][]byte),
+		mutex:     sync.RWMutex{},
+		ssl:       false,
+		foundHTTP: false,
 	}
 }
 
@@ -81,11 +85,37 @@ func (conn *Tracker) AddSsl(event structs.SocketDataEvent) {
 	}
 }
 
+var (
+	searchString            = []byte("HTTP")
+	ignored          int64  = 0
+	lastResetIgnored uint64 = uint64(time.Now().UnixMilli())
+)
+
 func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 	if conn.ssl != event.Attr.Ssl {
 		return
+	}
+
+	/*
+		First packet in either direction should start with HTTP
+		else possibly gibberish, ignore.
+	*/
+	if !conn.foundHTTP && (conn.sentBytes > 0 || conn.recvBytes > 0) {
+		receiveBuffer := convertToSingleByteArr(conn.recvBuf)
+		sentBuffer := convertToSingleByteArr(conn.sentBuf)
+		if !bytes.Contains(receiveBuffer, searchString) && !bytes.Contains(sentBuffer, searchString) {
+			ignored++
+			if ignored%1000 == 0 || (uint64(time.Now().UnixMilli())-lastResetIgnored) > uint64(30*time.Second.Milliseconds()) {
+				utils.LogIngest("Ignored non-HTTP : %v %v\n", ignored, lastResetIgnored)
+				lastResetIgnored = uint64(time.Now().UnixMilli())
+				ignored = int64(0)
+			}
+			return
+		} else {
+			conn.foundHTTP = true
+		}
 	}
 
 	bytesSent := event.Attr.Bytes_sent

@@ -69,7 +69,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 var (
 	disableEgress        = false
 	maxActiveConnections = 4096
-	inactivityThreshold  = 30 * time.Second
+	inactivityThreshold  = 3 * time.Second
 	// Value in MB
 	bufferMemThreshold = 400
 )
@@ -80,12 +80,9 @@ func init() {
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
-	// convert MB to B
-	bufferMemThreshold = bufferMemThreshold * 1024 * 1024
 }
 
-func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelete map[structs.ConnID]struct{}, isComplete bool) {
-	trackersToDelete[connID] = struct{}{}
+func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
 	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 		return
 	}
@@ -106,10 +103,10 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, trackersToDelet
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	go tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1)
+	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		go tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2)
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2)
 	}
 }
 
@@ -117,7 +114,6 @@ func (factory *Factory) HandleReadyConnections() {
 	trackersToDelete := make(map[structs.ConnID]struct{})
 
 	metaUtils.LogProcessing("Connections before processing: %v\n", len(factory.connections))
-	utils.LogMemoryStats()
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
 
@@ -130,25 +126,29 @@ func (factory *Factory) HandleReadyConnections() {
 
 		if isInactive {
 			metaUtils.LogProcessing("Inactive stream : %v %v %v lens: %v %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, len(tracker.sentBuf), len(tracker.recvBuf))
-			ProcessTrackerData(connID, tracker, trackersToDelete, isComplete)
+			ProcessTrackerData(connID, tracker, isComplete)
+			trackersToDelete[connID] = struct{}{}
 			continue
 		}
 
 		if isComplete {
 			metaUtils.LogProcessing("Complete stream : %v %v %v lens: %v %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, len(tracker.sentBuf), len(tracker.recvBuf))
-			ProcessTrackerData(connID, tracker, trackersToDelete, isComplete)
+			ProcessTrackerData(connID, tracker, isComplete)
+			trackersToDelete[connID] = struct{}{}
 			continue
 		}
 
 		if isInvalid {
 			metaUtils.LogProcessing("Invalid stream : %v %v %v lens: %v %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, len(tracker.sentBuf), len(tracker.recvBuf))
+			trackersToDelete[connID] = struct{}{}
 		}
 	}
 	metaUtils.LogProcessing("Connections before processing: %v\n", len(factory.connections))
-	metaUtils.LogProcessing("Total size: %v\n", totalSize)
+	metaUtils.LogProcessing("Total processed data size: %v\n", totalSize)
 
-	if totalSize >= bufferMemThreshold {
-		metaUtils.LogProcessing("Deleting all trackers: %v \n", totalSize)
+	mem := utils.LogMemoryStats()
+	if mem >= bufferMemThreshold {
+		metaUtils.LogProcessing("Deleting all trackers at mem: %v \n", mem)
 		for k := range factory.connections {
 			trackersToDelete[k] = struct{}{}
 		}
@@ -159,7 +159,6 @@ func (factory *Factory) HandleReadyConnections() {
 	}
 	metaUtils.LogProcessing("Deleted connections: %v\n", len(trackersToDelete))
 	metaUtils.LogProcessing("Connections after processing: %v\n", len(factory.connections))
-	utils.LogMemoryStats()
 	kafkaUtil.LogKafkaError()
 }
 
@@ -171,6 +170,8 @@ func (factory *Factory) GetOrCreate(connectionID structs.ConnID) *Tracker {
 	tracker, ok := factory.connections[connectionID]
 	if !ok {
 		factory.connections[connectionID] = NewTracker(connectionID)
+		now := uint64(time.Now().UnixNano())
+		factory.connections[connectionID].openTimestamp = now
 		return factory.connections[connectionID]
 	}
 	return tracker
@@ -185,7 +186,8 @@ func (factory *Factory) CanBeFilled() bool {
 }
 
 var (
-	sampleBufferPerMin        = -1 // value in mb
+	// default sampling of 100mb / min
+	sampleBufferPerMin        = 100
 	currentTotalBuffer int64  = 0
 	lastPrint          int64  = 0
 	bufferMutex               = sync.RWMutex{}
@@ -229,4 +231,14 @@ func (factory *Factory) Get(connectionID structs.ConnID) *Tracker {
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
 	return factory.connections[connectionID]
+}
+
+func (factory *Factory) ProcessAndDelete(connectionID structs.ConnID) {
+	factory.mutex.Lock()
+	defer factory.mutex.Unlock()
+	_, ok := factory.connections[connectionID]
+	if ok {
+		ProcessTrackerData(connectionID, factory.connections[connectionID], true)
+		delete(factory.connections, connectionID)
+	}
 }

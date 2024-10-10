@@ -53,7 +53,6 @@ const (
 )
 
 var (
-	symAddrsTables    = make(map[ProbeType]*bcc.Table)
 	goSymAddrsTable   = &bcc.Table{}
 	nodeSymAddrsTable = &bcc.Table{}
 )

@@ -75,6 +75,9 @@ func isAmdArch() bool {
 }
 
 func main() {
+	// Setting GC percent as 50, uses less memory overhead.
+	// More testing needed for final release.
+	// debug.SetGCPercent(50)
 	run()
 }
 
