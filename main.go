@@ -98,13 +98,14 @@ type myFactory struct {
 
 func shouldPrintDebugURL(url string) bool {
 	debugUrls := os.Getenv("DEBUG_URLS")
+
 	if len(debugUrls) == 0 {
 		return false
 	}
 
-	split := strings.Split(debugUrls, ",")
-	for _, item := range split {
-		if strings.Contains(url, item) {
+	for _, item := range strings.Split(debugUrls, ",") {
+		item = strings.TrimSpace(item) // Trim any spaces from each item
+		if strings.Contains(strings.TrimSpace(url), item) {
 			return true
 		}
 	}
