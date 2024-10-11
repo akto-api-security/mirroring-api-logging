@@ -27,15 +27,18 @@ type Tracker struct {
 	// source IP-Port / local IP-Port
 	srcIp   uint32
 	srcPort uint16
+
+	foundHTTP bool
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
 	return &Tracker{
-		connID:  connID,
-		recvBuf: make(map[int][]byte),
-		sentBuf: make(map[int][]byte),
-		mutex:   sync.RWMutex{},
-		ssl:     false,
+		connID:    connID,
+		recvBuf:   make(map[int][]byte),
+		sentBuf:   make(map[int][]byte),
+		mutex:     sync.RWMutex{},
+		ssl:       false,
+		foundHTTP: false,
 	}
 }
 
@@ -50,24 +53,10 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-/*
-This preemptively processes the stream after a certain time threshold.
-Any more data in this stream will be ignored.
-*/
-func (conn *Tracker) MarkInactive(duration time.Duration) bool {
-	conn.mutex.RLock()
-	defer conn.mutex.RUnlock()
-	inactive := conn.openTimestamp != 0 &&
-		uint64(time.Now().UnixNano())-conn.openTimestamp > uint64(duration.Nanoseconds())
-	if inactive {
-		utils.LogProcessing("marking inactive: %v %v , ts: %v %v\n", conn.connID.Fd, conn.connID.Id, conn.openTimestamp, uint64(time.Now().UnixNano()))
-	}
-	return inactive
-}
-
-func (conn *Tracker) AddSsl(event structs.SocketDataEvent) {
+func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
+
 	if !conn.ssl && event.Attr.Ssl {
 		for k := range conn.sentBuf {
 			conn.sentBuf[k] = []byte{}
@@ -79,11 +68,7 @@ func (conn *Tracker) AddSsl(event structs.SocketDataEvent) {
 		conn.recvBytes = 0
 		conn.ssl = event.Attr.Ssl
 	}
-}
 
-func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
-	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
 	if conn.ssl != event.Attr.Ssl {
 		return
 	}

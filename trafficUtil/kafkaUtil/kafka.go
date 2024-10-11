@@ -134,5 +134,6 @@ func getKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		MaxAttempts:  1,
 		ReadTimeout:  batchTimeout,
 		WriteTimeout: batchTimeout,
+		Async:        true,
 	}
 }

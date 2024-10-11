@@ -53,7 +53,6 @@ const (
 )
 
 var (
-	symAddrsTables    = make(map[ProbeType]*bcc.Table)
 	goSymAddrsTable   = &bcc.Table{}
 	nodeSymAddrsTable = &bcc.Table{}
 )
@@ -83,9 +82,15 @@ func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress,
 	}
 	fmt.Printf("byte arr: %v\n", asByteSlice)
 
-	table, _ := getBccTable(addrType)
+	table, err := getBccTable(addrType)
+	if err != nil {
+		return fmt.Errorf("updateBpfMap table error key %v failed: %v", pid, err)
+	}
 	key := fmt.Sprint(uint32(pid))
-	keyByte, _ := table.KeyStrToBytes(key)
+	keyByte, err := table.KeyStrToBytes(key)
+	if err != nil {
+		return fmt.Errorf("updateBpfMap KeyStrToBytes error key %v failed: %v", pid, err)
+	}
 
 	fmt.Printf("key arr: %v %v \n", key, keyByte)
 
@@ -96,11 +101,17 @@ func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress,
 }
 
 func DeletePidFromBPFMap(addrType ProbeType, pid int32) error {
-	table, _ := getBccTable(addrType)
+	table, err := getBccTable(addrType)
+	if err != nil {
+		return fmt.Errorf("DeletePidFromBPFMap table error key %v failed: %v", pid, err)
+	}
 	key := fmt.Sprint(uint32(pid))
-	keyByte, _ := table.KeyStrToBytes(key)
+	keyByte, err := table.KeyStrToBytes(key)
+	if err != nil {
+		return fmt.Errorf("DeletePidFromBPFMap KeyStrToBytes error key %v failed: %v", pid, err)
+	}
 	if err := table.Delete(keyByte); err != nil {
-		return fmt.Errorf("table.Delete key %v failed: %v", pid, err)
+		return fmt.Errorf("DeletePidFromBPFMap table.Delete key %v failed: %v", pid, err)
 	}
 	return nil
 }

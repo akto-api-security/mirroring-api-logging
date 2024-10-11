@@ -10,6 +10,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/iovisor/gobpf/bcc"
 )
 
@@ -21,6 +22,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !connectionFactory.CanBeFilled() {
+			utils.LogIngest("Connections filled")
 			continue
 		}
 
@@ -31,8 +33,8 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 		connId := event.ConnId
 		utils.LogIngest("Received open fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
-		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
-
+		connectionFactory.CreateIfNotExists(connId)
+		connectionFactory.SendEvent(connId, &event)
 	}
 }
 
@@ -48,19 +50,31 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
-		tracker := connectionFactory.Get(connId)
-		if tracker == nil {
-			continue
-		}
 		utils.LogIngest("Received close on: fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
-		tracker.AddCloseEvent(event)
+		connectionFactory.SendEvent(connId, &event)
 	}
 }
 
 var (
 	// this also includes space lost in padding.
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
+	ignorePortsMap      = map[uint16]bool{
+		// kafka
+		9092:  true,
+		19092: true,
+		29092: true,
+		// zookeeper
+		2181: true,
+		// mongo
+		27017: true,
+		// redis
+		6379: true}
+	ignorePorts = true
 )
+
+func init() {
+	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+}
 
 func min(a, b int32) int32 {
 	if a < b {
@@ -104,21 +118,20 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		connId := event.Attr.ConnId
 
-		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
-		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
-
-		tracker := connectionFactory.GetOrCreate(connId)
-
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
-
-		if tracker == nil {
-			utils.LogIngest("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+		_, ok := ignorePortsMap[connId.Port]
+		if ignorePorts && ok {
+			utils.LogIngest("Ignoring data for ignore port fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 			continue
 		}
 
-		tracker.AddSsl(event)
-		tracker.AddDataEvent(event)
+		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
+		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
 
+		connectionFactory.CreateIfNotExists(connId)
+
+		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+
+		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
 		utils.LogIngest("Got data fd: %v id: %v ts: %v ip: %v port: %v data: %v rc: %v wc: %v ssl: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port, dataStr, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount, event.Attr.Ssl)
