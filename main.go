@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -93,6 +94,22 @@ type myFactory struct {
 	bidiMap map[key]*bidi
 	vxlanID int
 	source  string
+}
+
+func shouldPrintDebugURL(url string) bool {
+	debugUrls := os.Getenv("DEBUG_URLS")
+	if len(debugUrls) == 0 {
+		return false
+	}
+
+	split := strings.Split(debugUrls, ",")
+	for _, item := range split {
+		if strings.Contains(url, item) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // New handles creating a new tcpassembly.Stream.
@@ -183,11 +200,17 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			log.Println("HTTP-request", "HTTP Request error: %s\n", err)
 			return
 		}
+
+		if shouldPrintDebugURL(req.URL.String()) {
+			fmt.Printf("Found debug url %s while reading from BD", req.URL.String())
+		}
+
 		body, err := ioutil.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
-			log.Println("HTTP-request-body", "Got body err: %s\n", err)
-			return
+			if shouldPrintDebugURL(req.URL.String()) {
+				fmt.Printf("Got body err for debug url %s", req.URL.String())
+			}
 		}
 
 		requests = append(requests, *req)
@@ -255,6 +278,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		reqHeaderString, _ := json.Marshal(reqHeader)
 		respHeaderString, _ := json.Marshal(respHeader)
 
+		if shouldPrintDebugURL(req.URL.String()) {
+			fmt.Printf("Found debug url %s while creating final value", req.URL.String())
+		}
+
 		value := map[string]string{
 			"path":            req.URL.String(),
 			"requestHeaders":  string(reqHeaderString),
@@ -274,7 +301,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
@@ -295,7 +321,6 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
 		}
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
