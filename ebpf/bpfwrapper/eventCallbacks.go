@@ -10,6 +10,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/iovisor/gobpf/bcc"
 )
 
@@ -68,7 +69,12 @@ var (
 		27017: true,
 		// redis
 		6379: true}
+	ignorePorts = true
 )
+
+func init() {
+	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+}
 
 func min(a, b int32) int32 {
 	if a < b {
@@ -113,7 +119,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		connId := event.Attr.ConnId
 
 		_, ok := ignorePortsMap[connId.Port]
-		if ok {
+		if ignorePorts && ok {
 			utils.LogIngest("Ignoring data for ignore port fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
 			continue
 		}
