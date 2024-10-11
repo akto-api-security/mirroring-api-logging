@@ -1,7 +1,6 @@
 package connections
 
 import (
-	"bytes"
 	"sync"
 	"time"
 
@@ -54,24 +53,10 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-/*
-This preemptively processes the stream after a certain time threshold.
-Any more data in this stream will be ignored.
-*/
-func (conn *Tracker) MarkInactive(duration time.Duration) bool {
-	conn.mutex.RLock()
-	defer conn.mutex.RUnlock()
-	inactive := conn.openTimestamp != 0 &&
-		uint64(time.Now().UnixNano())-conn.openTimestamp > uint64(duration.Nanoseconds())
-	if inactive {
-		utils.LogProcessing("marking inactive: %v %v , ts: %v %v\n", conn.connID.Fd, conn.connID.Id, conn.openTimestamp, uint64(time.Now().UnixNano()))
-	}
-	return inactive
-}
-
-func (conn *Tracker) AddSsl(event structs.SocketDataEvent) {
+func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
+
 	if !conn.ssl && event.Attr.Ssl {
 		for k := range conn.sentBuf {
 			conn.sentBuf[k] = []byte{}
@@ -83,39 +68,9 @@ func (conn *Tracker) AddSsl(event structs.SocketDataEvent) {
 		conn.recvBytes = 0
 		conn.ssl = event.Attr.Ssl
 	}
-}
 
-var (
-	searchString            = []byte("HTTP")
-	ignored          int64  = 0
-	lastResetIgnored uint64 = uint64(time.Now().UnixMilli())
-)
-
-func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
-	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
 	if conn.ssl != event.Attr.Ssl {
 		return
-	}
-
-	/*
-		First packet in either direction should start with HTTP
-		else possibly gibberish, ignore.
-	*/
-	if !conn.foundHTTP && (conn.sentBytes > 0 || conn.recvBytes > 0) {
-		receiveBuffer := convertToSingleByteArr(conn.recvBuf)
-		sentBuffer := convertToSingleByteArr(conn.sentBuf)
-		if !bytes.Contains(receiveBuffer, searchString) && !bytes.Contains(sentBuffer, searchString) {
-			ignored++
-			if ignored%1000 == 0 || (uint64(time.Now().UnixMilli())-lastResetIgnored) > uint64(30*time.Second.Milliseconds()) {
-				utils.LogIngest("Ignored non-HTTP : %v %v\n", ignored, lastResetIgnored)
-				lastResetIgnored = uint64(time.Now().UnixMilli())
-				ignored = int64(0)
-			}
-			return
-		} else {
-			conn.foundHTTP = true
-		}
 	}
 
 	bytesSent := event.Attr.Bytes_sent

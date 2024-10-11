@@ -21,6 +21,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !connectionFactory.CanBeFilled() {
+			utils.LogIngest("Connections filled")
 			continue
 		}
 
@@ -31,8 +32,8 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 		connId := event.ConnId
 		utils.LogIngest("Received open fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
-		connectionFactory.GetOrCreate(connId).AddOpenEvent(event)
-
+		connectionFactory.CreateIfNotExists(connId)
+		connectionFactory.SendEvent(connId, &event)
 	}
 }
 
@@ -48,12 +49,8 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
-		tracker := connectionFactory.Get(connId)
-		if tracker == nil {
-			continue
-		}
 		utils.LogIngest("Received close on: fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
-		tracker.AddCloseEvent(event)
+		connectionFactory.SendEvent(connId, &event)
 	}
 }
 
@@ -124,18 +121,11 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
 		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
 
-		tracker := connectionFactory.GetOrCreate(connId)
+		connectionFactory.CreateIfNotExists(connId)
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
 
-		if tracker == nil {
-			utils.LogIngest("Ignoring data fd: %v id: %v data: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, dataStr, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
-			continue
-		}
-
-		tracker.AddSsl(event)
-		tracker.AddDataEvent(event)
-
+		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
 		utils.LogIngest("Got data fd: %v id: %v ts: %v ip: %v port: %v data: %v rc: %v wc: %v ssl: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port, dataStr, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount, event.Attr.Ssl)

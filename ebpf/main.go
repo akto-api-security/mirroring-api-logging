@@ -5,11 +5,12 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
+	"sync"
 
 	"log"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -107,39 +108,8 @@ func run() {
 
 	connectionFactory := connections.NewFactory()
 
-	var isRunning bool
-	var mu = &sync.Mutex{}
-
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
-
-	kafkaPollInterval := 500 * time.Millisecond
-
-	trafficUtils.InitVar("KAFKA_POLL_INTERVAL", &kafkaPollInterval)
-
-	go func() {
-		for {
-			time.Sleep(kafkaPollInterval)
-			if !isRunning {
-
-				mu.Lock()
-				if isRunning {
-					mu.Unlock()
-					return
-				}
-				isRunning = true
-				mu.Unlock()
-
-				connectionFactory.HandleReadyConnections()
-				kafkaUtil.LogKafkaError()
-
-				mu.Lock()
-				isRunning = false
-				mu.Unlock()
-
-			}
-		}
-	}()
 
 	callbacks := make([]*bpfwrapper.ProbeChannel, 0)
 
@@ -200,9 +170,9 @@ func run() {
 					isRunning_2 = true
 					mu_2.Unlock()
 
-					fmt.Printf("Entering\n")
+					fmt.Printf("Starting to attach to processes\n")
 					processFactory.AddNewProcessesToProbe(bpfModule)
-					fmt.Printf("Exiting\n")
+					fmt.Printf("Ended attaching to processes\n")
 					mu_2.Lock()
 					isRunning_2 = false
 					mu_2.Unlock()
@@ -212,9 +182,28 @@ func run() {
 		}()
 	}
 
+	doProfiling := false
+	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
+
+	if doProfiling {
+		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
+		defer ticker.Stop()
+
+		for range ticker.C {
+			captureMemoryProfile() // Capture memory profile every time the ticker ticks
+		}
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 	log.Println("Sniffer is ready")
 	<-sig
 	log.Println("Signaled to terminate")
+}
+
+func captureMemoryProfile() {
+	f, _ := os.Create("mem.prof") // Create memory profile file
+	defer f.Close()
+
+	pprof.WriteHeapProfile(f) // Write memory profile
 }
