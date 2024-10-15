@@ -325,8 +325,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			log.Println("req-resp.String()", string(out))
 		}
 		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
-		if totalCounter%100 == 0 {
-			println("outgoingBytes: ", outgoingBytes)
+		if totalCounter%1000 == 0 {
+			println("totalCounter: ", totalCounter)
 		}
 		i++
 	}
@@ -507,7 +507,7 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	}
 }
 
-var totalCounter = 0
+var totalCounter int64 = 0
 
 func getDirectoryName() string {
 	aktoClientId := os.Getenv("AKTO_CLIENT_ID")
