@@ -511,7 +511,7 @@ var totalCounter int64 = 0
 
 func getDirectoryName() string {
 	aktoClientId := os.Getenv("AKTO_CLIENT_ID")
-	return "/app/files_" + aktoClientId + "/"
+	return "/app/files/files_" + aktoClientId + "/"
 }
 
 func main() {
