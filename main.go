@@ -576,10 +576,11 @@ func main() {
 
 func cleanupReadFilesMap() {
 	timeNow := time.Now().Unix()
-	for k, _ := range readFiles {
-		fileCreationTs, _ := strconv.Atoi(k)
+	for fileName, _ := range readFiles {
+		fileNameSplit := strings.Split(fileName, ".")
+		fileCreationTs, _ := strconv.Atoi(fileNameSplit[0])
 		if timeNow-int64(fileCreationTs) > 600 {
-			delete(readFiles, k)
+			delete(readFiles, fileName)
 		}
 	}
 }
