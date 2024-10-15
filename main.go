@@ -14,9 +14,13 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/akto-api-security/gomiddleware"
+	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
+	"github.com/segmentio/kafka-go"
 	"io"
 	"io/fs"
 	"io/ioutil"
@@ -297,14 +301,30 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		if 1 > 2 {
-			println(out)
-		}
+		ctx := context.Background()
 
 		totalCounter += 1
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
+		hostString := reqHeader["host"]
+		if utils.CheckIfIpHost(hostString) {
+			hostString = "ip-host"
+		}
+		oc := utils.GenerateOutgoingCounter(bd.vxlanID, bd.key.net.Src().String(), hostString)
+		existingOc, ok := outgoingCountMap[oc.OutgoingCounterKey()]
+		if ok {
+			existingOc.Inc(outgoingBytes, 1)
+		} else {
+			oc.Inc(outgoingBytes, 1)
+			outgoingCountMap[oc.OutgoingCounterKey()] = oc
+		}
+
+		if printCounter > 0 {
+			printCounter--
+			log.Println("req-resp.String()", string(out))
+		}
+		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
 		if totalCounter%100 == 0 {
 			println("outgoingBytes: ", outgoingBytes)
 		}
@@ -359,6 +379,8 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 }
 
+var kafkaWriter *kafka.Writer
+
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 	log.Println("kafka_url", kafka_url)
@@ -379,6 +401,21 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		}
 
 	}
+
+	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
+	if e != nil {
+		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
+		return
+	}
+
+	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
+	if e != nil {
+		log.Printf("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
+		return
+	}
+	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+
+	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 
 	// Set up pcap packet capture
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
@@ -478,7 +515,47 @@ func getDirectoryName() string {
 }
 
 func main() {
-	isGcp = true
+	client, err := db.GetMongoClient()
+	if err != nil {
+		// Handle error
+	}
+
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			// Handle error
+		}
+	}()
+
+	// Set up a ticker to run every 2 minutes
+	ticker := time.NewTicker(2 * time.Minute)
+
+	go func() {
+		for range ticker.C {
+			db.TrafficMetricsDbUpdates(incomingCountMap, outgoingCountMap)
+			incomingCountMap = make(map[string]utils.IncomingCounter)
+			outgoingCountMap = make(map[string]utils.OutgoingCounter)
+			cleanupReadFilesMap()
+		}
+	}()
+
+	infra_mirroring_mode_input := os.Getenv("AKTO_INFRA_MIRRORING_MODE")
+
+	if len(infra_mirroring_mode_input) > 0 {
+		isGcp = (infra_mirroring_mode_input == "gcp")
+	}
+
+	interfaceName := "eth0"
+
+	if isGcp {
+		interfaceName = "ens4"
+	}
+
+	interfaceNameValue, found := os.LookupEnv("interface_name")
+	if found && interfaceNameValue != "" {
+		interfaceName = interfaceNameValue
+	}
+
+	log.Printf("Interface name: %s", interfaceName)
 
 	for {
 		files, err := ioutil.ReadDir(getDirectoryName())
