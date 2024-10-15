@@ -297,7 +297,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		println(out)
+		if 1 > 2 {
+			println(out)
+		}
+
 		totalCounter += 1
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
@@ -533,7 +536,8 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		readFiles[fileName] = true
 	}
 
-	log.Println("file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
+	log.Println("Begin reading file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
+	start := time.Now().Unix()
 
 	assemblerMap = make(map[int]*tcpassembly.Assembler)
 
@@ -544,4 +548,7 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		flushAll()
 		handle.Close()
 	}
+
+	end := time.Now().Unix()
+	log.Println("Finished reading file: "+file.Name()+" size ("+strconv.FormatInt(file.Size(), 10)+")"+" in ", end-start, "ms")
 }

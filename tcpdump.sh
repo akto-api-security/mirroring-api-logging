@@ -40,5 +40,5 @@ while true; do
   tcpdump -i "$interface" port not 22 -w "$dir/%s.pcap" -G 30 -W 1 -K -n
 
   # Increment the counter
-  ((counter++))
+  counter=$((counter + 1))
 done
