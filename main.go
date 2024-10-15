@@ -606,11 +606,11 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		return
 	}
 
-	_, ok := readFiles[fileName]
+	_, ok := readFiles[file.Name()]
 	if ok {
 		return
 	} else {
-		readFiles[fileName] = true
+		readFiles[file.Name()] = true
 	}
 
 	log.Println("Begin reading file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
