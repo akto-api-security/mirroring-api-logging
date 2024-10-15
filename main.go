@@ -613,6 +613,8 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		readFiles[file.Name()] = true
 	}
 
+	fmt.Println(readFiles)
+
 	log.Println("Begin reading file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
 	start := time.Now().Unix()
 
