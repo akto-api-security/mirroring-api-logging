@@ -297,9 +297,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		if 1 > 2 {
-			println(out)
-		}
+		println(out)
 		totalCounter += 1
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
@@ -528,11 +526,11 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		return
 	}
 
-	_, ok := readFiles[file.Name()]
+	_, ok := readFiles[fileName]
 	if ok {
 		return
 	} else {
-		readFiles[file.Name()] = true
+		readFiles[fileName] = true
 	}
 
 	log.Println("file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
