@@ -518,12 +518,15 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		return
 	}
 
-	fileCreationTs, _ := strconv.Atoi(file.Name())
+	fileName := file.Name()
+	fileNameSplit := strings.Split(fileName, ".")
+	fileCreationTs, _ := strconv.Atoi(fileNameSplit[0])
+
+	filePath := getDirectoryName() + file.Name()
 	timeNow := time.Now().Unix()
 	if timeNow-int64(fileCreationTs) < 35 {
 		return
 	}
-	fileName := getDirectoryName() + file.Name()
 
 	_, ok := readFiles[file.Name()]
 	if ok {
@@ -536,7 +539,7 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 
 	assemblerMap = make(map[int]*tcpassembly.Assembler)
 
-	if handle, err := pcap.OpenOffline(fileName); err != nil {
+	if handle, err := pcap.OpenOffline(filePath); err != nil {
 		log.Printf("Error while creating pcap handle %v", err)
 	} else {
 		run(handle, -1, "MIRRORING")
