@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # Initial variables
 counter=0
