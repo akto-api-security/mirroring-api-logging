@@ -39,8 +39,6 @@ import (
 
 var isGcp = false
 var printCounter = 500
-var bytesInThreshold = 200 * 1024 * 1024
-var bytesInSleepDuration = time.Second * 120
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
@@ -390,18 +388,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	}
 	log.Println("kafka_url", kafka_url)
 
-	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
-	if len(bytesInThresholdInput) > 0 {
-		bytesInThreshold, err = strconv.Atoi(bytesInThresholdInput)
-		if err != nil {
-			log.Println("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found ", bytesInThresholdInput)
-			return
-		} else {
-			log.Println("Setting bytes in threshold at ", bytesInThreshold)
-		}
-
-	}
-
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
 		log.Printf("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
@@ -430,8 +416,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	log.Println("reading in packets")
 	// Read in packets, pass to assembler.
-	var bytesIn = 0
-	var bytesInEpoch = time.Now()
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	for packet := range packetSource.Packets() {
 		innerPacket := packet
@@ -471,24 +455,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 			assembler := createAndGetAssembler(vxlanID, source)
 			assembler.AssembleWithTimestamp(innerPacket.NetworkLayer().NetworkFlow(), tcp, packet.Metadata().Timestamp)
-
-			bytesIn += len(tcp.Payload)
-
-			if bytesIn%1_000_000 == 0 {
-				log.Println("Bytes in: ", bytesIn)
-			}
-
-			if bytesIn > bytesInThreshold {
-				if time.Now().Sub(bytesInEpoch).Seconds() < 60 {
-					log.Println("exceeded bytesInThreshold: ", bytesInThreshold, " with curr: ", bytesIn)
-					log.Println("sleeping for: ", bytesInSleepDuration)
-					flushAll()
-					time.Sleep(bytesInSleepDuration)
-				}
-
-				bytesIn = 0
-				bytesInEpoch = time.Now()
-			}
 
 		}
 	}
