@@ -1,7 +1,7 @@
 #!/bin/sh
 
 max=80
-base_dir="/app/files"  # Base directory for all files
+base_dir="/files"  # Base directory for all files
 
 while true
 do

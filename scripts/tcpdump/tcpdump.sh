@@ -15,7 +15,7 @@ modules=$(echo "$modules" | tr -d -c 0-9)
 # Create directories if they don't exist
 i=1
 while [ $i -le $modules ]; do
-  dir="/app/files/files_$i"
+  dir="/files/files_$i"
 
   # Check if the directory exists, and create it only if it doesn't exist
   if [ ! -d "$dir" ]; then
@@ -34,7 +34,7 @@ while true; do
   index=$((counter % modules + 1))
 
   # Set the directory based on the index
-  dir="/app/files/files_$index"
+  dir="/files/files_$index"
 
   # Write to the corresponding directory
   tcpdump -i "$interface" port not 22 -w "$dir/%s.pcap" -G 30 -W 1 -K -n

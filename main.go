@@ -615,7 +615,7 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 	}
 
 	log.Println("Begin reading file: " + file.Name() + " size (" + strconv.FormatInt(file.Size(), 10) + ")")
-	start := time.Now().Unix()
+	start := time.Now().UnixMilli()
 
 	assemblerMap = make(map[int]*tcpassembly.Assembler)
 
@@ -627,6 +627,6 @@ func readTCPFileAndProcess(file fs.FileInfo) {
 		handle.Close()
 	}
 
-	end := time.Now().Unix()
+	end := time.Now().UnixMilli()
 	log.Println("Finished reading file: "+file.Name()+" size ("+strconv.FormatInt(file.Size(), 10)+")"+" in ", end-start, "ms")
 }
