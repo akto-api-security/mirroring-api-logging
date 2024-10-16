@@ -322,7 +322,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
 		}
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		if 1 > 2 {
+			go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		}
 		if totalCounter%1000 == 0 {
 			println("totalCounter: ", totalCounter)
 		}
