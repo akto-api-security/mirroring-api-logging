@@ -221,7 +221,9 @@ func captureMemoryProfile() {
 }
 
 func captureCpuProfile() {
-	f, err := os.Create("cpu.prof")
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("cpu_%s.prof", timestamp)
+	f, err := os.Create(fileName)
 	if err != nil {
 		panic("could not create CPU profile: " + err.Error())
 	}
