@@ -79,6 +79,20 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
+
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("cpu_%s.prof", timestamp)
+	f, err := os.Create(fileName)
+	if err != nil {
+		panic("could not create CPU profile: " + err.Error())
+	}
+	defer f.Close()
+
+	if err := pprof.StartCPUProfile(f); err != nil {
+		panic("could not start CPU profile: " + err.Error())
+	}
+	log.Println("Started cpu profile")
+	defer pprof.StopCPUProfile()
 	run()
 }
 
@@ -110,21 +124,6 @@ func run() {
 
 	doProfilingCpu := false
 	trafficUtils.InitVar("AKTO_DEBUG_CPU_PROFILING", &doProfilingCpu)
-
-	if doProfilingCpu {
-		timestamp := time.Now().Format("20060102_150405")
-		fileName := fmt.Sprintf("cpu_%s.prof", timestamp)
-		f, err := os.Create(fileName)
-		if err != nil {
-			panic("could not create CPU profile: " + err.Error())
-		}
-		defer f.Close()
-
-		if err := pprof.StartCPUProfile(f); err != nil {
-			panic("could not start CPU profile: " + err.Error())
-		}
-		defer pprof.StopCPUProfile()
-	}
 
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
