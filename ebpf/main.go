@@ -108,6 +108,18 @@ func run() {
 
 	connectionFactory := connections.NewFactory()
 
+	doProfilingCpu := false
+	trafficUtils.InitVar("AKTO_DEBUG_CPU_PROFILING", &doProfilingCpu)
+
+	if doProfilingCpu {
+		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
+		defer ticker.Stop()
+
+		for range ticker.C {
+			captureCpuProfile() // Capture memory profile every time the ticker ticks
+		}
+	}
+
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
 
@@ -185,24 +197,12 @@ func run() {
 	doProfiling := false
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
-	doProfilingCpu := false
-	trafficUtils.InitVar("AKTO_DEBUG_CPU_PROFILING", &doProfilingCpu)
-
 	if doProfiling {
 		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
 		defer ticker.Stop()
 
 		for range ticker.C {
 			captureMemoryProfile() // Capture memory profile every time the ticker ticks
-		}
-	}
-
-	if doProfilingCpu {
-		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
-		defer ticker.Stop()
-
-		for range ticker.C {
-			captureCpuProfile() // Capture memory profile every time the ticker ticks
 		}
 	}
 
