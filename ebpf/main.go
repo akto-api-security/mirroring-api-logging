@@ -185,12 +185,24 @@ func run() {
 	doProfiling := false
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
+	doProfilingCpu := false
+	trafficUtils.InitVar("AKTO_DEBUG_CPU_PROFILING", &doProfilingCpu)
+
 	if doProfiling {
 		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
 		defer ticker.Stop()
 
 		for range ticker.C {
 			captureMemoryProfile() // Capture memory profile every time the ticker ticks
+		}
+	}
+
+	if doProfilingCpu {
+		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
+		defer ticker.Stop()
+
+		for range ticker.C {
+			captureCpuProfile() // Capture memory profile every time the ticker ticks
 		}
 	}
 
@@ -206,4 +218,17 @@ func captureMemoryProfile() {
 	defer f.Close()
 
 	pprof.WriteHeapProfile(f) // Write memory profile
+}
+
+func captureCpuProfile() {
+	f, err := os.Create("cpu.prof")
+	if err != nil {
+		panic("could not create CPU profile: " + err.Error())
+	}
+	defer f.Close()
+
+	if err := pprof.StartCPUProfile(f); err != nil {
+		panic("could not start CPU profile: " + err.Error())
+	}
+	defer pprof.StopCPUProfile()
 }
