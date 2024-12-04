@@ -80,19 +80,26 @@ func main() {
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
 
-	timestamp := time.Now().Format("20060102_150405")
-	fileName := fmt.Sprintf("cpu_%s.prof", timestamp)
-	f, err := os.Create(fileName)
-	if err != nil {
-		panic("could not create CPU profile: " + err.Error())
-	}
-	defer f.Close()
+	ticker := time.NewTicker(5 * time.Minute) // Create a ticker to trigger every minute
+	defer ticker.Stop()
 
-	if err := pprof.StartCPUProfile(f); err != nil {
-		panic("could not start CPU profile: " + err.Error())
-	}
-	log.Println("Started cpu profile")
-	defer pprof.StopCPUProfile()
+	go func() {
+		for range ticker.C {
+			timestamp := time.Now().Format("20060102_150405")
+			fileName := fmt.Sprintf("cpu_%s.prof", timestamp)
+			f, err := os.Create(fileName)
+			if err != nil {
+				panic("could not create CPU profile: " + err.Error())
+			}
+			defer f.Close()
+
+			if err := pprof.StartCPUProfile(f); err != nil {
+				panic("could not start CPU profile: " + err.Error())
+			}
+			log.Println("Started cpu profile")
+			defer pprof.StopCPUProfile()
+		}
+	}()
 	run()
 }
 
@@ -169,9 +176,9 @@ func run() {
 	var isRunning_2 bool
 	var mu_2 = &sync.Mutex{}
 
-	pollInterval := 5 * time.Minute
+	pollInterval := 15 * time.Minute
 
-	trafficUtils.InitVar("UPROBE_POLL_INTERVAL", &pollInterval)
+	//trafficUtils.InitVar("UPROBE_POLL_INTERVAL", &pollInterval)
 
 	ssl.InitMaps(bpfModule)
 
