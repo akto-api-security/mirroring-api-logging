@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
@@ -80,6 +81,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 	}
 	fmt.Printf("Attempt for  %v processes\n", len(pidSet))
 	for pid := range pidSet {
+		time.Sleep(200 * time.Millisecond)
 		_, ok := processFactory.processMap[pid]
 		if !ok {
 

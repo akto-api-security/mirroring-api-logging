@@ -67,6 +67,16 @@ func gettingGoVersionFromString(s string) (v *version.Version, success bool, err
 	return v, true, err
 }
 
+func checkGoProcess(exePath string) bool {
+	cmd := exec.Command("sh", "-c", "strings "+exePath+" | grep go1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Error executing command in checkGoProcess: %v\n", err)
+		return false
+	}
+	return len(output) > 1
+}
+
 type goStringInC struct {
 	Ptr  uint64
 	Size uint64

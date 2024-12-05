@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -20,37 +21,25 @@ var (
 func CheckProcessCGroupBelongToKube(pid int32) ([]string, error) {
 	cgroupAbsPath := fmt.Sprintf("/proc/%d/cgroup", pid)
 	processCgroupFilePath := host.GetFileInHost(cgroupAbsPath)
-	cgroupFile, err := os.Open(processCgroupFilePath)
-	if err != nil {
-		return nil, err
-	}
-	defer cgroupFile.Close()
-
-	cache := make(map[string]bool)
-	scanner := bufio.NewScanner(cgroupFile)
-	for scanner.Scan() {
-		infos := strings.Split(scanner.Text(), ":")
-		if len(infos) < 3 {
-			continue
-		}
-		lastPath := strings.LastIndex(infos[2], "/")
-		if lastPath > 1 && lastPath != len(infos[2])-1 {
-			path := infos[2][lastPath+1:]
-			// ex: cri-containerd-7dae778c37bd1204677518f1032bbecf01f5c41878ea7bd370021263417cc626.scope
-			if kubepod := kubepodsRegex.FindStringSubmatch(path); len(kubepod) >= 1 {
-				path = kubepod[1]
-			}
-			cache[path] = true
-		}
-	}
-	if len(cache) == 0 {
+	output := checkKubeProcess(processCgroupFilePath)
+	if len(output) <= 1 {
 		return nil, fmt.Errorf("no k8s cgroups")
+	} else {
+		log.Printf("successfully found a kube process %s", processCgroupFilePath)
 	}
 	result := make([]string, 0)
-	for k := range cache {
-		result = append(result, k)
-	}
+	result = append(result, output)
 	return result, nil
+}
+
+func checkKubeProcess(exePath string) string {
+	cmd := exec.Command("sh", "-c", "strings "+exePath+" | grep cri-containerd | head -n 1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Error executing command in checkKubeProcess: %v\n", err)
+		return ""
+	}
+	return string(output)
 }
 
 func isIgnoreModuleName(name string) bool {

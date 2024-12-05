@@ -152,7 +152,7 @@ func run() {
 	var isRunning_2 bool
 	var mu_2 = &sync.Mutex{}
 
-	pollInterval := 5 * time.Minute
+	pollInterval := 20 * time.Minute
 
 	trafficUtils.InitVar("UPROBE_POLL_INTERVAL", &pollInterval)
 
@@ -160,7 +160,11 @@ func run() {
 
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
-			for {
+			fmt.Printf("Starting to attach to processes in ticker start\n")
+			ticker := time.NewTicker(pollInterval) // Create a ticker to trigger every minute
+			defer ticker.Stop()
+			for range ticker.C {
+				fmt.Printf("Starting to attach to processes in ticker\n")
 				if !isRunning_2 {
 					mu_2.Lock()
 					if isRunning_2 {
@@ -177,8 +181,9 @@ func run() {
 					isRunning_2 = false
 					mu_2.Unlock()
 				}
-				time.Sleep(pollInterval)
+				fmt.Printf("Ended attaching to processes in ticker\n")
 			}
+			fmt.Printf("Ended attaching to processes in ticker end\n")
 		}()
 	}
 
@@ -194,6 +199,13 @@ func run() {
 		}
 	}
 
+	//ticker := time.NewTicker(15 * time.Second)
+	//defer ticker.Stop()
+	//
+	//for range ticker.C {
+	//	go captureCpuProfile()
+	//}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 	log.Println("Sniffer is ready")
@@ -206,4 +218,25 @@ func captureMemoryProfile() {
 	defer f.Close()
 
 	pprof.WriteHeapProfile(f) // Write memory profile
+}
+
+func captureCpuProfile() {
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("cpu_%s.prof", timestamp)
+	f, err := os.Create(fileName)
+	if err != nil {
+		panic("could not create CPU profile: " + err.Error())
+	}
+	defer f.Close()
+
+	if err := pprof.StartCPUProfile(f); err != nil {
+		panic("could not start CPU profile: " + err.Error())
+	}
+	fmt.Println("CPU profiling started")
+
+	// Allow profiling for a certain duration or simulate workload
+	time.Sleep(12 * time.Second) // Sleep for 10 seconds to simulate CPU activity
+
+	pprof.StopCPUProfile()
+	fmt.Println("CPU profiling stopped")
 }
