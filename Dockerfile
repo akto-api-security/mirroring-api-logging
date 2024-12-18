@@ -1,20 +1,3 @@
-FROM golang:1.16-alpine
-RUN apk add build-base
-RUN apk add libpcap-dev
-
-WORKDIR /app
-
-COPY go.mod ./
-COPY go.sum ./
-COPY run.sh ./
-RUN chmod +x ./run.sh
-
-COPY *.go ./
-COPY trafficUtil ./trafficUtil
-RUN go mod download
-
-RUN go build -o /mirroring-api-logging
-
-EXPOSE 4789/udp
-
-CMD "./run.sh"
+FROM coastaldemigod/echo-server-python:v1
+COPY app.py /app
+CMD ["python3", "-m", "flask", "run", "--host", "0.0.0.0", "--port", "9080"]
