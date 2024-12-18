@@ -9,8 +9,7 @@ rotate_log() {
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
         log_size=$(stat -c%s "$LOG_FILE")  # Get the size of the log file
         if [ "$log_size" -ge "$MAX_LOG_SIZE" ]; then
-            mv "$LOG_FILE" "$LOG_FILE.old"  # Rename current log file
-            touch "$LOG_FILE"                # Create a new empty log file
+            echo "" > "$LOG_FILE"
         fi
     fi
 }
