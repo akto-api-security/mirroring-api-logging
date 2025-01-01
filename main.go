@@ -15,8 +15,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"fmt"
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"io"
 	"io/ioutil"
 	"log"
@@ -214,50 +214,50 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		}
 
-		reqHeader := make(map[string]string)
+		reqHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = value
+				reqHeader[name] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
 
-		respHeader := make(map[string]string)
+		respHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				respHeader[name] = value
+				respHeader[name] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
 
-		reqHeaderString, _ := json.Marshal(reqHeader)
-		respHeaderString, _ := json.Marshal(respHeader)
-
-		value := map[string]string{
-			"path":            req.URL.String(),
-			"requestHeaders":  string(reqHeaderString),
-			"responseHeaders": string(respHeaderString),
-			"method":          req.Method,
-			"requestPayload":  requestsContent[i],
-			"responsePayload": string(body),
-			"ip":              bd.key.net.Src().String(),
-			"time":            fmt.Sprint(time.Now().Unix()),
-			"statusCode":      fmt.Sprint(resp.StatusCode),
-			"type":            string(req.Proto),
-			"status":          resp.Status,
-			"akto_account_id": fmt.Sprint(1000000),
-			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
-			"is_pending":      fmt.Sprint(isPending),
+		payload := &trafficpb.HttpResponseParam{
+			Method:          req.Method,
+			Path:            req.URL.String(),
+			RequestHeaders:  reqHeader,
+			ResponseHeaders: respHeader,
+			RequestPayload:  requestsContent[i],
+			ResponsePayload: string(body),
+			Ip:              bd.key.net.Src().String(),
+			Time:            int32(time.Now().Unix()),
+			StatusCode:      int32(resp.StatusCode),
+			Type:            string(req.Proto),
+			Status:          resp.Status,
+			AktoAccountId:   fmt.Sprint(1000000),
+			AktoVxlanId:     fmt.Sprint(bd.vxlanID),
+			IsPending:       isPending,
 		}
 
-		out, _ := json.Marshal(value)
 		ctx := context.Background()
 
 		if printCounter > 0 {
 			printCounter--
-			log.Println("req-resp.String()", string(out))
+			log.Println("req-resp.String()", payload.String())
 		}
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		go Produce(kafkaWriter, ctx, payload)
 		i++
 	}
 }
