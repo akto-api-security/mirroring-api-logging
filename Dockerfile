@@ -6,13 +6,18 @@ WORKDIR /app
 
 COPY go.mod ./
 COPY go.sum ./
+COPY run.sh ./
+RUN chmod +x ./run.sh
 RUN go mod download
 
 COPY *.go ./
 COPY protobuf ./protobuf
+COPY db ./db
+COPY api ./api
+COPY utils ./utils
 
 RUN go build -o /mirroring-api-logging
 
 EXPOSE 4789/udp
 
-CMD "/mirroring-api-logging"
+CMD "./run.sh"
