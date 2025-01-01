@@ -9,7 +9,7 @@ COPY go.sum ./
 RUN go mod download
 
 COPY *.go ./
-COPY protobuf ./
+COPY protobuf ./protobuf
 
 RUN go build -o /mirroring-api-logging
 
