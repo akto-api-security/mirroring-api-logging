@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"io"
 	"io/ioutil"
 	"log"
@@ -39,7 +40,6 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 	"github.com/segmentio/kafka-go"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"net"
 )
 
@@ -278,6 +278,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		req := &requests[i]
 		resp := &responses[i]
 
+		// build req headers for threat client
 		reqHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range req.Header {
 			// Loop over all values for the name.
@@ -292,7 +293,17 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			Values: []string{req.Host},
 		}
 
-		passes := true
+		// build req headers for runtime
+		reqHeaderStr := make(map[string]string)
+		for name, values := range req.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				reqHeaderStr[name] = value
+			}
+		}
+		reqHeaderStr["host"] = req.Host
+
+		passes := utils.PassesFilter(filterHeaderValueMap, reqHeaderStr)
 		//printLog("Req header: " + mapToString(reqHeader))
 		//printLog(fmt.Sprintf("passes %t", passes))
 
@@ -311,6 +322,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			continue
 		}
 
+		// build resp headers for threat client
 		respHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
@@ -321,6 +333,16 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			}
 		}
 
+		// build resp headers for runtime
+		respHeaderStr := make(map[string]string)
+		for name, values := range resp.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				respHeaderStr[name] = value
+			}
+		}
+
+		// build kafka paylaod for threat client
 		payload := &trafficpb.HttpResponseParam{
 			Method:          req.Method,
 			Path:            req.URL.String(),
@@ -338,6 +360,31 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			IsPending:       isPending,
 		}
 		ctx := context.Background()
+
+		// build kafka payload for runtime
+
+		reqHeaderString, _ := json.Marshal(reqHeaderStr)
+		respHeaderString, _ := json.Marshal(respHeaderStr)
+
+		value := map[string]string{
+			"path":            req.URL.String(),
+			"requestHeaders":  string(reqHeaderString),
+			"responseHeaders": string(respHeaderString),
+			"method":          req.Method,
+			"requestPayload":  requestsContent[i],
+			"responsePayload": responsesContent[i],
+			"ip":              bd.key.net.Src().String(),
+			"time":            fmt.Sprint(time.Now().Unix()),
+			"statusCode":      fmt.Sprint(resp.StatusCode),
+			"type":            string(req.Proto),
+			"status":          resp.Status,
+			"akto_account_id": fmt.Sprint(1000000),
+			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
+			"is_pending":      fmt.Sprint(isPending),
+			"source":          bd.source,
+		}
+
+		out, _ := json.Marshal(value)
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
@@ -357,6 +404,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		trafficCollectorCount.Inc(1)
 
 		//printLog("req-resp.String() " + string(out))
+		// insert kafka record for runtime
+		go ProduceStr(kafkaWriter, ctx, string(out))
+
+		// insert kafka record for threat client
 		go Produce(kafkaWriter, ctx, payload)
 		i++
 	}
@@ -634,12 +685,18 @@ func initKafka() {
 		log.Println("logging kafka stats before pushing message")
 		logKafkaStats()
 
+		value := map[string]string{
+			"testConnectionString": "kafkaInit",
+		}
+
 		payload := &trafficpb.HttpResponseParam{
 			Method: "GET",
 		}
 
 		ctx := context.Background()
-		err := Produce(kafkaWriter, ctx, payload)
+		out, _ := json.Marshal(value)
+		err := ProduceStr(kafkaWriter, ctx, string(out))
+		err = Produce(kafkaWriter, ctx, payload)
 		log.Println("logging kafka stats post pushing message")
 		logKafkaStats()
 		if err != nil {
