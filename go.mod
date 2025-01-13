@@ -1,6 +1,6 @@
 module github.com/akto-api-security/mirroring-api-logging
 
-go 1.17
+go 1.22
 
 require (
 	github.com/akto-api-security/gomiddleware v0.1.0
