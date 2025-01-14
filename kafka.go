@@ -7,8 +7,19 @@ import (
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
 	"log"
+	"strings"
 	"time"
 )
+
+var CLIENT_IP_HEADERS = []string{
+	"x-forwarded-for",
+	"x-real-ip",
+	"x-cluster-client-ip",
+	"true-client-ip",
+	"x-original-forwarded-for",
+	"x-client-ip",
+	"client-ip",
+}
 
 func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
 	// intialize the writer with the broker addresses, and the topic
@@ -18,10 +29,11 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 		return err
 	}
 
+	ip := GetSourceIp(value)
 	// Send serialized message to Kafka
 	msg := kafka.Message{
 		Topic: "akto.api.logs2",
-		Key:   []byte("testkey"),
+		Key:   []byte(ip), // what to do when ip is empty?
 		Value: protoBytes,
 	}
 
@@ -30,6 +42,26 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 		log.Println("ERROR while writing messages: ", err)
 	}
 	return err
+}
+
+func GetSourceIp(value *trafficpb.HttpResponseParam) string {
+
+	for _, header := range CLIENT_IP_HEADERS {
+		if headerValues, exists := value.ResponseHeaders[header]; exists {
+			for _, value := range headerValues.Values {
+				parts := strings.Split(value, ",")
+				for _, part := range parts {
+					ip := strings.TrimSpace(part)
+					if ip != "" {
+						return ip
+					}
+				}
+			}
+		}
+	}
+
+	// if no headers found
+	return value.Ip
 }
 
 func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {
