@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
@@ -30,6 +31,10 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 	}
 
 	ip := GetSourceIp(value)
+	if ip == "" {
+		fmt.Print("ip is empty, avoiding kafka push")
+		return nil
+	}
 	// Send serialized message to Kafka
 	msg := kafka.Message{
 		Topic: "akto.api.logs2",
