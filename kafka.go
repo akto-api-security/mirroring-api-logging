@@ -32,6 +32,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 
 	ip := GetSourceIp(value)
 	fmt.Println("found ip ", ip)
+	fmt.Println("found ip bytes ", []byte(ip))
 	if ip == "" {
 		fmt.Print("ip is empty, avoiding kafka push")
 		return nil
