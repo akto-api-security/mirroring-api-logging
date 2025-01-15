@@ -99,6 +99,7 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		MaxAttempts:  1,
 		ReadTimeout:  batchTimeout,
 		WriteTimeout: batchTimeout,
+		Balancer:     &kafka.Hash{},
 	}
 }
 
