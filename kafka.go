@@ -31,6 +31,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 	}
 
 	ip := GetSourceIp(value)
+	fmt.Println("found ip ", ip)
 	if ip == "" {
 		fmt.Print("ip is empty, avoiding kafka push")
 		return nil
@@ -58,6 +59,8 @@ func GetSourceIp(value *trafficpb.HttpResponseParam) string {
 				for _, part := range parts {
 					ip := strings.TrimSpace(part)
 					if ip != "" {
+						fmt.Println("found value of ip in header ", header)
+						fmt.Println("returning ip ", ip)
 						return ip
 					}
 				}
@@ -66,6 +69,7 @@ func GetSourceIp(value *trafficpb.HttpResponseParam) string {
 	}
 
 	// if no headers found
+	fmt.Println("ip not found in headers, returning value ", value.Ip)
 	return value.Ip
 }
 
