@@ -15,24 +15,7 @@ on:
     inputs:
       Tag: 
         required: true
-        default: 'latest'
-      EbpfTag: 
-        required: true
-        default: 'k8s_ebpf'
-      Environment:
-        required: true
-        type: choice
-        options:
-          - prod
-          - staging
-        default: staging  
-      Module: 
-        required: true
-        type: choice
-        options: 
-          - legacy
-          - ebpf
-        default: legacy  
+        default: 'api-gateway-logging'
       
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -45,25 +28,15 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: '^1.16.1' # The Go version to download (if necessary) and use.
-      - name: install required packages
-        if: ${{ github.event.inputs.Module == 'legacy' }}
-        run: sudo apt install libpcap-dev expect
-      - name: build go module
-        if: ${{ github.event.inputs.Module == 'legacy' }}
-        run: go build -o ./mirroring-api-logging
 
       - name: Configure AWS credentials
-        if: ${{ github.event.inputs.Environment == 'prod' }}
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
+
       - name: Login to Amazon ECR
-        if: ${{ github.event.inputs.Environment == 'prod'}}
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
         with:
@@ -71,7 +44,6 @@ jobs:
           registry-type: public
 
       - name: Build, tag, and push the image to Amazon ECR
-        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'legacy'}}
         id: build-image-awsecr
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -85,23 +57,7 @@ jobs:
           docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG . --push
           echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG"
 
-      - name: Build, tag, and push the image to Amazon ECR -ebpf
-        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf'}}
-        id: build-image-awsecr-ebpf
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: akto-api-security
-          REGISTRY_ALIAS: p7q3h0z2
-          IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
-        run: |
-          # Build a docker container and push it to DockerHub 
-          docker buildx create --use
-          echo "Building and Pushing image to ECR..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
-          echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG"
-
       - name: DockerHub login
-        if: ${{ github.event.inputs.Environment == 'prod' }}
         env:
           DOCKER_USERNAME: ${{secrets.DOCKER_USERNAME}}
           DOCKER_PASSWORD: ${{secrets.DOCKER_PASSWORD}}
@@ -109,7 +65,6 @@ jobs:
           docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD 
 
       - name: Build, tag, and push the image to DockerHub
-        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'legacy'}}
         id: build-image-dockerhub
         env:
           ECR_REGISTRY: aktosecurity
@@ -119,17 +74,4 @@ jobs:
           docker buildx create --use
           echo "Building and Pushing image to DockerHub..."
           docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG . --push
-          echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
-       
-      - name: Build, tag, and push the image to DockerHub - ebpf
-        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf' }}
-        id: build-image-dockerhub-ebpf
-        env:
-          ECR_REGISTRY: aktosecurity
-          IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
-        run: |
-          # Build a docker container and push it to DockerHub 
-          docker buildx create --use
-          echo "Building and Pushing image to DockerHub..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"

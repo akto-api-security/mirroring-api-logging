@@ -1,0 +1,12 @@
+version: '3.3'
+
+services:
+  akto-api-security-traffic-collector:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    # image: akto-api-security/api-gateway-logging
+    env_file: ./docker-akto-collector.env
+    mem_limit: 300m    
+    restart: always
+    network_mode: host

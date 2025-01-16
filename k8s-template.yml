@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway-logging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway-logging 
+  template:
+    metadata:
+      labels:
+        app: api-gateway-logging 
+    spec:
+      containers:
+        - image: akto-api-security/mirror-api-logging:api-gateway-logging
+          name: api-gateway-logging 
+          imagePullPolicy: Always
+          resources: {}
+          env: 
+            - name: AKTO_BYTES_IN_THRESHOLD
+              value: "100"
+            - name: AKTO_TRAFFIC_BATCH_TIME_SECS
+              value: "10"
+            - name: AKTO_TRAFFIC_BATCH_SIZE
+              value: "100"
+            - name: AKTO_KAFKA_BROKER_MAL
+              value: ""
+            - name: AWS_ACCESS_KEY_ID
+              value: ""
+            - name: AWS_SECRET_ACCESS_KEY
+              value: ""
+            - name: AWS_SESSION_TOKEN
+              value: ""
+            - name: CLOUDWATCH_READ_BATCH_SIZE
+              value: "5"
+            - name: LOG_GROUP_NAME
+              value: ""
+            - name: AWS_REGION
+              value: ""

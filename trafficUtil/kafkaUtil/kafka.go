@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/segmentio/kafka-go"
 )
 
