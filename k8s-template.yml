@@ -13,7 +13,7 @@ spec:
         app: api-gateway-logging 
     spec:
       containers:
-        - image: akto-api-security/mirror-api-logging:api-gateway-logging
+        - image: aktosecurity/mirror-api-logging:api-gateway-logging
           name: api-gateway-logging 
           imagePullPolicy: Always
           resources: {}

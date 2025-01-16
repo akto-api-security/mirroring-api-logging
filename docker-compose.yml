@@ -5,7 +5,7 @@ services:
     build: 
       context: .
       dockerfile: Dockerfile
-    # image: akto-api-security/api-gateway-logging
+    # image: aktosecurity/mirror-api-logging:api-gateway-logging
     env_file: ./docker-akto-collector.env
     mem_limit: 300m    
     restart: always
