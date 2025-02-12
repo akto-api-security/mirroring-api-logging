@@ -9,9 +9,7 @@ import (
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 func main() {
@@ -26,18 +24,8 @@ func main() {
 		log.Fatalf("Unable to load AWS configuration: %v", err)
 	}
 
-	// Assume the cross-account role in Account B
-	stsClient := sts.NewFromConfig(cfg)
-	roleArn := os.Getenv("AWS_ROLE_ARN")
-	if roleArn == "" {
-		log.Fatalf("AWS_ROLE_ARN environment variable is required")
-	}
-	creds := stscreds.NewAssumeRoleProvider(stsClient, roleArn)
-
-	// Create CloudWatch Logs client using the assumed role credentials
-	client := cloudwatchlogs.NewFromConfig(cfg, func(o *cloudwatchlogs.Options) {
-		o.Credentials = creds
-	})
+	// Create CloudWatch Logs client
+	client := cloudwatchlogs.NewFromConfig(cfg)
 
 	// Define the log group name
 	logGroupName := os.Getenv("LOG_GROUP_NAME")
