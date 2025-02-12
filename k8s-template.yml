@@ -38,3 +38,5 @@ spec:
               value: ""
             - name: AWS_REGION
               value: ""
+            - name: AWS_ROLE_ARN
+              value: ""
