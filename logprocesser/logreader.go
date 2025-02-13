@@ -115,7 +115,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
 	// starting from the oldest logs
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
-		LogGroupName: aws.String(logGroupName),
+		LogGroupIdentifier: aws.String(logGroupName),
 		OrderBy:      types.OrderByLastEventTime,
 		Descending:   aws.Bool(false),
 		Limit:        aws.Int32(int32(cloudwatchReadBatchSize)), // Adjust based on expected stream count
@@ -131,7 +131,7 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 // processLogStream reads and processes logs from a specific log stream using nextToken for pagination.
 func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, tracker *StreamTracker) error {
 	output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String(logGroupName),
+		LogGroupIdentifier:  aws.String(logGroupName),
 		LogStreamName: aws.String(streamName),
 		NextToken:     tracker.NextToken,
 		StartFromHead: aws.Bool(true),
