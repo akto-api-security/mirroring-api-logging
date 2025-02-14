@@ -1,19 +1,43 @@
 #!/bin/sh
 
+LOG_FILE="/tmp/dump.log"
+MAX_LOG_SIZE=${MAX_LOG_SIZE:-10480}  # Default to 10 MB (10 * 1024 * 1024 bytes)
+CHECK_INTERVAL=60                        # Check interval in seconds
+
+# Function to rotate the log file
+rotate_log() {
+    if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+        log_size=$(stat -c%s "$LOG_FILE")  # Get the size of the log file
+        if [ "$log_size" -ge "$MAX_LOG_SIZE" ]; then
+            echo "" > "$LOG_FILE"
+        fi
+    fi
+}
+
+# Log rotation monitoring (only if ENABLE_LOGS is false)
+if [[ "${ENABLE_LOGS}" == "false" ]]; then
+    while true; do
+        rotate_log   # Check and rotate logs if necessary
+        sleep "$CHECK_INTERVAL"
+    done &
+fi
+
 while :
 do
     # Start the mirroring module in the background
-    /mirroring-api-logging &
+    if [[ "${ENABLE_LOGS}" == "false" ]]; then
+        /mirroring-api-logging >> "$LOG_FILE" 2>&1 &
+    else
+        /mirroring-api-logging &
+    fi
     mirroring_pid=$!
 
     # Monitor the process for 1 hour
     elapsed=0
     while [ $elapsed -lt 3600 ]; do
-        # Check if the mirroring process is still running
         if ! kill -0 $mirroring_pid 2>/dev/null; then
             break
         fi
-        # Sleep for 2 seconds before checking again
         sleep 2
         elapsed=$((elapsed + 2))
     done
