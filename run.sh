@@ -1,7 +1,7 @@
 #!/bin/sh
 
 LOG_FILE="/tmp/dump.log"
-MAX_LOG_SIZE=${MAX_LOG_SIZE:-10480}  # Default to 10 MB (10 * 1024 * 1024 bytes)
+MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB (10 * 1024 * 1024 bytes)
 CHECK_INTERVAL=60                        # Check interval in seconds
 
 # Function to rotate the log file
