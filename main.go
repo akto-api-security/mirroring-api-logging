@@ -9,8 +9,8 @@ import (
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
@@ -38,25 +38,19 @@ func main() {
 		sessionName = "aktologprocesser"
 	}
 
-	assumeRoleOutput, err := stsSvc.AssumeRole(context.Background(), &sts.AssumeRoleInput{
-		RoleArn:         aws.String(roleArn),
-		RoleSessionName: aws.String(sessionName),
-	})
 	if err != nil {
 		log.Fatalf("unable to assume role: %v", err)
 	}
 
 	// Temporary credentials
-	creds := credentials.NewStaticCredentialsProvider(
-		*assumeRoleOutput.Credentials.AccessKeyId,
-		*assumeRoleOutput.Credentials.SecretAccessKey,
-		*assumeRoleOutput.Credentials.SessionToken,
-	)
+	creds := stscreds.NewAssumeRoleProvider(stsSvc, roleArn, func(o *stscreds.AssumeRoleOptions) {
+		o.RoleSessionName = sessionName
+	})
+
+	cfg.Credentials = aws.NewCredentialsCache(creds)
 
 	// Create CloudWatch Logs client
-	client := cloudwatchlogs.NewFromConfig(cfg, func(o *cloudwatchlogs.Options) {
-		o.Credentials = creds
-	})
+	client := cloudwatchlogs.NewFromConfig(cfg)
 
 	// Define the log group arn
 	logGroupArn := os.Getenv("LOG_GROUP_ARN")
