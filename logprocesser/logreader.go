@@ -30,14 +30,14 @@ func init() {
 }
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
-func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
+func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string) error {
 	activeStreams := make(map[string]*StreamTracker)
 
 	var nextLogStreamsToken *string
 
 	for {
 		// Step 1: Fetch log streams with pagination using nextToken
-		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
+		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupArn, nextLogStreamsToken)
 		if err != nil {
 			log.Printf("Error fetching log streams: %v", err)
 			time.Sleep(2 * time.Second)
@@ -77,7 +77,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				continue // Skip inactive streams
 			}
 
-			err := processLogStream(ctx, client, logGroupName, streamName, tracker)
+			err := processLogStream(ctx, client, logGroupArn, streamName, tracker)
 			if err != nil {
 				log.Printf("Error processing stream %s: %v", streamName, err)
 			} else {
@@ -112,10 +112,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 }
 
 // fetchLogStreams retrieves log streams with pagination using nextToken.
-func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
+func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string, nextToken *string) ([]types.LogStream, *string, error) {
 	// starting from the oldest logs
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
-		LogGroupIdentifier: aws.String(logGroupName),
+		LogGroupIdentifier: aws.String(logGroupArn),
 		OrderBy:      types.OrderByLastEventTime,
 		Descending:   aws.Bool(false),
 		Limit:        aws.Int32(int32(cloudwatchReadBatchSize)), // Adjust based on expected stream count
@@ -129,9 +129,9 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 }
 
 // processLogStream reads and processes logs from a specific log stream using nextToken for pagination.
-func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, tracker *StreamTracker) error {
+func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn, streamName string, tracker *StreamTracker) error {
 	output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
-		LogGroupIdentifier:  aws.String(logGroupName),
+		LogGroupIdentifier:  aws.String(logGroupArn),
 		LogStreamName: aws.String(streamName),
 		NextToken:     tracker.NextToken,
 		StartFromHead: aws.Bool(true),

@@ -34,7 +34,7 @@ spec:
               value: ""
             - name: CLOUDWATCH_READ_BATCH_SIZE
               value: "5"
-            - name: LOG_GROUP_NAME
+            - name: LOG_GROUP_ARN
               value: ""
             - name: AWS_REGION
               value: ""
