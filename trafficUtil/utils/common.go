@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -14,6 +15,14 @@ func PrintLog(val string) {
 	if printCounter > 0 {
 		log.Println(val)
 		printCounter--
+	}
+}
+
+func DebugLog(message string, args ...interface{}) {
+	debug := os.Getenv("CONNECTOR_DEBUG")
+
+	if debug == "true" {
+		fmt.Printf(message + " \n", args...)
 	}
 }
 

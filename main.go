@@ -7,6 +7,7 @@ import (
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
+	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -60,7 +61,7 @@ func main() {
 
 	kafkaUtil.InitKafka()
 
-	log.Printf("Starting log processer for log group: %s \n", logGroupArn)
+	utils.DebugLog("Starting log processer for log group: %s", logGroupArn)
 
 	// Start monitoring the log group
 	if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArn); err != nil {

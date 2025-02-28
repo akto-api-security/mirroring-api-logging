@@ -31,7 +31,7 @@ func init() {
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string) error {
-	log.Printf("Monitoring log group: %s \n", logGroupArn)
+	utils.DebugLog("Monitoring log group: %s", logGroupArn)
 	activeStreams := make(map[string]*StreamTracker)
 
 	var nextLogStreamsToken *string
@@ -61,15 +61,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		// Step 2: Add new log streams to the active list
 		for _, stream := range logStreams {
-			log.Printf(`{
-				logStreamName: %s,\n
-				arn: %s,\n
-				creationTime: %d,\n
-				firstEventTimestamp: %d,\n
-				lastEventTimestamp: %d,\n
-				lastIngestionTime: %d,\n
-				uploadSequenceToken: %s
-			} \n`, *stream.LogStreamName, *stream.Arn, *stream.CreationTime, *stream.FirstEventTimestamp, *stream.LastEventTimestamp, *stream.LastIngestionTime, *stream.UploadSequenceToken)
+			utils.DebugLog("logStream: %+v", stream)
 			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
 				log.Printf("Discovered new log stream: %s", *stream.LogStreamName)
 				activeStreams[*stream.LogStreamName] = &StreamTracker{
@@ -83,10 +75,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		// Step 3: Process logs from active streams
 		for streamName, tracker := range activeStreams {
-			log.Printf("Processing stream: %s \n", streamName)
-			log.Printf("Tracker: %v \n", tracker)
+			utils.DebugLog("Processing stream: %s", streamName)
+			utils.DebugLog("Tracker: %+v", tracker)
 			if !tracker.Active {
-				log.Printf("Skipping inactive stream: %s \n", streamName)
+				utils.DebugLog("Skipping inactive stream: %s", streamName)
 				continue // Skip inactive streams
 			}
 
@@ -97,10 +89,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				tracker.LastChecked = time.Now()
 			}
 
-			log.Printf("Is stream in tracker inactive: %v \n", tracker)
+			utils.DebugLog("Is stream in tracker inactive: %+v", tracker)
 			// Mark the stream as inactive if no new logs are found and a new stream exists
 			if tracker.NextToken == nil || time.Since(tracker.LastChecked) > 10*time.Second {
-				log.Printf("Tracker: %v \n", tracker)
+				utils.DebugLog("Tracker: %+v", tracker)
 				tracker.Active = false
 				log.Printf("Marking stream as inactive, time interval exceeded: %s", streamName)
 			}
@@ -108,8 +100,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		// Step 4: Clean up inactive streams
 		for streamName, tracker := range activeStreams {
-			log.Printf("Checking stream: %s \n", streamName)
-			log.Printf("Is log stream active in tracker: %v \n", tracker)
+			utils.DebugLog("Checking stream: %s", streamName)
+			utils.DebugLog("Is log stream active in tracker: %+v", tracker)
 			if !tracker.Active {
 
 				for logId, log := range tracker.logs {
@@ -118,7 +110,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 					ParseAndProduce(*log)
 				}
 
-				log.Printf("Removing inactive stream: %s \n", streamName)
+				log.Printf("Removing inactive stream: %s", streamName)
 				delete(activeStreams, streamName)
 				log.Printf("Removed inactive stream: %s", streamName)
 			}
@@ -140,13 +132,13 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		NextToken:    nextToken,
 	})
 	if err != nil {
-		log.Printf("fetchLogStreams() - Error fetching log streams: %v \n", err)
+		utils.DebugLog("fetchLogStreams() - Error fetching log streams: %+v", err)
 		return nil, nil, err
 	}
 
-	log.Printf("fetchLogStreams() - Log streams output: %v \n", output)
-	log.Printf("fetchLogStreams() - Log streams: %v \n", output.LogStreams)
-	log.Printf("fetchLogStreams() - Next token: %s \n", *output.NextToken)
+	utils.DebugLog("fetchLogStreams() - Log streams output: %+v", output)
+	utils.DebugLog("fetchLogStreams() - Log streams: %+v", output.LogStreams)
+	utils.DebugLog("fetchLogStreams() - Next token: %s", *output.NextToken)
 
 	return output.LogStreams, output.NextToken, nil
 }
@@ -160,7 +152,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		StartFromHead: aws.Bool(true),
 	})
 	if err != nil {
-		log.Printf("processLogStream() - Error fetching log events: %v \n", err)
+		utils.DebugLog("processLogStream() - Error fetching log events: %+v", err)
 		return err
 	}
 
@@ -171,7 +163,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		message := *event.Message
 		matches := reqIDRegex.FindStringSubmatch(message)
 		if len(matches) < 2 {
-			log.Printf("processLogStream() - No request ID found in message: %s \n", message)
+			utils.DebugLog("processLogStream() - No request ID found in message: %s", message)
 			continue // Skip if no request ID found
 		}
 
@@ -193,7 +185,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 
 		httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
 
-		log.Printf("Message: %s \n", message)
+		utils.DebugLog("processLogStream(): Message: %s", message)
 		if !strings.Contains(message, "TRUNCATED") {
 			if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
 				fmt.Printf("scanning method: %s\n", message)
@@ -235,13 +227,13 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 			}
 		}
 
-		fmt.Printf("Stream: %s, Timestamp: %d, Message: %s\n", streamName, *event.Timestamp, *event.Message)
+		utils.DebugLog("Stream: %s, Timestamp: %d, Message: %s", streamName, *event.Timestamp, *event.Message)
 	}
 
 	// Update the next token for the stream
 	if tracker.NextToken == nil || *tracker.NextToken != *output.NextForwardToken {
 		tracker.NextToken = output.NextForwardToken
-		log.Printf("Updated next token for stream: %s \n", streamName)
+		utils.DebugLog("Updated next token for stream: %s", streamName)
 	} else {
 		// If no new logs, consider the stream inactive
 		tracker.Active = false
