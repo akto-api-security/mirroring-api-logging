@@ -60,6 +60,8 @@ func main() {
 
 	kafkaUtil.InitKafka()
 
+	log.Printf("Starting log processer for log group: %s \n", logGroupArn)
+
 	// Start monitoring the log group
 	if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArn); err != nil {
 		log.Fatalf("Error monitoring log group: %v", err)

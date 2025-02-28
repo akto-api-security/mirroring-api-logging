@@ -24,6 +24,7 @@ type LogEntry struct {
 
 // extractMap extracts a JSON-like map from a log message.
 func extractMap(log string, prefix string) map[string]string {
+	fmt.Printf("extractMap: log: , %s | prefix: %s\n", log, prefix)
 	result := make(map[string]string)
 	start := strings.Index(log, prefix)
 	if start == -1 {
@@ -39,6 +40,7 @@ func extractMap(log string, prefix string) map[string]string {
 	for _, pair := range pairs {
 		kv := strings.SplitN(pair, "=", 2) // Split key and value
 		if len(kv) == 2 {
+			fmt.Printf("extractMap: kv: %v \n", kv)
 			key := strings.TrimSpace(kv[0])
 			value := strings.TrimSpace(kv[1])
 			result[key] = value
@@ -50,11 +52,13 @@ func extractMap(log string, prefix string) map[string]string {
 
 // extractBody extracts the body string from a log message.
 func extractBody(log string, prefix string) string {
+	fmt.Printf("extractBody: log: , %s | prefix: %s\n", log, prefix)
 	start := strings.Index(log, prefix)
 	if start == -1 {
+		fmt.Printf("extractBody: index of prefix in log: , %d \n", start)
 		return "{}"
 	}
-	// fmt.Printf("extractBody, %s %v %s %v\n", log, len(strings.TrimSpace(log[start+len(prefix):])), strings.TrimSpace(log[start+len(prefix):]), start)
+	fmt.Printf("extractBody, %s %v %s %v\n", log, len(strings.TrimSpace(log[start+len(prefix):])), strings.TrimSpace(log[start+len(prefix):]), start)
 	if len(strings.TrimSpace(log[start+len(prefix):])) == 0 {
 		return "{}"
 	}
@@ -70,6 +74,7 @@ func DebugPrint(data map[string]*LogEntry) {
 }
 
 func ParseAndProduce(log LogEntry) {
+	fmt.Printf("ParseAndProduce: log: %+v \n", log)
 
 	reqHeaderString, _ := json.Marshal(log.RequestHeaders)
 	respHeaderString, _ := json.Marshal(log.ResponseHeaders)
@@ -92,6 +97,8 @@ func ParseAndProduce(log LogEntry) {
 		"source":          "MIRRORING",
 		"direction":       fmt.Sprint(1),
 	}
+
+	fmt.Printf("ParseAndProduce: value: %+v \n", value)
 
 	kafkaUtil.ParseAndProduce(value)
 }
