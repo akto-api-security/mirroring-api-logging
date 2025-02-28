@@ -19,11 +19,11 @@ func PrintLog(val string) {
 }
 
 func DebugLog(message string, args ...interface{}) {
-	debug := os.Getenv("CONNECTOR_DEBUG")
+	// debug := os.Getenv("CONNECTOR_DEBUG")
 
-	if debug == "true" {
+	// if debug == "true" {
 		fmt.Printf(message + " \n", args...)
-	}
+	// }
 }
 
 var IgnoreIpTraffic = false
