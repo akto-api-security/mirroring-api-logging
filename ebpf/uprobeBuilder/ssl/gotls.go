@@ -29,6 +29,14 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 	if err != nil {
 		return false, err
 	}
+
+	isGo := checkGoProcess(symLinkHostPath)
+	if !isGo {
+		return false, fmt.Errorf("Not a go process")
+	} else {
+		log.Printf("successfully found a go process %s", symLinkHostPath)
+	}
+
 	elfFile, err := elf.NewFile(symLinkHostPath)
 	if err != nil {
 		return false, fmt.Errorf("read executable file error: %v", err)

@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
@@ -29,15 +30,17 @@ type Process struct {
 }
 
 type ProcessFactory struct {
-	processMap map[int32]Process
-	mutex      *sync.RWMutex
+	processMap        map[int32]Process
+	mutex             *sync.RWMutex
+	unattachedProcess map[int32]bool
 }
 
 // NewFactory creates a new instance of the factory.
 func NewFactory() *ProcessFactory {
 	return &ProcessFactory{
-		processMap: make(map[int32]Process),
-		mutex:      &sync.RWMutex{},
+		processMap:        make(map[int32]Process),
+		mutex:             &sync.RWMutex{},
+		unattachedProcess: make(map[int32]bool),
 	}
 }
 
@@ -80,7 +83,13 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 	}
 	fmt.Printf("Attempt for  %v processes\n", len(pidSet))
 	for pid := range pidSet {
-		_, ok := processFactory.processMap[pid]
+		time.Sleep(200 * time.Millisecond)
+		_, ok := processFactory.unattachedProcess[pid]
+		if ok {
+			fmt.Printf("Not attempting for  %v processes\n", pid)
+			continue
+		}
+		_, ok = processFactory.processMap[pid]
 		if !ok {
 
 			if checkSelf(pid) {
@@ -94,6 +103,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			if err != nil {
 				if !probeAllPid {
 					fmt.Printf("No libraries for pid: %v %v\n", pid, err)
+					processFactory.unattachedProcess[pid] = true
 					continue
 				}
 			}
@@ -101,6 +111,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {
 				fmt.Printf("No libraries for pid: %v %v\n", pid, err)
+				processFactory.unattachedProcess[pid] = true
 				continue
 			}
 
@@ -148,6 +159,8 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			} else if err != nil {
 				log.Printf("Node probing error: %v %v\n", pid, err)
 			}
+
+			processFactory.unattachedProcess[pid] = true
 
 		}
 	}

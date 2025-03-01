@@ -2,13 +2,13 @@ package ssl
 
 import (
 	"fmt"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"log"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/iovisor/gobpf/bcc"
 )
 

@@ -2,10 +2,9 @@ package ssl
 
 import (
 	"fmt"
-	"log"
-
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/iovisor/gobpf/bcc"
+	"log"
 )
 
 type NodeTLSSymbolAddress struct {
