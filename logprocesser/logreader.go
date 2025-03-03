@@ -89,10 +89,18 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				tracker.LastChecked = time.Now()
 			}
 
-			utils.DebugLog("Is stream in tracker inactive: %+v", tracker)
+			if tracker != nil {
+				utils.DebugLog("Is log stream active in tracker: %+v", *tracker)
+			} else {
+				utils.DebugLog("Tracker is nil")
+			}			
 			// Mark the stream as inactive if no new logs are found and a new stream exists
 			if tracker.NextToken == nil || time.Since(tracker.LastChecked) > 10*time.Second {
-				utils.DebugLog("Tracker: %+v", tracker)
+				if tracker != nil {
+					utils.DebugLog("Tracker: %+v", *tracker)
+				} else {
+					utils.DebugLog("Tracker is nil...")
+				}				
 				tracker.Active = false
 				log.Printf("Marking stream as inactive, time interval exceeded: %s", streamName)
 			}
@@ -101,7 +109,11 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		// Step 4: Clean up inactive streams
 		for streamName, tracker := range activeStreams {
 			utils.DebugLog("Checking stream: %s", streamName)
-			utils.DebugLog("Is log stream active in tracker: %+v", tracker)
+			if tracker != nil {
+				utils.DebugLog("Is log stream active in tracker: %+v", *tracker)
+			} else {
+				utils.DebugLog("Tracker is nil")
+			}			
 			if !tracker.Active {
 
 				for logId, log := range tracker.logs {
@@ -136,9 +148,13 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		return nil, nil, err
 	}
 
-	utils.DebugLog("fetchLogStreams() - Log streams output: %+v", output)
+	utils.DebugLog("fetchLogStreams() - Log streams output: %+v", *output)
 	utils.DebugLog("fetchLogStreams() - Log streams: %+v", output.LogStreams)
-	utils.DebugLog("fetchLogStreams() - Next token: %s", *output.NextToken)
+	if output.NextToken != nil {
+		utils.DebugLog("fetchLogStreams() - Next token: %s", *output.NextToken)
+	} else {
+		utils.DebugLog("fetchLogStreams(): NextToken is nil")
+	}	
 
 	return output.LogStreams, output.NextToken, nil
 }
@@ -227,7 +243,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 			}
 		}
 
-		utils.DebugLog("Stream: %s, Timestamp: %d, Message: %s", streamName, *event.Timestamp, *event.Message)
+		utils.DebugLog("Stream: %s, Event: %+v", streamName, event)
 	}
 
 	// Update the next token for the stream
