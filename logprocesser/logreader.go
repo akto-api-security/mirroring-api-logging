@@ -40,6 +40,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		if err != nil {
             utils.DebugLog("MonitorLogGroup() - Error fetching log streams: %+v", err)
+            time.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -77,32 +78,45 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			lastProcessedEventTime = now - 300
 		}
 
-        time.Sleep(1 * time.Second)
+        time.Sleep(10 * time.Second)
 	}
 }
 
 func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string, lastProcessedEventTime int64) ([]types.LogStream, error) {
     var logStreams []types.LogStream
-    
-    paginator := cloudwatchlogs.NewDescribeLogStreamsPaginator(client, &cloudwatchlogs.DescribeLogStreamsInput{
-        LogGroupIdentifier: aws.String(logGroupArn),
-        OrderBy:      types.OrderByLastEventTime,
-        Descending:   aws.Bool(true),
-    })
-    
-    for paginator.HasMorePages() {
-        output, err := paginator.NextPage(ctx)
+    var nextToken *string
+
+    for {
+        output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
+            LogGroupIdentifier: aws.String(logGroupArn),
+            OrderBy:            types.OrderByLastEventTime,
+            Descending:         aws.Bool(true),
+            NextToken:          nextToken,
+        })
+
+        utils.DebugLog("FetchLogStreams() - Log streams output: %+v", *output)
+        
         if err != nil {
+            utils.DebugLog("FetchLogStreams() - Error fetching log streams: %+v", err)
             return nil, err
         }
-        
+
         for _, stream := range output.LogStreams {
             if stream.LastEventTimestamp != nil && *stream.LastEventTimestamp > lastProcessedEventTime {
+                utils.DebugLog("FetchLogStreams() - Adding log stream: %s", *stream.LogStreamName)
                 logStreams = append(logStreams, stream)
+            } else {
+                utils.DebugLog("FetchLogStreams() - Skipping log stream because of the timestamp: %s", *stream.LogStreamName)
             }
         }
+
+        if output.NextToken == nil {
+            utils.DebugLog("FetchLogStreams() - No more log streams")
+            break
+        }
+        nextToken = output.NextToken
     }
-    
+
     return logStreams, nil
 }
 
@@ -112,25 +126,30 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 
 	reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
     httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
-    
-    paginator := cloudwatchlogs.NewGetLogEventsPaginator(client, &cloudwatchlogs.GetLogEventsInput{
-        LogGroupIdentifier:  aws.String(logGroupArn),
-        LogStreamName: aws.String(logStreamName),
-        StartTime:     aws.Int64(startTime * 1000),
-        EndTime:       aws.Int64(time.Now().Unix() * 1000),
-    })
 
-    utils.DebugLog("getLogEvents() - Logs paginator: %+v", *paginator)
+    var nextToken *string
 
-    for paginator.HasMorePages() {
-        output, err := paginator.NextPage(ctx)
+    for {
+        output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
+            LogGroupIdentifier: aws.String(logGroupArn),
+            LogStreamName:      aws.String(logStreamName),
+            StartTime:          aws.Int64(startTime * 1000),
+            EndTime:            aws.Int64(time.Now().Unix() * 1000),
+            NextToken:          nextToken,
+        })
+        
         if err != nil {
-            utils.DebugLog("getLogEvents() - Error in Logs paginator next page: %+v", err)
+            utils.DebugLog("getLogEvents() - Error fetching log events: %+v", err)
             return nil, err
         }
-
-        utils.DebugLog("getLogEvents() - Logs paginator next page output: %+v", *output)
         
+        utils.DebugLog("getLogEvents() - Logs output: %+v", *output)
+
+        if len(output.Events) == 0 {
+            utils.DebugLog("getLogEvents() - No new events found")
+            break
+        }
+
         for _, event := range output.Events {
             message := *event.Message
             matches := reqIDRegex.FindStringSubmatch(message)
@@ -188,6 +207,12 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
         }
         
         logEvents = append(logEvents, output.Events...)
+
+        if output.NextForwardToken == nil || (nextToken != nil && *nextToken == *output.NextForwardToken) {
+            utils.DebugLog("getLogEvents() - No more events")
+            break
+        }
+        nextToken = output.NextForwardToken
     }
     
     return logEvents, nil
