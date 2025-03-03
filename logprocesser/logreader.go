@@ -76,6 +76,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		} else {
 			lastProcessedEventTime = now - 300
 		}
+
+        time.Sleep(1 * time.Second)
 	}
 }
 
@@ -150,13 +152,20 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
                     if len(matches) == 3 {
                         logEntry.HTTPMethod = matches[1]
                         logEntry.ResourcePath = matches[2]
+                        utils.DebugLog("getLogEvents() - HTTP Method: %s, Resource Path: %s", logEntry.HTTPMethod, logEntry.ResourcePath)
+                    } else {
+                        utils.DebugLog("getLogEvents() - Error parsing HTTP method and resource path: %s", message)
                     }
                 } else if strings.Contains(message, "Method request query string:") {
-                    logEntry.QueryParams = map[string]string{"raw": message}
+                    logEntry.QueryParams = extractMap(message, "Method request query string:")
                 } else if strings.Contains(message, "Method request headers:") {
-                    logEntry.RequestHeaders = map[string]string{"raw": message}
+                    logEntry.RequestHeaders = extractMap(message, "Method request headers:")
+                } else if strings.Contains(message, "Method request body before transformations:") {
+                    logEntry.RequestBody = extractBody(message, "Method request body before transformations:")
                 } else if strings.Contains(message, "Method response headers:") {
-                    logEntry.ResponseHeaders = map[string]string{"raw": message}
+                    logEntry.ResponseHeaders = extractMap(message, "Method response headers:")
+                } else if strings.Contains(message, "Method response body after transformations:") {
+                    logEntry.ResponseBody = extractBody(message, "Method response body after transformations:")
                 } else if strings.Contains(message, "Method completed with status:") {
                     parts := strings.Split(message, "Method completed with status:")
                     if len(parts) > 1 {
