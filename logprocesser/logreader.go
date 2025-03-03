@@ -29,8 +29,8 @@ func init() {
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string) error {
-	now := time.Now().Unix()
-	lastProcessedEventTime := now - 300
+	now := time.Now().Unix() * 1000
+	lastProcessedEventTime := now - 300000
     utils.DebugLog("MonitorLogGroup() - Starting log processer for log group: %s", logGroupArn)
     utils.DebugLog("MonitorLogGroup() - Time now: %d", now)
     utils.DebugLog("MonitorLogGroup() - Starting Last processed event time: %d", lastProcessedEventTime)
@@ -71,11 +71,11 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			}
 		}
 
-		elapsed := time.Now().Unix() - now
-		if elapsed < 300 {
-			time.Sleep(time.Duration(300-elapsed) * time.Second)
+		elapsed := time.Now().Unix()*1000 - now
+		if elapsed < 300000 {
+			time.Sleep(time.Duration(300000-elapsed) * time.Millisecond)
 		} else {
-			lastProcessedEventTime = now - 300
+			lastProcessedEventTime = now - 300000
 		}
 
         time.Sleep(10 * time.Second)
@@ -133,7 +133,7 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
         output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
             LogGroupIdentifier: aws.String(logGroupArn),
             LogStreamName:      aws.String(logStreamName),
-            StartTime:          aws.Int64(startTime * 1000),
+            StartTime:          aws.Int64(startTime - 60000),
             EndTime:            aws.Int64(time.Now().Unix() * 1000),
             NextToken:          nextToken,
         })
