@@ -52,7 +52,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
             utils.DebugLog("MonitorLogGroup() - Processing log stream: %s", *stream.LogStreamName)
             utils.DebugLog("MonitorLogGroup() - Last event timestamp: %d", *stream.LastEventTimestamp)
             utils.DebugLog("MonitorLogGroup() - Last processed event time: %d", lastProcessedEventTime)
-			if *stream.LastEventTimestamp > lastProcessedEventTime {
+			if stream.LastEventTimestamp != nil && *stream.LastEventTimestamp > lastProcessedEventTime {
 				events, err := getLogEvents(ctx, client, logGroupArn, *stream.LogStreamName, lastProcessedEventTime)
 
 				if err != nil {
@@ -73,8 +73,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		elapsed := time.Now().Unix()*1000 - now
 		if elapsed < 300000 {
+            utils.DebugLog("MonitorLogGroup() - Sleeping for %d milliseconds", 300000-elapsed)
 			time.Sleep(time.Duration(300000-elapsed) * time.Millisecond)
 		} else {
+            utils.DebugLog("MonitorLogGroup() - Resetting last processed event time")
 			lastProcessedEventTime = now - 300000
 		}
 
@@ -94,7 +96,9 @@ func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
             NextToken:          nextToken,
         })
 
-        utils.DebugLog("FetchLogStreams() - Log streams output: %+v", *output)
+        if output != nil {
+            utils.DebugLog("FetchLogStreams() - Log streams output: %+v", *output)
+        }        
         
         if err != nil {
             utils.DebugLog("FetchLogStreams() - Error fetching log streams: %+v", err)
@@ -106,7 +110,8 @@ func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
                 utils.DebugLog("FetchLogStreams() - Adding log stream: %s", *stream.LogStreamName)
                 logStreams = append(logStreams, stream)
             } else {
-                utils.DebugLog("FetchLogStreams() - Skipping log stream because of the timestamp: %s", *stream.LogStreamName)
+                utils.DebugLog("FetchLogStreams() - Discard all older log streams beyond this stream: %s", *stream.LogStreamName)
+                return logStreams, nil
             }
         }
 
@@ -123,6 +128,7 @@ func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn, logStreamName string, startTime int64) ([]types.OutputLogEvent, error) {
     utils.DebugLog("MonitorLogGroup() - Fetching log events for stream: %s", logStreamName)
     var logEvents []types.OutputLogEvent
+    var logEntries []LogEntry
 
 	reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
     httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
@@ -202,8 +208,7 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             }
 
             utils.DebugLog("getLogEvents() - Log entry: %+v", logEntry)
-
-            ParseAndProduce(logEntry)
+            logEntries = append(logEntries, logEntry)
         }
         
         logEvents = append(logEvents, output.Events...)
@@ -213,6 +218,10 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             break
         }
         nextToken = output.NextForwardToken
+    }
+
+    for _, logEntry := range logEntries {
+        ParseAndProduce(logEntry)
     }
     
     return logEvents, nil
