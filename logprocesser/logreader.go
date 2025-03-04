@@ -128,7 +128,6 @@ func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn, logStreamName string, startTime int64) ([]types.OutputLogEvent, error) {
     utils.DebugLog("MonitorLogGroup() - Fetching log events for stream: %s", logStreamName)
     var logEvents []types.OutputLogEvent
-    var logEntries []LogEntry
 
 	reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
     httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
@@ -156,6 +155,8 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             break
         }
 
+        var logEntry LogEntry
+
         for _, event := range output.Events {
             message := *event.Message
             matches := reqIDRegex.FindStringSubmatch(message)
@@ -167,7 +168,7 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             utils.DebugLog("getLogEvents() - Log message: %s", message)
             utils.DebugLog("getLogEvents() - Request ID: %s", matches[1])
 
-            logEntry := LogEntry{
+            logEntry = LogEntry{
                 RequestID: matches[1],
             }
 
@@ -208,8 +209,9 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             }
 
             utils.DebugLog("getLogEvents() - Log entry: %+v", logEntry)
-            logEntries = append(logEntries, logEntry)
         }
+
+        ParseAndProduce(logEntry)
         
         logEvents = append(logEvents, output.Events...)
 
@@ -218,10 +220,6 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             break
         }
         nextToken = output.NextForwardToken
-    }
-
-    for _, logEntry := range logEntries {
-        ParseAndProduce(logEntry)
     }
     
     return logEvents, nil
