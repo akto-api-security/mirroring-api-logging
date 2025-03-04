@@ -29,13 +29,14 @@ func init() {
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string) error {
-	now := time.Now().Unix() * 1000
-	lastProcessedEventTime := now - 300000
     utils.DebugLog("MonitorLogGroup() - Starting log processer for log group: %s", logGroupArn)
-    utils.DebugLog("MonitorLogGroup() - Time now: %d", now)
-    utils.DebugLog("MonitorLogGroup() - Starting Last processed event time: %d", lastProcessedEventTime)
-
+    
 	for {
+        now := time.Now().Unix() * 1000
+        lastProcessedEventTime := now - 300000
+        utils.DebugLog("MonitorLogGroup() - Time now: %d", now)
+        utils.DebugLog("MonitorLogGroup() - Starting Last processed event time: %d", lastProcessedEventTime)
+        
 		logStreams, err := FetchLogStreams(ctx, client, logGroupArn, lastProcessedEventTime)
 
 		if err != nil {
@@ -48,6 +49,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
             utils.DebugLog("MonitorLogGroup() - No new log streams found")
         }
 
+        latestTimestamp := lastProcessedEventTime
 		for _, stream := range logStreams {
             utils.DebugLog("MonitorLogGroup() - Processing log stream: %s", *stream.LogStreamName)
             utils.DebugLog("MonitorLogGroup() - Last event timestamp: %d", *stream.LastEventTimestamp)
@@ -60,16 +62,18 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				}
 
 				if len(events) > 0 {
-					latestTimestamp := lastProcessedEventTime
 					for _, event := range events {
 						if *event.Timestamp > latestTimestamp {
 							latestTimestamp = *event.Timestamp
 						}
 					}
-					lastProcessedEventTime = latestTimestamp
 				}
 			}
 		}
+
+        if latestTimestamp > lastProcessedEventTime {
+            lastProcessedEventTime = latestTimestamp
+        }
 
 		elapsed := time.Now().Unix()*1000 - now
 		if elapsed < 300000 {
@@ -155,7 +159,7 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             break
         }
 
-        var logEntry LogEntry
+        logEntries := make(map[string]LogEntry)
 
         for _, event := range output.Events {
             message := *event.Message
@@ -168,8 +172,11 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
             utils.DebugLog("getLogEvents() - Log message: %s", message)
             utils.DebugLog("getLogEvents() - Request ID: %s", matches[1])
 
-            logEntry = LogEntry{
-                RequestID: matches[1],
+            requestID := matches[1]
+            
+            logEntry, exists := logEntries[requestID]
+            if !exists {
+                logEntry = LogEntry{RequestID: requestID}
             }
 
             if !strings.Contains(message, "TRUNCATED") {
@@ -208,10 +215,13 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
                 }
             }
 
-            utils.DebugLog("getLogEvents() - Log entry: %+v", logEntry)
+            logEntries[requestID] = logEntry
         }
 
-        ParseAndProduce(logEntry)
+        for _, logEntry := range logEntries {
+            utils.DebugLog("getLogEvents() - Final log entry: %+v", logEntry)
+            ParseAndProduce(logEntry)
+        }
         
         logEvents = append(logEvents, output.Events...)
 
