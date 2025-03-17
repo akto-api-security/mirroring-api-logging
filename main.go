@@ -4,6 +4,9 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
@@ -61,10 +64,22 @@ func main() {
 
 	kafkaUtil.InitKafka()
 
-	utils.DebugLog("Starting log processer for log group: %s", logGroupArn)
+	logGroupArns := strings.Split(logGroupArn, ",")
 
-	// Start monitoring the log group
-	if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArn); err != nil {
-		log.Fatalf("Error monitoring log group: %v", err)
+	for _, logGroupArnTemp := range logGroupArns {
+		// Start monitoring the log group
+		logGroupArnTemp = strings.Trim(logGroupArnTemp, " ")
+		go func() {
+			utils.DebugLog("Starting log processor for log group: %s", logGroupArnTemp)
+			if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArnTemp); err != nil {
+				log.Fatalf("Error monitoring log group: %v", err)
+			}
+		}()
 	}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+	<-sig
+	log.Println("Signaled to terminate")
+
 }
