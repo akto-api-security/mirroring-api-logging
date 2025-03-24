@@ -192,6 +192,19 @@ func checkIfIp(host string) bool {
 	return net.ParseIP(chunks[0]) != nil
 }
 
+func printUrlDebug(url string) {
+
+	matchUrl := os.Getenv("DEBUG_URLS")
+
+	if len(matchUrl) == 0 {
+		matchUrl = "remuneration"
+	}
+
+	if strings.Contains(url, matchUrl) {
+		log.Println("url found: ", url)
+	}
+}
+
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
 	i := 0
@@ -337,6 +350,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"is_pending":      fmt.Sprint(isPending),
 			"source":          bd.source,
 		}
+
+		printUrlDebug(req.URL.String())
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
