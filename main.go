@@ -201,9 +201,16 @@ func printUrlDebug(url string) {
 	}
 
 	if strings.Contains(url, matchUrl) {
+		requestCount++
+
+		if requestCount%1000 == 0 {
+			log.Println("count: ", requestCount)
+		}
 		log.Println("url found: ", url)
 	}
 }
+
+var requestCount = 0
 
 func tryReadFromBD(bd *bidi, isPending bool) {
 	reader := bufio.NewReader(bytes.NewReader(bd.a.bytes))
