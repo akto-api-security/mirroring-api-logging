@@ -1,17 +1,9 @@
-FROM golang:1.16-alpine
-RUN apk add build-base
-RUN apk add libpcap-dev
+FROM alpine:3.21
 
-WORKDIR /app
+RUN apk add --no-cache tcpdump
 
-COPY go.mod ./
-COPY go.sum ./
-RUN go mod download
+COPY cleanup.sh /usr/local/bin/cleanup.sh
 
-COPY *.go ./
+RUN chmod +x /usr/local/bin/cleanup.sh
 
-RUN go build -o /mirroring-api-logging
-
-EXPOSE 4789/udp
-
-CMD "/mirroring-api-logging"
+CMD ["/usr/local/bin/cleanup.sh"]
