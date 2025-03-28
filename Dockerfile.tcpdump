@@ -1,0 +1,9 @@
+FROM alpine:3.21
+
+RUN apk add --no-cache tcpdump
+
+COPY tcpdump.sh /usr/local/bin/tcpdump.sh
+
+RUN chmod +x /usr/local/bin/tcpdump.sh
+
+CMD ["/usr/local/bin/tcpdump.sh"]

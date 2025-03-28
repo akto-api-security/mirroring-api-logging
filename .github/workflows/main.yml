@@ -13,10 +13,14 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
-      Tag: 
+      cleanupTag: 
         description: 'The tag for the Docker image'
         required: true
         default: 'tcpdumpCleanup'
+      tcpdumpTag: 
+        description: 'The tag for the Docker image'
+        required: true
+        default: 'tcpdump'
       Environment:
         description: 'The environment to deploy to'
         required: true
@@ -25,6 +29,14 @@ on:
           - prod
           - staging
         default: staging  
+      Module: 
+        description: 'The module'
+        required: true
+        type: choice
+        options: 
+          - tcpdump
+          - tcpdumpCleanup
+        default: tcpdump
       
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -37,31 +49,6 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
-
-      - name: Configure AWS credentials
-        if: ${{ github.event.inputs.Environment == 'staging' }}
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-      - name: Login to Amazon ECR
-        if: ${{ github.event.inputs.Environment == 'staging'}}
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-      - name: Build, tag, and push the image to Amazon ECR
-        if: ${{ github.event.inputs.Environment == 'staging' }}
-        id: build-image-awsecr
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: staging
-          IMAGE_TAG: ${{ github.event.inputs.Tag }}
-        run: |
-          # Build a docker container and push it to ECR 
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG .
-          echo "Pushing image to ECR..."
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG
-          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY-mirror-api-logging:$IMAGE_TAG"
        
       - name: DockerHub login
         if: ${{ github.event.inputs.Environment == 'prod' }}
@@ -71,15 +58,28 @@ jobs:
         run: |
           docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD 
 
-      - name: Build, tag, and push the image to DockerHub
-        if: ${{ github.event.inputs.Environment == 'prod' }}
+      - name: Build, tag, and push the image to DockerHub tcpdump cleanup
+        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'tcpdumpCleanup'}}
         id: build-image-dockerhub
         env:
           ECR_REGISTRY: aktosecurity
-          IMAGE_TAG: ${{ github.event.inputs.Tag }}
+          IMAGE_TAG: ${{ github.event.inputs.cleanupTag }}
         run: |
           # Build a docker container and push it to DockerHub 
-          docker build -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.cleanup .
+          echo "Pushing image to DockerHub..."
+          docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
+       
+      - name: Build, tag, and push the image to DockerHub tcpdump
+        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'tcpdump'}}
+        id: build-image-dockerhub
+        env:
+          ECR_REGISTRY: aktosecurity
+          IMAGE_TAG: ${{ github.event.inputs.tcpdumpTag }}
+        run: |
+          # Build a docker container and push it to DockerHub 
+          docker build -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.tcpdump .
           echo "Pushing image to DockerHub..."
           docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"

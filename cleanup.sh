@@ -16,11 +16,11 @@ do
   # Get the current disk usage percentage for /files
   available=$(df -P "$base_dir" | awk '{ gsub("%",""); capacity = $5 }; END { print capacity }')
 
-  printf "Available space: $available%%\n"
+  printf "Current disk usage space: $available%%\n"
 
   # If the available disk usage is greater than the max threshold
   if [ "$available" -gt "$max" ]; then
-    printf "Available value greater than max ($max%%), deleting files\n"
+    printf "Current disk usage value greater than max ($max%%), deleting files\n"
 
     # Find and delete all .pcap files
     find "$base_dir" -type f -name "*.pcap" -delete
