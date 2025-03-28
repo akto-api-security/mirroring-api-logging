@@ -73,7 +73,7 @@ jobs:
        
       - name: Build, tag, and push the image to DockerHub tcpdump
         if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'tcpdump'}}
-        id: build-image-dockerhub
+        id: build-image-dockerhub-2
         env:
           ECR_REGISTRY: aktosecurity
           IMAGE_TAG: ${{ github.event.inputs.tcpdumpTag }}
