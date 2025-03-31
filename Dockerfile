@@ -1,22 +1,5 @@
-FROM golang:1.22-alpine
-RUN apk add build-base
-RUN apk add libpcap-dev
-
-WORKDIR /app
-
-COPY go.mod ./
-COPY go.sum ./
-COPY run.sh ./
-RUN chmod +x ./run.sh
-RUN go mod download
-
-COPY *.go ./
-COPY db ./db
-COPY api ./api
-COPY utils ./utils
-
-RUN go build -o /mirroring-api-logging
-
-EXPOSE 4789/udp
-
-CMD "./run.sh"
+FROM node:23.10.0-alpine3.21
+WORKDIR /usr/src/app
+COPY . .
+EXPOSE 8000
+CMD [ "node", "hello.js" ]
