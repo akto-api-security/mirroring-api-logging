@@ -328,6 +328,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"requestPayload":  requestsContent[i],
 			"responsePayload": responsesContent[i],
 			"ip":              bd.key.net.Src().String(),
+			"destIp":          bd.key.net.Dst().String(),
 			"time":            fmt.Sprint(time.Now().Unix()),
 			"statusCode":      fmt.Sprint(resp.StatusCode),
 			"type":            string(req.Proto),
