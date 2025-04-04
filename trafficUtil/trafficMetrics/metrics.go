@@ -1,7 +1,7 @@
 package trafficMetrics
 
 import (
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -46,7 +46,7 @@ func SubmitOutgoingTrafficMetrics(oc utils.OutgoingCounter, outgoingBytes int) {
 var FilterHeaderValueMap = make(map[string]string)
 
 func tickerCode() {
-	log.Println("Running ticker")
+	slog.Debug("Running ticker")
 	outgoingCountMapMutex.Lock()
 	defer outgoingCountMapMutex.Unlock()
 	if !strings.Contains(db.MongoUrl, "0.0.0.0") {
@@ -56,7 +56,7 @@ func tickerCode() {
 	if !strings.Contains(db.MongoUrl, "0.0.0.0") {
 		FilterHeaderValueMap = db.FetchFilterHeaderMap()
 	}
-	log.Println("Finished ticker")
+	slog.Debug("Finished ticker")
 }
 
 func StartMetricsTicker() {

@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"runtime"
 )
@@ -19,22 +19,22 @@ func LogMemoryStats() int {
 
 	mem := int(m.Alloc / 1024 / 1024)
 	if mem > aktoMemThreshRestart {
-		log.Println("current mem usage", mem)
+		slog.Debug("current mem usage", "mem", mem)
 		os.Exit(3)
 	}
 
-	log.Println("Alloc in MB: ", mem)
-	log.Println("Sys in MB: ", m.Sys/1024/1024)
+	slog.Debug("Alloc in MB: ", "mem", mem)
+	slog.Debug("Sys in MB: ", "mem", m.Sys/1024/1024)
 
 	// gc stats
 
-	//log.Println("Last gc finished: ", m.LastGC)
-	//log.Println("Target heap size of next gc cycle: ", m.NextGC)
-	//log.Println("Stop The world pauses ", m.PauseTotalNs)
-	//log.Println("GcSys ", m.GCSys)
-	//log.Println("GCCPUFraction ", m.GCCPUFraction)
-	//log.Println("NumGC ", m.NumGC)
-	//log.Println("NumForcedGC ", m.NumForcedGC)
+	// slog.Debug("Last gc finished: ", "lastGC", m.LastGC)
+	// slog.Debug("Target heap size of next gc cycle: ", "nextGC", m.NextGC)
+	// slog.Debug("Stop The world pauses ", "pauseTotalNs", m.PauseTotalNs)
+	// slog.Debug("GcSys ", "gcSys", m.GCSys)
+	// slog.Debug("GCCPUFraction ", "gcCPUFraction", m.GCCPUFraction)
+	// slog.Debug("NumGC ", "numGC", m.NumGC)
+	// slog.Debug("NumForcedGC ", "numForcedGC", m.NumForcedGC)
 
 	return mem
 }

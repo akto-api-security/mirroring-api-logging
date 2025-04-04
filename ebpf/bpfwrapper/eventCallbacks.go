@@ -3,7 +3,7 @@ package bpfwrapper
 import (
 	"bytes"
 	"encoding/binary"
-	"log"
+	"log/slog"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -28,11 +28,16 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		var event structs.SocketOpenEvent
 		if err := binary.Read(bytes.NewReader(data), bcc.GetHostByteOrder(), &event); err != nil {
-			log.Printf("Failed to decode received data on socket open: %+v", err)
+			slog.Error("Failed to decode received data on socket open", "error", err)
 			continue
 		}
 		connId := event.ConnId
-		utils.LogIngest("Received open fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
+		slog.Debug("Received socket open event", 
+			"fd", connId.Fd,
+			"id", connId.Id,
+			"timestamp", connId.Conn_start_ns,
+			"ip", connId.Ip,
+			"port", connId.Port)
 		connectionFactory.CreateIfNotExists(connId)
 		connectionFactory.SendEvent(connId, &event)
 	}
@@ -45,12 +50,17 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 		var event structs.SocketCloseEvent
 		if err := binary.Read(bytes.NewReader(data), bcc.GetHostByteOrder(), &event); err != nil {
-			log.Printf("Failed to decode received data on socket close: %+v", err)
+			slog.Error("Failed to decode received data on socket close", "error", err)
 			continue
 		}
 
 		connId := event.ConnId
-		utils.LogIngest("Received close on: fd: %v id: %v ts: %v ip: %v port: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port)
+		slog.Debug("Received close on", 
+			"fd", connId.Fd,
+			"id", connId.Id,
+			"timestamp", connId.Conn_start_ns,
+			"ip", connId.Ip,
+			"port", connId.Port)
 		connectionFactory.SendEvent(connId, &event)
 	}
 }
@@ -90,7 +100,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			utils.LogIngest("Connections filled")
+			slog.Debug("Connections filled")
 			continue
 		}
 
@@ -100,10 +110,10 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		// Since the Msg field might be mostly empty, binary.read fails.
 		// So we split the loading into the fixed size attribute parts, and copying the message separately.
 
-		// fmt.Printf("data: %v\n", data)
+		// slog.Debug("data", "data", data)
 
 		if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
-			utils.LogIngest("Failed to decode received data: %+v", err)
+			slog.Error("Failed to decode received data", "error", err)
 			continue
 		}
 
@@ -120,7 +130,12 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
-			utils.LogIngest("Ignoring data for ignore port fd: %v id: %v ts: %v rc: %v wc: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount)
+			slog.Debug("Ignoring data for ignore port", 
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"rc", event.Attr.ReadEventsCount,
+				"wc", event.Attr.WriteEventsCount)
 			continue
 		}
 
@@ -134,6 +149,15 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
-		utils.LogIngest("Got data fd: %v id: %v ts: %v ip: %v port: %v data: %v rc: %v wc: %v ssl: %v\n", connId.Fd, connId.Id, connId.Conn_start_ns, connId.Ip, connId.Port, dataStr, event.Attr.ReadEventsCount, event.Attr.WriteEventsCount, event.Attr.Ssl)
+		slog.Debug("Got data", 
+			"fd", connId.Fd,
+			"id", connId.Id,
+			"timestamp", connId.Conn_start_ns,
+			"ip", connId.Ip,
+			"port", connId.Port,
+			"data", dataStr,
+			"rc", event.Attr.ReadEventsCount,
+			"wc", event.Attr.WriteEventsCount,
+			"ssl", event.Attr.Ssl)
 	}
 }

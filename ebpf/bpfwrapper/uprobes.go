@@ -2,7 +2,7 @@ package bpfwrapper
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -36,17 +36,17 @@ func AttachUprobes(soPath string, pid int, bpfModule *bcc.Module, uprobeList []U
 
 		switch probe.Type {
 		case EntryType:
-			log.Printf("Loading %q for %q as uprobe\n", probe.HookName, probe.FunctionToHook)
+			slog.Debug("Loading uprobe", "hook", probe.HookName, "as uprobe", functionToHook)
 			if err = bpfModule.AttachUprobe(soPath, functionToHook, probeFD, pid); err != nil {
 				return fmt.Errorf("failed to attach uprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
 			}
 		case ReturnType:
-			log.Printf("Loading %q for %q as uretprobe\n", probe.HookName, probe.FunctionToHook)
+			slog.Debug("Loading uretprobe", "hook", probe.HookName, "as uretprobe", functionToHook)
 			if err = bpfModule.AttachUretprobe(soPath, functionToHook, probeFD, pid); err != nil {
 				return fmt.Errorf("failed to attach uretprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
 			}
 		case EntryType_Matching_Suf:
-			log.Printf("Loading %q for %q as matching uprobe\n", probe.HookName, probe.FunctionToHook)
+			slog.Debug("Loading matching uprobe", "hook", probe.HookName, "as matching uprobe", functionToHook)
 			regex := getSuffixRegex(functionToHook)
 
 			if err = bpfModule.AttachMatchingUprobes(soPath, regex, probeFD, pid); err != nil {
@@ -54,28 +54,28 @@ func AttachUprobes(soPath string, pid int, bpfModule *bcc.Module, uprobeList []U
 			}
 		case ReturnType_Matching_Suf_Addr:
 			for _, add := range probe.Addresses {
-				log.Printf("Loading %q for %q as matching uretprobe with add %v\n", probe.HookName, probe.FunctionToHook, add)
+				slog.Debug("Loading matching uretprobe", "hook", probe.HookName, "as matching uretprobe", functionToHook, "with add", add)
 				path, addr, err := bcc.ResolveSymbolPath(soPath, functionToHook, 0x0, pid)
 				if err != nil {
-					fmt.Printf("resolv error: %v\n", err)
+					slog.Error("resolv error", "error", err)
 					continue
 				}
 				finalAddr := addr + add
 				evName := fmt.Sprintf("akto_p_%s_0x%x", uprobeRegexp.ReplaceAllString(path, "_"), finalAddr)
 				if err = bpfModule.AttachUProbeInternal(evName, bcc.BPF_PROBE_ENTRY, path, finalAddr, probeFD, pid); err != nil {
-					fmt.Printf("failed to attach matching uretprobe %q to %q due to: %v\n", probe.HookName, functionToHook, err)
+					slog.Error("failed to attach matching uretprobe", "hook", probe.HookName, "as matching uretprobe", functionToHook, "error", err)
 					continue
 				}
 			}
 		case EntryType_Matching_Pre:
-			log.Printf("Loading %q for %q as pre matching uprobe\n", probe.HookName, probe.FunctionToHook)
+			slog.Debug("Loading matching uprobe", "hook", probe.HookName, "as matching uprobe", functionToHook)
 			regex := getPrefixRegex(functionToHook)
 
 			if err = bpfModule.AttachMatchingUprobes(soPath, regex, probeFD, pid); err != nil {
 				return fmt.Errorf("failed to attach pre matching uprobe %q to %q due to: %v", probe.HookName, functionToHook, err)
 			}
 		case ReturnType_Matching_Pre:
-			log.Printf("Loading %q for %q as matching uprobe\n", probe.HookName, probe.FunctionToHook)
+			slog.Debug("Loading matching uretprobe", "hook", probe.HookName, "as matching uretprobe", functionToHook)
 			regex := getPrefixRegex(functionToHook)
 
 			if err = bpfModule.AttachMatchingUretprobes(soPath, regex, probeFD, pid); err != nil {

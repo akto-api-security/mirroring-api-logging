@@ -3,7 +3,7 @@ package connections
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sort"
 
@@ -162,7 +162,7 @@ func UpdateBufferSize(bufferSize uint64) {
 		currentTotalBuffer += int64(bufferSize)
 		if currentTotalBuffer/(1024*1024) > lastPrint {
 			lastPrint = currentTotalBuffer / (1024 * 1024)
-			log.Printf("Current total buffer: %v %v\n", currentTotalBuffer, lastPrint)
+			slog.Debug("Current total buffer", "buffer", currentTotalBuffer, "lastPrint", lastPrint)
 		}
 	}
 }
@@ -249,12 +249,12 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
 		lastMemCheck = time.Now().UnixMilli()
 		mem := utils.LogMemoryStats()
-		log.Printf("Requests processed : %v %v\n", requestProcessCount, lastMemCheck)
-		log.Printf("connection factory size : %v %v %v\n", len(factory.connections), len(factory.processor), lastMemCheck)
+		slog.Debug("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		slog.Debug("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})
-			metaUtils.LogProcessing("Deleting all trackers at mem: %v \n", mem)
+			slog.Debug("Deleting all trackers at mem", "mem", mem)
 			for k := range factory.connections {
 				trackersToDelete[k] = struct{}{}
 			}

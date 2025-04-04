@@ -2,7 +2,7 @@ package db
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -13,19 +13,19 @@ func InitMongoClient() {
 	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
 	disableOnDbFlag := disableOnDb == "true"
 
-	log.Printf("Disable flag : %t", disableOnDbFlag)
+	slog.Debug("Disable flag", "flag", disableOnDbFlag)
 
 	client, err := GetMongoClient()
 	mongoPingErr := client.Ping(context.Background(), readpref.Primary())
 	if err != nil || mongoPingErr != nil {
-		log.Printf("Failed connecting to mongo %s", err)
+		slog.Error("Failed connecting to mongo", "error", err)
 		if disableOnDbFlag {
-			log.Println("Exiting....")
+			slog.Debug("Exiting....")
 			time.Sleep(time.Second * 60)
 			panic("Failed connecting to mongo") // this will get restarted by docker
 		}
 	} else {
-		log.Printf("Connected to mongo")
+		slog.Debug("Connected to mongo")
 	}
 }
 
@@ -34,6 +34,6 @@ func CloseMongoClient() {
 
 	if err := client.Disconnect(context.Background()); err != nil {
 		// Handle error
-		log.Printf("Unable to disconnect mongo client")
+		slog.Error("Unable to disconnect mongo client")
 	}
 }

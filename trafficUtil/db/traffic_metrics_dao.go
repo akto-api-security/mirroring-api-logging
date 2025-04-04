@@ -3,7 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
@@ -14,7 +14,7 @@ import (
 func trafficMetricsInstance() (*mongo.Collection, error) {
 	client, err := GetMongoClient()
 	if err != nil {
-		fmt.Println("Error while getting mongo client for traffic metrics: " + err.Error())
+		slog.Error("Error while getting mongo client for traffic metrics", "error", err)
 		return nil, err
 	}
 
@@ -30,8 +30,8 @@ func TrafficMetricsDbUpdates(incomingCountMap map[string]utils.IncomingCounter, 
 	}
 	var incomingOperations []mongo.WriteModel
 
-	fmt.Printf("incoming count map: %d\n", len(incomingCountMap))
-	fmt.Printf("outgoing count map: %d\n", len(outgoingCountMap))
+	slog.Debug("incoming count map", "count", len(incomingCountMap))
+	slog.Debug("outgoing count map", "count", len(outgoingCountMap))
 
 	for _, value := range incomingCountMap {
 		filter := buildFilter(value.VxlanID, value.Ip, "", "INCOMING_PACKETS_MIRRORING", value.BucketStartEpoch, value.BucketEndEpoch)
@@ -83,12 +83,12 @@ func executeBulkUpdateOperation(operations []mongo.WriteModel, collection *mongo
 		result, err := collection.BulkWrite(context.Background(), operations)
 
 		if err != nil {
-			log.Printf("Error while updating collection: %s", err.Error())
+			slog.Error("Error while updating collection", "error", err)
 		} else {
-			log.Printf("Successfully updated: %d; inserted: %d; deleted: %d; upserted: %d", result.ModifiedCount, result.InsertedCount, result.DeletedCount, result.UpsertedCount)
+			slog.Debug("Successfully updated", "modifiedCount", result.ModifiedCount, "insertedCount", result.InsertedCount, "deletedCount", result.DeletedCount, "upsertedCount", result.UpsertedCount)
 		}
 	} else {
-		log.Println("Skipping updates because nothing in list")
+		slog.Debug("Skipping updates because nothing in list")
 	}
 }
 

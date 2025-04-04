@@ -2,7 +2,7 @@ package process
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -56,10 +56,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 	pidList, err := process.Pids()
 	if err != nil {
-		fmt.Println(err)
+		slog.Error("Error getting process list", "error", err)
 		return
 	}
-	fmt.Printf("Found %v processes\n", len(pidList))
+	slog.Debug("Found processes", "count", len(pidList))
 	pidSet := make(map[int32]bool)
 	for _, p := range pidList {
 		pidSet[p] = true
@@ -81,19 +81,19 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			delete(processFactory.processMap, pid)
 		}
 	}
-	fmt.Printf("Attempt for  %v processes\n", len(pidSet))
+	slog.Debug("Attempt for processes", "count", len(pidSet))
 	for pid := range pidSet {
 		time.Sleep(200 * time.Millisecond)
 		_, ok := processFactory.unattachedProcess[pid]
 		if ok {
-			fmt.Printf("Not attempting for  %v processes\n", pid)
+			slog.Debug("Not attempting for process", "pid", pid)
 			continue
 		}
 		_, ok = processFactory.processMap[pid]
 		if !ok {
 
 			if checkSelf(pid) {
-				fmt.Printf("Self process %v, skipping\n", pid)
+				slog.Debug("Self process", "pid", pid)
 				continue
 			}
 
@@ -102,7 +102,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			// TODO: check this once again.
 			if err != nil {
 				if !probeAllPid {
-					fmt.Printf("No libraries for pid: %v %v\n", pid, err)
+					slog.Debug("No libraries for process", "pid", pid, "error", err)
 					processFactory.unattachedProcess[pid] = true
 					continue
 				}
@@ -110,12 +110,12 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {
-				fmt.Printf("No libraries for pid: %v %v\n", pid, err)
+				slog.Debug("No libraries for process", "pid", pid, "error", err)
 				processFactory.unattachedProcess[pid] = true
 				continue
 			}
 
-			fmt.Printf("Attempting for pid: %v %v\n", pid, len(libraries))
+			slog.Debug("Attempting for process", "pid", pid, "libraries", len(libraries))
 			// openssl probes here are being attached on dynamically linked SSL libraries only.
 			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
@@ -129,7 +129,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				processFactory.processMap[pid] = p
 				continue
 			} else if err != nil {
-				log.Printf("openSSL probing error: %v %v\n", pid, err)
+				slog.Error("openSSL probing error", "pid", pid, "error", err)
 			}
 
 			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
@@ -143,7 +143,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				processFactory.processMap[pid] = p
 				continue
 			} else if err != nil {
-				log.Printf("GoTLS probing error: %v %v\n", pid, err)
+				slog.Error("GoTLS probing error", "pid", pid, "error", err)
 			}
 
 			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
@@ -157,7 +157,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				processFactory.processMap[pid] = p
 				continue
 			} else if err != nil {
-				log.Printf("Node probing error: %v %v\n", pid, err)
+				slog.Error("Node probing error", "pid", pid, "error", err)
 			}
 
 			processFactory.unattachedProcess[pid] = true

@@ -2,7 +2,7 @@ package db
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -12,7 +12,7 @@ import (
 func accountSettingsInstance() (*mongo.Collection, error) {
 	client, err := GetMongoClient()
 	if err != nil {
-		fmt.Println("Error while getting mongo client for account settings: " + err.Error())
+		slog.Error("Error while getting mongo client for account settings", "error", err)
 		return nil, err
 	}
 
@@ -26,13 +26,14 @@ func FetchFilterHeaderMap() map[string]string {
 	filter := bson.M{}
 	accountSettingsCollection, err := accountSettingsInstance()
 	if err != nil {
+		slog.Error("Error while getting account settings", "error", err)
 		return filterHeaderValueMap
 	}
 
 	var result bson.M
 	err = accountSettingsCollection.FindOne(context.Background(), filter).Decode(&result)
 	if err != nil {
-		fmt.Println(err)
+		slog.Error("Error while getting account settings", "error", err)
 		return filterHeaderValueMap
 	}
 
@@ -43,9 +44,7 @@ func FetchFilterHeaderMap() map[string]string {
 		}
 	}
 
-	fmt.Println("********************************")
-	fmt.Println(filterHeaderValueMap)
-	fmt.Println("********************************")
+	slog.Debug("Filter header map", "map", filterHeaderValueMap)
 
 	return filterHeaderValueMap
 }
