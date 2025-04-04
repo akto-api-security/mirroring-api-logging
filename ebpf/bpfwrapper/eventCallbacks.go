@@ -55,7 +55,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
-		slog.Debug("Received close on", 
+		utils.LogIngest("Received close on", 
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
@@ -100,7 +100,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			slog.Debug("Connections filled")
+			utils.LogIngest("Connections filled")
 			continue
 		}
 
@@ -130,7 +130,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
-			slog.Debug("Ignoring data for ignore port", 
+			utils.LogIngest("Ignoring data for ignore port", 
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
@@ -149,7 +149,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
-		slog.Debug("Got data", 
+		utils.LogIngest("Got data", 
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
