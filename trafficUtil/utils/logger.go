@@ -1,10 +1,10 @@
 package utils
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
-	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 const LevelOff = slog.Level(99)
@@ -16,9 +16,10 @@ var (
 )
 
 func SetupLogger() {
-	trafficUtils.InitVar("INGEST_LOGS", &ingestLogs)
-	trafficUtils.InitVar("PROCESS_LOGS", &processLogs)
-	trafficUtils.InitVar("AKTO_LOG_LEVEL", &aktoLogLevel)
+	fmt.Println("Setting up logger")
+	InitVar("INGEST_LOGS", &ingestLogs)
+	InitVar("PROCESS_LOGS", &processLogs)
+	InitVar("AKTO_LOG_LEVEL", &aktoLogLevel)
 
 	if aktoLogLevel != "" {
 		switch strings.ToUpper(aktoLogLevel) {
@@ -44,6 +45,7 @@ func SetupLogger() {
 		Level: level,
 	})
 
+	fmt.Printf("Logger setup done with level %d and log level %s \n", level, aktoLogLevel)
 	slog.SetDefault(slog.New(handler))
 }
 

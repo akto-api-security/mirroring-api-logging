@@ -21,6 +21,7 @@ var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 
 func init() {
+	SetupLogger()
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 }
