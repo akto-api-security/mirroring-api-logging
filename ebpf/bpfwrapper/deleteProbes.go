@@ -39,7 +39,7 @@ func DeleteExistingAktoKernelProbes() {
 			if err := deleteCmd.Run(); err != nil {
 				slog.Error("Error deleting kprobe", "kprobe", kprobeName, "error", err)
 			} else {
-				slog.Debug("Deleted kprobe", "kprobe", kprobeName)
+				slog.Info("Deleted kprobe", "kprobe", kprobeName)
 			}
 		}
 	}

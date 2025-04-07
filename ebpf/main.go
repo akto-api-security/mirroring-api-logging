@@ -176,7 +176,7 @@ func run() {
 					isRunning_2 = true
 					mu_2.Unlock()
 
-					slog.Debug("Starting to attach to processes")
+					slog.Info("Starting to attach to processes")
 					processFactory.AddNewProcessesToProbe(bpfModule)
 					slog.Debug("Ended attaching to processes")
 					mu_2.Lock()

@@ -84,13 +84,13 @@ func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
 
 		switch probe.Type {
 		case EntryType:
-			slog.Debug("Loading kprobe", "hook", probe.HookName, "as kprobe", functionToHook)
+			slog.Info("Loading kprobe", "hook", probe.HookName, "as kprobe", functionToHook)
 			if err = bpfModule.AttachKprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
 				slog.Error("failed to attach kprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
 			}
 			continue
 		case ReturnType:
-			slog.Debug("Loading kretprobe", "hook", probe.HookName, "as kretprobe", functionToHook)
+			slog.Info("Loading kretprobe", "hook", probe.HookName, "as kretprobe", functionToHook)
 			if err = bpfModule.AttachKretprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
 				slog.Error("failed to attach kretprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
 			}
