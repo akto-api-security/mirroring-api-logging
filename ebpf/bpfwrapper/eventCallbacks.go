@@ -32,7 +32,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		slog.Debug("Received socket open event", 
+		metaUtils.LogIngest("Received socket open event", 
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
