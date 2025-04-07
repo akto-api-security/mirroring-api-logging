@@ -25,7 +25,7 @@ func InitMongoClient() {
 			panic("Failed connecting to mongo") // this will get restarted by docker
 		}
 	} else {
-		slog.Debug("Connected to mongo")
+		slog.Info("Connected to mongo")
 	}
 }
 

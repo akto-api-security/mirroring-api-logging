@@ -210,9 +210,9 @@ func run() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	slog.Debug("sniffer is ready")
+	slog.Info("sniffer is ready")
 	<-sig
-	slog.Debug("signaled to terminate")
+	slog.Info("signaled to terminate")
 }
 
 func captureMemoryProfile() {

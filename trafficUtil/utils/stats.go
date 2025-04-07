@@ -19,7 +19,7 @@ func LogMemoryStats() int {
 
 	mem := int(m.Alloc / 1024 / 1024)
 	if mem > aktoMemThreshRestart {
-		slog.Debug("current mem usage", "mem", mem)
+		slog.Error("current mem usage", "mem", mem)
 		os.Exit(3)
 	}
 

@@ -91,12 +91,28 @@ func Close() {
 
 func LogKafkaStats() {
 	stats := kafkaWriter.Stats()
-	slog.Debug("Stats - Dials %d, Writes %d, Messages %d, Bytes %d, Errors %d, DialTime %v, BatchTime %v, "+
-		"WriteTime %v, WaitTime %v, Retries %d, BatchSize %d, BatchBytes %d, MaxAttempts %d, MaxBatchSize %d, "+
-		"BatchTimeout %v, ReadTimeout %v, WriteTimeout %v, RequiredAcks %d, Async %t, Topic %s", stats.Dials,
-		stats.Writes, stats.Messages, stats.Bytes, stats.Errors, stats.DialTime, stats.BatchTime, stats.WriteTime,
-		stats.WaitTime, stats.Retries, stats.BatchSize, stats.BatchBytes, stats.MaxAttempts, stats.MaxBatchSize,
-		stats.BatchTimeout, stats.ReadTimeout, stats.WriteTimeout, stats.RequiredAcks, stats.Async, stats.Topic)
+	slog.Debug("Kafka Stats",
+    "dials", stats.Dials,
+    "writes", stats.Writes,
+    "messages", stats.Messages,
+    "bytes", stats.Bytes,
+    "errors", stats.Errors,
+    "dialTime", stats.DialTime,
+    "batchTime", stats.BatchTime,
+    "writeTime", stats.WriteTime,
+    "waitTime", stats.WaitTime,
+    "retries", stats.Retries,
+    "batchSize", stats.BatchSize,
+    "batchBytes", stats.BatchBytes,
+    "maxAttempts", stats.MaxAttempts,
+    "maxBatchSize", stats.MaxBatchSize,
+    "batchTimeout", stats.BatchTimeout,
+    "readTimeout", stats.ReadTimeout,
+    "writeTimeout", stats.WriteTimeout,
+    "requiredAcks", stats.RequiredAcks,
+    "async", stats.Async,
+    "topic", stats.Topic,
+	)
 }
 
 func LogKafkaError() {
