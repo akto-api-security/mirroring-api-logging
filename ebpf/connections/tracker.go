@@ -6,6 +6,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 type Tracker struct {
@@ -48,7 +49,7 @@ func (conn *Tracker) IsComplete() bool {
 	complete := conn.closeTimestamp != 0 &&
 		uint64(time.Now().UnixNano()) >= conn.closeTimestamp
 	if complete {
-		utils.LogProcessing("closed: %v %v ts: %v %v\n", conn.connID.Fd, conn.connID.Id, conn.closeTimestamp, uint64(time.Now().UnixNano()))
+		metaUtils.LogProcessing("Connection closed", "fd", conn.connID.Fd, "id", conn.connID.Id, "closeTimestamp", conn.closeTimestamp, "currentTimestamp", uint64(time.Now().UnixNano()))
 	}
 	return complete
 }
@@ -92,7 +93,7 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 
 	now := uint64(time.Now().UnixNano())
 	if conn.openTimestamp != 0 {
-		utils.LogIngest("Changing conn open timestamp from %v to %v\n", conn.openTimestamp, now)
+		metaUtils.LogIngest("Changing conn open timestamp", "current", conn.openTimestamp, "new", now)
 	}
 	conn.openTimestamp = now
 	conn.lastAccessTimestamp = now

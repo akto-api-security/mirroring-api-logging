@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,14 +62,14 @@ func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
 	if int(now-lastSampleUpdate) > ONE_MINUTE {
 		lastSampleUpdate = now
 		currentBandwidthProcessed = 0
-		log.Printf("reset limit: %v %v, processed: %v", now, lastSampleUpdate, currentBandwidthProcessed)
+		slog.Debug("reset limit", "now", now, "lastSampleUpdate", lastSampleUpdate, "currentBandwidthProcessed", currentBandwidthProcessed)
 	}
 	skip := currentBandwidthProcessed > outputBandwidthLimitPerMin
 	if !skip {
 		currentBandwidthProcessed += sampleSize
 		skip = currentBandwidthProcessed > outputBandwidthLimitPerMin
 		if skip {
-			log.Printf("Skipping sending to akto at: %v %v, processed: %v", now, lastSampleUpdate, currentBandwidthProcessed)
+			slog.Debug("Skipping sending to akto", "now", now, "lastSampleUpdate", lastSampleUpdate, "currentBandwidthProcessed", currentBandwidthProcessed)
 		}
 	}
 	return skip
@@ -89,7 +89,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
-		fmt.Printf("ParseAndProduce: receiveBuffer: %v , sentBuffer: %v\n", string(receiveBuffer), string(sentBuffer))
+		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
 
 	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
@@ -118,7 +118,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 	}
 
 	if shouldPrint {
-		fmt.Printf("ParseAndProduce: Found count of requests: %v\n", i)
+		slog.Debug("ParseAndProduce", "count", i)
 	}
 	if len(requests) == 0 {
 		return
@@ -171,13 +171,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 
 	if shouldPrint {
 
-		fmt.Printf("ParseAndProduce: Found count of responses: %v\n", i)
+		slog.Debug("ParseAndProduce", "count", i)
 	}
 	if len(requests) != len(responses) {
 		if shouldPrint {
-			fmt.Printf("Len req-res mismatch: lens: %v %v %v %v isComplete: %v\n",
-				len(requests), len(responses),
-				len(receiveBuffer), len(sentBuffer), isComplete)
+			slog.Debug("Len req-res mismatch", "lenRequests", len(requests), "lenResponses", len(responses), "lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", isComplete)
 		}
 		if isComplete {
 			return
@@ -299,12 +297,12 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			if strings.Contains(responsesContent[i], id) {
 				goodRequests++
 			} else {
-				fmt.Printf("req-resp.String() %v\n", string(out))
+				slog.Debug("req-resp.String()", "out", string(out))
 				badRequests++
 			}
 
 			if goodRequests%100 == 0 || badRequests%100 == 0 {
-				fmt.Printf("Good requests: %v , Bad requests: %v\n", goodRequests, badRequests)
+				slog.Debug("Good requests", "count", goodRequests, "badRequests", badRequests)
 			}
 		}
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"sync"
 
-	"log"
 	"strings"
 	"syscall"
 	"time"
@@ -59,7 +59,7 @@ func replaceArchType() {
 
 func isArmArch() bool {
 	arch := runtime.GOARCH
-	fmt.Printf("arch type detected: %v\n", arch)
+	slog.Debug("arch type detected", "arch", arch)
 	if strings.Contains(arch, "arm") {
 		return true
 	}
@@ -68,7 +68,7 @@ func isArmArch() bool {
 
 func isAmdArch() bool {
 	arch := runtime.GOARCH
-	fmt.Printf("arch type detected: %v\n", arch)
+	slog.Debug("arch type detected", "arch", arch)
 	if strings.Contains(arch, "amd") {
 		return true
 	}
@@ -83,10 +83,10 @@ func main() {
 }
 
 func run() {
-
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
-		log.Panic(err)
+		slog.Error("failed to read kernel module", "error", err)
+		panic(err)
 	}
 	source = string(byteString)
 
@@ -98,7 +98,8 @@ func run() {
 
 	bpfModule := bcc.NewModule(source, []string{})
 	if bpfModule == nil {
-		log.Panic("bpf is nil")
+		slog.Error("failed to create BPF module", "error", "module is nil")
+		panic("bpf module is nil")
 	}
 	defer bpfModule.Close()
 
@@ -140,7 +141,8 @@ func run() {
 	hooks = append(hooks, bpfwrapper.Level4hooks...)
 
 	if err := bpfwrapper.LaunchPerfBufferConsumers(bpfModule, connectionFactory, callbacks); err != nil {
-		log.Panic(err)
+		slog.Error("failed to launch perf buffer consumers", "error", err)
+		panic(err)
 	}
 
 	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
@@ -160,11 +162,11 @@ func run() {
 
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
-			fmt.Printf("Starting to attach to processes in ticker start\n")
+			slog.Debug("Starting to attach to processes in ticker start")
 			ticker := time.NewTicker(pollInterval) // Create a ticker to trigger every minute
 			defer ticker.Stop()
 			for range ticker.C {
-				fmt.Printf("Starting to attach to processes in ticker\n")
+				slog.Debug("Starting to attach to processes in ticker")
 				if !isRunning_2 {
 					mu_2.Lock()
 					if isRunning_2 {
@@ -174,16 +176,16 @@ func run() {
 					isRunning_2 = true
 					mu_2.Unlock()
 
-					fmt.Printf("Starting to attach to processes\n")
+					slog.Info("Starting to attach to processes")
 					processFactory.AddNewProcessesToProbe(bpfModule)
-					fmt.Printf("Ended attaching to processes\n")
+					slog.Debug("Ended attaching to processes")
 					mu_2.Lock()
 					isRunning_2 = false
 					mu_2.Unlock()
 				}
-				fmt.Printf("Ended attaching to processes in ticker\n")
+				slog.Debug("Ended attaching to processes in ticker")
 			}
-			fmt.Printf("Ended attaching to processes in ticker end\n")
+			slog.Debug("Ended attaching to processes in ticker end")
 		}()
 	}
 
@@ -208,9 +210,9 @@ func run() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	log.Println("Sniffer is ready")
+	slog.Info("sniffer is ready")
 	<-sig
-	log.Println("Signaled to terminate")
+	slog.Info("signaled to terminate")
 }
 
 func captureMemoryProfile() {
@@ -232,11 +234,11 @@ func captureCpuProfile() {
 	if err := pprof.StartCPUProfile(f); err != nil {
 		panic("could not start CPU profile: " + err.Error())
 	}
-	fmt.Println("CPU profiling started")
+	slog.Debug("CPU profiling started")
 
 	// Allow profiling for a certain duration or simulate workload
 	time.Sleep(12 * time.Second) // Sleep for 10 seconds to simulate CPU activity
 
 	pprof.StopCPUProfile()
-	fmt.Println("CPU profiling stopped")
+	slog.Debug("CPU profiling stopped")
 }

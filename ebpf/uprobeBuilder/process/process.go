@@ -3,7 +3,7 @@ package process
 import (
 	"bufio"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -25,7 +25,7 @@ func CheckProcessCGroupBelongToKube(pid int32) ([]string, error) {
 	if len(output) <= 1 {
 		return nil, fmt.Errorf("no k8s cgroups")
 	} else {
-		log.Printf("successfully found a kube process %s", processCgroupFilePath)
+		slog.Debug("successfully found a kube process", "path", processCgroupFilePath)
 	}
 	result := make([]string, 0)
 	result = append(result, output)
@@ -36,7 +36,7 @@ func checkKubeProcess(exePath string) string {
 	cmd := exec.Command("sh", "-c", "strings "+exePath+" | grep cri-containerd | head -n 1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Printf("Error executing command in checkKubeProcess: %v\n", err)
+		slog.Error("Error executing command in checkKubeProcess", "error", err)
 		return ""
 	}
 	return string(output)
@@ -88,7 +88,7 @@ func FindLibrariesPathInMapFile(pid int32) (map[string]bool, error) {
 		modulePath := host.GetFileInHost(modulePathAbs)
 		_, exists := os.Stat(modulePath)
 		if exists != nil {
-			log.Printf("could not found the module, ignore. name: %s, path: %s", moduleName, modulePath)
+			slog.Debug("could not found the module, ignore", "name", moduleName, "path", modulePath)
 			continue
 		}
 		modules[modulePath] = true

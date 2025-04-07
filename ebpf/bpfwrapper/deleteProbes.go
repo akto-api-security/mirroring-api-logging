@@ -1,7 +1,7 @@
 package bpfwrapper
 
 import (
-	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -12,7 +12,7 @@ func DeleteExistingAktoKernelProbes() {
 
 	listOutput, err := listCmd.Output()
 	if err != nil {
-		fmt.Println("Error listing kprobes:", err)
+		slog.Error("Error listing kprobes", "error", err)
 		return
 	}
 
@@ -37,9 +37,9 @@ func DeleteExistingAktoKernelProbes() {
 
 			// Run the command
 			if err := deleteCmd.Run(); err != nil {
-				fmt.Printf("Error deleting kprobe %s: %v\n", kprobeName, err)
+				slog.Error("Error deleting kprobe", "kprobe", kprobeName, "error", err)
 			} else {
-				fmt.Printf("Deleted kprobe %s\n", kprobeName)
+				slog.Info("Deleted kprobe", "kprobe", kprobeName)
 			}
 		}
 	}

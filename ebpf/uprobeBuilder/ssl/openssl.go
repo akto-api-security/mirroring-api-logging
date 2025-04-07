@@ -3,7 +3,7 @@ package ssl
 import (
 	"fmt"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
-	"log"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -33,7 +33,7 @@ func TryOpensslProbes(m map[string]bool, bpfModule *bcc.Module) (bool, error) {
 	if len(modules) == 0 {
 		return false, fmt.Errorf("no modules found")
 	}
-	fmt.Printf("Modules: %v\n", modules)
+	slog.Debug("Modules found", "modules", modules)
 	if libCrypto, exist := modules[LibCryptoName]; exist && len(libCrypto) > 0 {
 		libCryptoPath = libCrypto
 	}
@@ -52,24 +52,24 @@ func TryOpensslProbes(m map[string]bool, bpfModule *bcc.Module) (bool, error) {
 		return false, fmt.Errorf("could not found the symbol address config")
 	}
 
-	fmt.Printf("Attaching on: %v\n", libSslPath)
+	slog.Debug("Attaching on", "path", libSslPath)
 	switch addresses.version {
 	case V_1_0:
 		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_1_0); err != nil {
-			log.Printf("%s", err.Error())
+			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		break
 	case V_1_1:
 		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_1_1); err != nil {
-			log.Printf("%s", err.Error())
+			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		break
 	case V_3_0:
 		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_3_0); err != nil {
-			log.Printf("%s", err.Error())
+			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_3_0_ex); err != nil {
-			log.Printf("%s", err.Error())
+			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		break
 	}
@@ -108,7 +108,7 @@ func buildOpenSSLSymAddrConfig(libCryptoPath string) (*OpenSSLSymbolAddresses, e
 		minor := subMatch[2]
 		fix := subMatch[3]
 
-		log.Printf("found the libCrypto.so version: %s.%s.%s", major, minor, fix)
+		slog.Debug("found the libCrypto.so version", "major", major, "minor", minor, "fix", fix)
 		conf := &OpenSSLSymbolAddresses{}
 
 		// must be number, already validate in the regex
@@ -151,8 +151,7 @@ func buildOpenSSLSymAddrConfig(libCryptoPath string) (*OpenSSLSymbolAddresses, e
 			conf.RoleOffset = 56
 			conf.version = V_1_1
 		}
-		log.Printf("the libCrypto.so library symbol version config, version: %s.%s.%s, bio offset: %d",
-			major, minor, fix, conf.FDOffset)
+		slog.Debug("the libCrypto.so library symbol version config", "version", fmt.Sprintf("%s.%s.%s", major, minor, fix), "bio offset", conf.FDOffset)
 		return conf, nil
 	}
 	return nil, fmt.Errorf("could not fount the version of the libCrypto.so")

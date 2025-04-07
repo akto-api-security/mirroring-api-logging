@@ -3,7 +3,7 @@ package main
 import (
     "github.com/google/gopacket"
     "github.com/google/gopacket/pcap"
-    "log"
+    "log/slog"
     "time"
 	"github.com/google/gopacket/layers"
 
@@ -28,18 +28,18 @@ func main() {
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
 			udpContent := packet.TransportLayer().(*layers.UDP)
-			// log.Println("%v", udpContent.Payload)
+			// slog.Debug("UDP packet", "payload", udpContent.Payload)
 	
 			innerPacket := gopacket.NewPacket(udpContent.Payload[8:], layers.LayerTypeEthernet, gopacket.Default)
 	
-			// log.Println("%v", innerPacket)
+			// slog.Debug("UDP ", "innerPacket", innerPacket)
 	
 			if innerPacket.NetworkLayer() == nil || innerPacket.TransportLayer() == nil || innerPacket.TransportLayer().LayerType() != layers.LayerTypeTCP {
-				// log.Println("not a tcp payload")
+				// slog.Debug("not a tcp payload")
 				continue
 			} else {
 				tcp := innerPacket.TransportLayer().(*layers.TCP)
-				log.Println(string(tcp.Payload))
+				slog.Debug("inner tcp packet", "payload", string(tcp.Payload))
 			}
 			}
 	  }

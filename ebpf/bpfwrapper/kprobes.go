@@ -1,7 +1,7 @@
 package bpfwrapper
 
 import (
-	"log"
+	"log/slog"
 	"runtime"
 
 	"github.com/iovisor/gobpf/bcc"
@@ -78,25 +78,25 @@ func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
 
 		probeFD, err := bpfModule.LoadKprobe(probe.HookName)
 		if err != nil {
-			log.Printf("failed to load %q due to: %v, skipping", probe.HookName, err)
+			slog.Error("failed to load kprobe", "hook", probe.HookName, "error", err)
 			continue
 		}
 
 		switch probe.Type {
 		case EntryType:
-			log.Printf("Loading %q for %q as kprobe\n", probe.HookName, functionToHook)
+			slog.Info("Loading kprobe", "hook", probe.HookName, "as kprobe", functionToHook)
 			if err = bpfModule.AttachKprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
-				log.Printf("failed to attach kprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
+				slog.Error("failed to attach kprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
 			}
 			continue
 		case ReturnType:
-			log.Printf("Loading %q for %q as kretprobe\n", probe.HookName, functionToHook)
+			slog.Info("Loading kretprobe", "hook", probe.HookName, "as kretprobe", functionToHook)
 			if err = bpfModule.AttachKretprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
-				log.Printf("failed to attach kretprobe %q to %q due to: %v, skipping", probe.HookName, functionToHook, err)
+				slog.Error("failed to attach kretprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
 			}
 			continue
 		default:
-			log.Printf("unknown Kprobe type %d given for %q, skipping", probe.Type, probe.HookName)
+			slog.Error("unknown Kprobe type given for hook", "type", probe.Type, "hook", probe.HookName)
 			continue
 		}
 	}

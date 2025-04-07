@@ -3,7 +3,7 @@ package connections
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sort"
 
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	metaUtils "github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
@@ -50,13 +49,13 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	for _, k := range keys {
 		if kPrev == -1 {
 			if k != 1 {
-				metaUtils.LogProcessing("Bad start sequence: %v - %v \n", k, string(bufMap[k]))
+				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
 				break
 			}
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
-				metaUtils.LogProcessing("Missing sequence: %v %v - %v - %v\n", kPrev, k, string(bufMap[k]), string(bufMap[kPrev]))
+				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
 				break
 			}
 			kPrev = k
@@ -147,7 +146,7 @@ func BufferCheck() bool {
 		lastReset = uint64(time.Now().UnixMilli())
 		currentTotalBuffer = int64(0)
 		lastPrint = int64(0)
-		metaUtils.LogIngest("Buffer reset: %v %v\n", currentTotalBuffer, lastPrint)
+		utils.LogIngest("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
 	}
 
 	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
@@ -162,7 +161,7 @@ func UpdateBufferSize(bufferSize uint64) {
 		currentTotalBuffer += int64(bufferSize)
 		if currentTotalBuffer/(1024*1024) > lastPrint {
 			lastPrint = currentTotalBuffer / (1024 * 1024)
-			log.Printf("Current total buffer: %v %v\n", currentTotalBuffer, lastPrint)
+			slog.Debug("Current total buffer", "buffer", currentTotalBuffer, "lastPrint", lastPrint)
 		}
 	}
 }
@@ -173,7 +172,7 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 
 	_, exists := factory.connections[connectionID]
 	if !exists {
-		metaUtils.LogProcessing("Creating tracker fd: %v id: %v ts: %v ip: %v port: %v\n", connectionID.Fd, connectionID.Id, connectionID.Conn_start_ns, connectionID.Ip, connectionID.Port)
+		utils.LogProcessing("Creating tracker", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		tracker := NewTracker(connectionID)
 		now := uint64(time.Now().UnixNano())
 		tracker.openTimestamp = now
@@ -187,7 +186,7 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
-		metaUtils.LogProcessing("Starting go routine fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+		utils.LogProcessing("Starting go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 		inactivityTimer := time.NewTimer(inactivityThreshold)
 
 		for {
@@ -196,26 +195,26 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				// Handle event based on its type
 				switch e := event.(type) {
 				case *structs.SocketDataEvent:
-					metaUtils.LogProcessing("Received data event fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddDataEvent(*e)
 				case *structs.SocketOpenEvent:
-					metaUtils.LogProcessing("Received open event fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddOpenEvent(*e)
 				case *structs.SocketCloseEvent:
-					metaUtils.LogProcessing("Received close event fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
 					factory.ProcessAndStopWorker(connID)
 					factory.DeleteWorker(connID)
-					metaUtils.LogProcessing("Stopping go routine fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					return
 				}
 
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
-				metaUtils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				factory.ProcessAndStopWorker(connID)
 				factory.DeleteWorker(connID)
-				metaUtils.LogProcessing("Stopping go routine fd: %v id: %v ts: %v ip: %v port: %v\n", connID.Fd, connID.Id, connID.Conn_start_ns, connID.Ip, connID.Port)
+				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
 			}
 		}
@@ -237,24 +236,24 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	if ch, exists := factory.processor[connectionID]; exists {
 		close(ch)
 		delete(factory.processor, connectionID)
-		metaUtils.LogProcessing("Deleted event fd: %v id: %v ts: %v ip: %v port: %v\n", connectionID.Fd, connectionID.Id, connectionID.Conn_start_ns, connectionID.Ip, connectionID.Port)
+		utils.LogProcessing("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 	}
 
 	if _, exists := factory.connections[connectionID]; exists {
 		delete(factory.connections, connectionID)
-		metaUtils.LogProcessing("Deleted connection fd: %v id: %v ts: %v ip: %v port: %v\n", connectionID.Fd, connectionID.Id, connectionID.Conn_start_ns, connectionID.Ip, connectionID.Port)
+		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
 	}
 
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
 		lastMemCheck = time.Now().UnixMilli()
 		mem := utils.LogMemoryStats()
-		log.Printf("Requests processed : %v %v\n", requestProcessCount, lastMemCheck)
-		log.Printf("connection factory size : %v %v %v\n", len(factory.connections), len(factory.processor), lastMemCheck)
+		slog.Debug("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		slog.Debug("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})
-			metaUtils.LogProcessing("Deleting all trackers at mem: %v \n", mem)
+			utils.LogProcessing("Deleting all trackers at mem", "mem", mem)
 			for k := range factory.connections {
 				trackersToDelete[k] = struct{}{}
 			}
@@ -288,20 +287,20 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 	ch, exists := factory.getChannel(connectionID)
 
 	if exists {
-		metaUtils.LogProcessing("Received event fd: %v id: %v ts: %v ip: %v port: %v\n", connectionID.Fd, connectionID.Id, connectionID.Conn_start_ns, connectionID.Ip, connectionID.Port)
+		utils.LogProcessing("Received event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		defer func() {
 			if r := recover(); r != nil {
 				// Recover from a panic, caused by sending to a closed channel
-				metaUtils.LogProcessing("Attempted to send on a closed channel for connectionId %v. Ignoring event.\n", connectionID)
+				utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
 			}
 		}()
 		select {
 		case ch <- event: // Try sending the event to the worker's channel
-			metaUtils.LogProcessing("Sent event fd: %v id: %v ts: %v ip: %v port: %v\n", connectionID.Fd, connectionID.Id, connectionID.Conn_start_ns, connectionID.Ip, connectionID.Port)
+			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		default: // Avoid blocking if the channel is full
-			metaUtils.LogProcessing("Channel full for connectionId %v. Dropping event.\n", connectionID)
+			utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
 		}
 	} else {
-		metaUtils.LogProcessing("No worker found for connectionId %v\n", connectionID)
+		utils.LogProcessing("No worker found for", "connectionId", connectionID)
 	}
 }

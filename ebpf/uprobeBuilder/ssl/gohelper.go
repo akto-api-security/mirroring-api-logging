@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -71,7 +72,7 @@ func checkGoProcess(exePath string) bool {
 	cmd := exec.Command("sh", "-c", "strings "+exePath+" | grep go1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Printf("Error executing command in checkGoProcess: %v\n", err)
+		slog.Error("Error executing command in checkGoProcess", "error", err)
 		return false
 	}
 	return len(output) > 1

@@ -3,7 +3,7 @@ package kafkaUtil
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -65,7 +65,7 @@ func InitKafka() {
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
-			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
+			slog.Error("error establishing connection with kafka, sending message failed, retrying in 2 seconds", "error", err)
 			kafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
@@ -80,7 +80,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 	return func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
-			log.Printf("kafkaErrMsgCount : %d, messagesCount %d", KafkaErrMsgCount, len(messages))
+			slog.Error("kafka error message", "count", KafkaErrMsgCount, "messagesCount", len(messages))
 		}
 	}
 }
@@ -91,19 +91,35 @@ func Close() {
 
 func LogKafkaStats() {
 	stats := kafkaWriter.Stats()
-	log.Printf("Stats - Dials %d, Writes %d, Messages %d, Bytes %d, Errors %d, DialTime %v, BatchTime %v, "+
-		"WriteTime %v, WaitTime %v, Retries %d, BatchSize %d, BatchBytes %d, MaxAttempts %d, MaxBatchSize %d, "+
-		"BatchTimeout %v, ReadTimeout %v, WriteTimeout %v, RequiredAcks %d, Async %t, Topic %s", stats.Dials,
-		stats.Writes, stats.Messages, stats.Bytes, stats.Errors, stats.DialTime, stats.BatchTime, stats.WriteTime,
-		stats.WaitTime, stats.Retries, stats.BatchSize, stats.BatchBytes, stats.MaxAttempts, stats.MaxBatchSize,
-		stats.BatchTimeout, stats.ReadTimeout, stats.WriteTimeout, stats.RequiredAcks, stats.Async, stats.Topic)
+	slog.Debug("Kafka Stats",
+    "dials", stats.Dials,
+    "writes", stats.Writes,
+    "messages", stats.Messages,
+    "bytes", stats.Bytes,
+    "errors", stats.Errors,
+    "dialTime", stats.DialTime,
+    "batchTime", stats.BatchTime,
+    "writeTime", stats.WriteTime,
+    "waitTime", stats.WaitTime,
+    "retries", stats.Retries,
+    "batchSize", stats.BatchSize,
+    "batchBytes", stats.BatchBytes,
+    "maxAttempts", stats.MaxAttempts,
+    "maxBatchSize", stats.MaxBatchSize,
+    "batchTimeout", stats.BatchTimeout,
+    "readTimeout", stats.ReadTimeout,
+    "writeTimeout", stats.WriteTimeout,
+    "requiredAcks", stats.RequiredAcks,
+    "async", stats.Async,
+    "topic", stats.Topic,
+	)
 }
 
 func LogKafkaError() {
 	if time.Since(KafkaErrMsgEpoch).Seconds() >= 10 {
 
 		if KafkaErrMsgCount > 1000 {
-			log.Println("kafka error messages exceeded threshold, sleeping for 10 sec ", time.Now())
+			slog.Error("kafka error messages exceeded threshold, sleeping for 10 sec ", "count", KafkaErrMsgCount, "time", time.Now())
 			time.Sleep(10 * time.Second)
 		}
 		KafkaErrMsgCount = 0
@@ -119,7 +135,7 @@ func Produce(ctx context.Context, message string) error {
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
-		log.Println("ERROR while writing messages: ", err)
+		slog.Error("ERROR while writing messages", "error", err)
 		return err
 	}
 	return nil

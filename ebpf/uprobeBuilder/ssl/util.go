@@ -2,6 +2,7 @@ package ssl
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"unsafe"
@@ -80,7 +81,7 @@ func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress,
 	case Node:
 		asByteSlice = (*(*[szNodeTls]byte)(unsafe.Pointer(symAddrsNode)))[:]
 	}
-	fmt.Printf("byte arr: %v\n", asByteSlice)
+	slog.Debug("byte arr", "byteSlice", asByteSlice)
 
 	table, err := getBccTable(addrType)
 	if err != nil {
@@ -92,7 +93,7 @@ func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress,
 		return fmt.Errorf("updateBpfMap KeyStrToBytes error key %v failed: %v", pid, err)
 	}
 
-	fmt.Printf("key arr: %v %v \n", key, keyByte)
+	slog.Debug("key arr", "key", key, "keyByte", keyByte)
 
 	if err := table.Set(keyByte, asByteSlice); err != nil {
 		return fmt.Errorf("table.Set key %v failed: %v", pid, err)

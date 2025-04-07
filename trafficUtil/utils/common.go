@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +12,7 @@ var printCounter = 500
 
 func PrintLog(val string) {
 	if printCounter > 0 {
-		log.Println(val)
+		slog.Debug(val)
 		printCounter--
 	}
 }
@@ -21,6 +21,7 @@ var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 
 func init() {
+	SetupLogger()
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 }
@@ -31,26 +32,26 @@ func InitVar(envVarName string, targetVar interface{}) {
 		switch v := targetVar.(type) {
 		case *bool:
 			*v = strings.ToLower(envVar) == "true"
-			log.Printf("%s: %t\n", envVarName, *v)
+			slog.Debug("Setting env value", "name", envVarName, "value", *v)
 		case *string:
 			*v = envVar
-			log.Printf("%s: %v\n", envVarName, *v)
+			slog.Debug("Setting env value", "name", envVarName, "value", *v)
 		case *time.Duration:
 			temp, err := time.ParseDuration(envVar + "s")
 			if err == nil {
 				*v = temp
-				log.Printf("%s: %v\n", envVarName, *v)
+				slog.Debug("Setting env value", "name", envVarName, "value", *v)
 			}
 		case *int:
 			temp, err := strconv.Atoi(envVar)
 			if err == nil {
 				*v = temp
-				log.Printf("%s: %v\n", envVarName, *v)
-			}
+				slog.Debug("Setting env value", "name", envVarName, "value", *v)
+			}		
 		default:
-			log.Printf("Unsupported type for targetVar: %T\n", v)
+			slog.Info("Unsupported type for targetVar", "type", v)
 		}
 	} else {
-		log.Printf("%s: missing. using default value\n", envVarName)
+		slog.Info("Missing env value", "name", envVarName)
 	}
 }

@@ -2,7 +2,7 @@ package ssl
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -34,7 +34,7 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 	if !isGo {
 		return false, fmt.Errorf("Not a go process")
 	} else {
-		log.Printf("successfully found a go process %s", symLinkHostPath)
+		slog.Debug("successfully found a go process", "path", symLinkHostPath)
 	}
 
 	elfFile, err := elf.NewFile(symLinkHostPath)
@@ -53,7 +53,7 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 		return false, err
 	}
 
-	fmt.Printf("go version found: %v %v\n", pid, v.String())
+	slog.Debug("go version found", "pid", pid, "version", v.String())
 
 	offsets, err := generateGOTLSSymbolOffsets(elfFile, v)
 	if err != nil {
@@ -63,7 +63,7 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 		return false, fmt.Errorf("no offsets found")
 	}
 
-	fmt.Printf("go offsets found: %v %v\n", pid, offsets)
+	slog.Debug("go offsets found", "pid", pid, "offsets", offsets)
 
 	// TODO: check egress internal traffic
 	if err := updateBpfMap(GoTLS, pid, offsets, nil); err != nil {
@@ -73,26 +73,26 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 	for i, probe := range bpfwrapper.GoTlsRetHooks {
 		if strings.EqualFold(probe.FunctionToHook, goTLSWriteSymbol) {
 			address, err := findAddressForFunc(goTLSWriteSymbol, elfFile)
-			fmt.Printf("Addresses for gotls sym %v %v %v %v\n", pid, goTLSWriteSymbol, address, err)
+			slog.Debug("Addresses for gotls sym", "pid", pid, "symbol", goTLSWriteSymbol, "address", address, "error", err)
 			if err == nil {
 				bpfwrapper.GoTlsRetHooks[i].Addresses = address
 			}
 
 		} else if strings.EqualFold(probe.FunctionToHook, goTLSReadSymbol) {
 			address, err := findAddressForFunc(goTLSReadSymbol, elfFile)
-			fmt.Printf("Addresses for gotls sym %v %v %v %v\n", pid, goTLSReadSymbol, address, err)
+			slog.Debug("Addresses for gotls sym", "pid", pid, "symbol", goTLSReadSymbol, "address", address, "error", err)
 			if err == nil {
 				bpfwrapper.GoTlsRetHooks[i].Addresses = address
 			}
 		}
 	}
 
-	fmt.Printf("Attaching on: %v\n", symLinkHostPath)
+	slog.Debug("Attaching on", "path", symLinkHostPath)
 	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.GoTlsHooks); err != nil {
-		log.Printf("%s", err.Error())
+		slog.Error("failed to attach Go TLS uprobe", "error", err)
 	}
 	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.GoTlsRetHooks); err != nil {
-		log.Printf("%s", err.Error())
+		slog.Error("failed to attach Go TLS uretprobe", "error", err)
 	}
 	return true, nil
 }

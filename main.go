@@ -13,7 +13,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -94,12 +94,12 @@ func (f *myFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 	bd := f.bidiMap[k]
 	if bd == nil {
 		bd = &bidi{a: s, key: k, vxlanID: f.vxlanID, source: f.source}
-		//log.Printf("[%v] created first side of bidirectional stream", bd.key)
+		//slog.Debug("created first side of bidirectional stream", "key", bd.key)
 		// Register bidirectional with the reverse key, so the matching stream going
 		// the other direction will find it.
 		f.bidiMap[key{netFlow.Reverse(), tcpFlow.Reverse()}] = bd
 	} else {
-		//log.Printf("[%v] found second side of bidirectional stream", bd.key)
+		//slog.Debug("found second side of bidirectional stream", "key", bd.key)
 		bd.b = s
 		// Clear out the bidi we're using from the map, just in case.
 		delete(f.bidiMap, k)
@@ -120,7 +120,7 @@ func (f *myFactory) collectOldStreams() {
 	cutoff := time.Now().Add(-timeout)
 	for k, bd := range f.bidiMap {
 		if bd.lastPacketSeen.Before(cutoff) {
-			log.Printf("[%v] timing out old stream", bd.key)
+			slog.Debug("timing out old stream", "bdkey:", bd.key)
 			bd.b = emptyStream   // stub out b with an empty stream.
 			delete(f.bidiMap, k) // remove it from our map.
 			bd.maybeFinish()     // if b was the last stream we were waiting for, finish up.
@@ -170,9 +170,10 @@ func (bd *bidi) maybeFinish() {
 	timeNow := time.Now()
 	switch {
 	case bd.a == nil:
-		//log.Fatalf("[%v] a should always be non-nil, since it's set when bidis are created", bd.key)
+		//slog.Error("invalid state: stream should always be non-nil since it's set when bidi is created", "key", bd.key)
+		//os.Exit(1)
 	case bd.b == nil:
-		//log.Printf("[%v] no second stream yet", bd.key)
+		//slog.Debug("waiting for second stream", "key", bd.key)
 	default:
 		if bd.a.done && bd.b.done {
 			tryReadFromBD(bd, false)
@@ -197,7 +198,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 	_assembler := assemblerMap[vxlanID]
 	if _assembler == nil {
-		log.Println("creating assembler for vxlanID=", vxlanID)
+		slog.Debug("creating assembler for vxlanID=", "vxlanID", vxlanID)
 		// Set up assembly
 		streamFactory := &myFactory{bidiMap: make(map[key]*bidi), vxlanID: vxlanID, source: source}
 		streamPool := tcpassembly.NewStreamPool(streamFactory)
@@ -209,7 +210,7 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 
 		factoryMap[vxlanID] = streamFactory
 		assemblerMap[vxlanID] = _assembler
-		log.Println("created assembler for vxlanID=", vxlanID)
+		slog.Debug("created assembler for vxlanID=", "vxlanID", vxlanID)
 
 	}
 	return _assembler
@@ -219,21 +220,22 @@ func createAndGetAssembler(vxlanID int, source string) *tcpassembly.Assembler {
 func flushAll() {
 	for _, v := range assemblerMap {
 		v.FlushOlderThan(time.Now().Add(time.Second * -5))
-		//log.Println("num flushed/closed:", r, k)
-		//log.Println("streams before closing: ", len(factoryMap[k].bidiMap))
+		//slog.Debug("assembler flush stats", "flushed_count", r, "vxlan_id", k)
+		//slog.Debug("stream count before closing", "count", len(factoryMap[k].bidiMap), "vxlan_id", k)
 		//factoryMap[k].collectOldStreams()
-		//log.Println("streams after closing: ", len(factoryMap[k].bidiMap))
+		//slog.Debug("stream count after closing", "count", len(factoryMap[k].bidiMap), "vxlan_id", k)
 	}
 }
 
 func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 	if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
-		log.Fatal(err)
+		slog.Error("BPF filter error", "error", err)
+		os.Exit(1)
 		return
 	}
 
-	utils.PrintLog("reading in packets")
+	slog.Debug("reading in packets")
 
 	interfaceMap := make(map[string]bool)
 	incomingReqSrcIpCountMap := make(map[string]int)
@@ -243,9 +245,9 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	if len(maintainTrafficIpMapInput) > 0 {
 		val, err := strconv.ParseBool(maintainTrafficIpMapInput)
 		if err != nil {
-			fmt.Println("invalid value set for flag MAINTAIN_TRAFFIC_IP_MAP")
+			slog.Error("invalid value set for flag MAINTAIN_TRAFFIC_IP_MAP")
 		}
-		fmt.Println("setting MAINTAIN_TRAFFIC_IP_MAP = ", val)
+		slog.Debug("setting MAINTAIN_TRAFFIC_IP_MAP = ", "value", val)
 		maintainTrafficIpMap = val
 	}
 
@@ -255,7 +257,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			for _, i := range ifaces {
 				addrs, err := i.Addrs()
 				if err != nil {
-					fmt.Print(fmt.Errorf("localAddresses: %+v", err.Error()))
+					slog.Error("localAddresses", "error", err)
 					continue
 				}
 				for _, a := range addrs {
@@ -264,7 +266,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 						// Check if it's an IPv4 address
 						if ipnet.IP.To4() != nil {
 							// Compare the address with the target address
-							fmt.Printf("Interface addr %s\n", ipnet.IP.To4().String())
+							slog.Debug("Interface addr", "addr", ipnet.IP.To4().String())
 							interfaceMap[ipnet.IP.To4().String()] = true
 						}
 					}
@@ -296,10 +298,10 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 				src, dst := innerPacket.NetworkLayer().NetworkFlow().Endpoints()
 
 				dstEndpoint := dst.Raw()
-				//fmt.Println("dstEndpoint ", len(dstEndpoint))
+				// slog.Debug("dstEndpoint", "len", len(dstEndpoint))
 
 				srcEndpoint := src.Raw()
-				//fmt.Println("srcEndpoint ", len(srcEndpoint))
+				// slog.Debug("srcEndpoint", "len", len(srcEndpoint))
 
 				srcIp := getIpString(srcEndpoint)
 
@@ -326,22 +328,22 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 			bytesIn += len(tcp.Payload)
 
 			if bytesIn > kafkaUtil.BytesInThreshold {
-				log.Println("exceeded bytesInThreshold: ", kafkaUtil.BytesInThreshold, " with curr: ", bytesIn)
-				log.Println("limit reached, sleeping", time.Now())
+				slog.Debug("exceeded bytes threshold", "threshold", kafkaUtil.BytesInThreshold, "current", bytesIn)
+				slog.Debug("limit reached, sleeping", "time", time.Now())
 
-				log.Println("logging memory stats before wipeout", time.Now())
+				slog.Debug("logging memory stats before wipeout", "time", time.Now())
 				utils.LogMemoryStats()
 				wipeOut()
-				log.Println("wipeout done", time.Now())
-				log.Println("logging memory stats post wipeout", time.Now())
+				slog.Debug("wipeout done", "time", time.Now())
+				slog.Debug("logging memory stats post wipeout", "time", time.Now())
 				utils.LogMemoryStats()
 
 				for k, v := range incomingReqSrcIpCountMap {
-					log.Printf("srcIp %s, total req %d", k, v)
+					slog.Debug("source IP traffic", "ip", k, "total_requests", v)
 				}
 
 				for k, v := range incomingReqDstIpCountMap {
-					log.Printf("dstIp %s, total req %d", k, v)
+					slog.Debug("destination IP traffic", "ip", k, "total_requests", v)
 				}
 
 				bytesIn = 0
@@ -388,7 +390,8 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	kafkaUtil.InitKafka()
 
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
-		log.Fatal(err)
+		slog.Error("failed to open pcap offline", "error", err)
+		os.Exit(1)
 	} else {
 		run(handle, apiCollectionId, "PCAP")
 	}
@@ -404,16 +407,17 @@ func main() {
 	kafkaUtil.InitKafka()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
-			log.Fatal(err)
+			slog.Error("failed to open pcap live interface", "error", err)
+			os.Exit(1)
 		} else {
 			run(handle, -1, "MIRRORING")
-			log.Println("closing pcap connection....")
+			slog.Debug("closing pcap connection")
 			handle.Close()
-			log.Println("sleeping....")
+			slog.Debug("sleeping")
 			assemblerMap = make(map[int]*tcpassembly.Assembler)
 			trafficMetrics.InitTrafficMaps()
 			time.Sleep(10 * time.Second)
-			log.Println("SLEPT")
+			slog.Debug("woke up from sleep")
 			kafkaUtil.InitKafka()
 		}
 	}
