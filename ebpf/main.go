@@ -19,6 +19,7 @@ import (
 
 	"github.com/iovisor/gobpf/bcc"
 
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
@@ -83,7 +84,7 @@ func main() {
 }
 
 func run() {
-
+	utils.SetupLogger()
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
 		slog.Error("failed to read kernel module", "error", err)

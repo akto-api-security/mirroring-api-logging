@@ -15,7 +15,7 @@ var (
 	level slog.Level = slog.LevelWarn
 )
 
-func init() {
+func SetupLogger() {
 	trafficUtils.InitVar("INGEST_LOGS", &ingestLogs)
 	trafficUtils.InitVar("PROCESS_LOGS", &processLogs)
 	trafficUtils.InitVar("AKTO_LOG_LEVEL", &aktoLogLevel)
