@@ -408,7 +408,7 @@ func main() {
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			slog.Error("failed to open pcap live interface", "error", err)
-		os.Exit(1)
+			os.Exit(1)
 		} else {
 			run(handle, -1, "MIRRORING")
 			slog.Debug("closing pcap connection")
