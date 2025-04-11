@@ -283,7 +283,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = &trafficpb.StringList{
+				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
 					Values: []string{value},
 				}
 			}
@@ -327,7 +327,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				respHeader[name] = &trafficpb.StringList{
+				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
 					Values: []string{value},
 				}
 			}
