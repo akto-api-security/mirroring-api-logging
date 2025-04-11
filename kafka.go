@@ -30,17 +30,16 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 		return err
 	}
 
-	ip := GetSourceIp(value)
-	fmt.Println("found ip ", ip)
-	fmt.Println("found ip bytes ", []byte(ip))
-	if ip == "" {
+	fmt.Println("found ip ", value.Ip)
+	fmt.Println("found ip bytes ", []byte(value.Ip))
+	if value.Ip == "" {
 		fmt.Print("ip is empty, avoiding kafka push")
 		return nil
 	}
 	// Send serialized message to Kafka
 	msg := kafka.Message{
 		Topic: "akto.api.logs2",
-		Key:   []byte(ip), // what to do when ip is empty?
+		Key:   []byte(value.Ip), // what to do when ip is empty?
 		Value: protoBytes,
 	}
 
@@ -51,12 +50,12 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 	return err
 }
 
-func GetSourceIp(value *trafficpb.HttpResponseParam) string {
+func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
 
 	for _, header := range CLIENT_IP_HEADERS {
-		if headerValues, exists := value.RequestHeaders[header]; exists {
-			for _, value := range headerValues.Values {
-				parts := strings.Split(value, ",")
+		if headerValues, exists := reqHeaders[header]; exists {
+			for _, headerValue := range headerValues.Values {
+				parts := strings.Split(headerValue, ",")
 				for _, part := range parts {
 					ip := strings.TrimSpace(part)
 					if ip != "" {
@@ -70,8 +69,8 @@ func GetSourceIp(value *trafficpb.HttpResponseParam) string {
 	}
 
 	// if no headers found
-	fmt.Println("ip not found in headers, returning value ", value.Ip)
-	return value.Ip
+	fmt.Println("ip not found in headers, returning packet value ", packetIp)
+	return packetIp
 }
 
 func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {

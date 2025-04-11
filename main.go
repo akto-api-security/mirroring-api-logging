@@ -288,6 +288,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 				}
 			}
 		}
+		ip := GetSourceIp(reqHeader, bd.key.net.Src().String())
 
 		reqHeader["host"] = &trafficpb.StringList{
 			Values: []string{req.Host},
@@ -350,7 +351,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			ResponseHeaders: respHeader,
 			RequestPayload:  requestsContent[i],
 			ResponsePayload: responsesContent[i],
-			Ip:              bd.key.net.Src().String(),
+			Ip:              ip,
 			Time:            int32(time.Now().Unix()),
 			StatusCode:      int32(resp.StatusCode),
 			Type:            string(req.Proto),
