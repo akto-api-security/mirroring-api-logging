@@ -54,7 +54,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 func GetSourceIp(value *trafficpb.HttpResponseParam) string {
 
 	for _, header := range CLIENT_IP_HEADERS {
-		if headerValues, exists := value.ResponseHeaders[header]; exists {
+		if headerValues, exists := value.RequestHeaders[header]; exists {
 			for _, value := range headerValues.Values {
 				parts := strings.Split(value, ",")
 				for _, part := range parts {
