@@ -14,12 +14,15 @@ on:
   workflow_dispatch:
     inputs:
       Tag: 
+        description: "The tag for the Docker image."
         required: true
         default: 'latest'
       EbpfTag: 
+        description: "The tag for the eBPF Docker image."
         required: true
         default: 'k8s_ebpf'
       Environment:
+        description: "The environment to deploy to."
         required: true
         type: choice
         options:
@@ -27,6 +30,7 @@ on:
           - staging
         default: staging  
       Module: 
+        description: "The module to use for the build process."
         required: true
         type: choice
         options: 

@@ -17,14 +17,26 @@ func LogMemoryStats() int {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
+	/*
+		Since the same check is on system memory,
+		the check on Alloc is redundant.
+		Can be removed, in future.
+		Or can be used with a different threshold/flag.
+	*/
 	mem := int(m.Alloc / 1024 / 1024)
 	if mem > aktoMemThreshRestart {
-		slog.Error("current mem usage", "mem", mem)
+		slog.Error("current alloc mem usage", "mem", mem)
+		os.Exit(3)
+	}
+
+	sysMem := int(m.Sys / 1024 / 1024)
+	if sysMem > aktoMemThreshRestart {
+		slog.Error("current sys mem usage", "mem", sysMem)
 		os.Exit(3)
 	}
 
 	slog.Debug("Alloc in MB: ", "mem", mem)
-	slog.Debug("Sys in MB: ", "mem", m.Sys/1024/1024)
+	slog.Debug("Sys in MB: ", "mem", sysMem)
 
 	// gc stats
 
