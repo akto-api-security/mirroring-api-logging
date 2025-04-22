@@ -29,9 +29,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 		log.Println("Failed to serialize protobuf message: ", err)
 		return err
 	}
-
-	fmt.Println("found ip ", value.Ip)
-	fmt.Println("found ip bytes ", []byte(value.Ip))
+	
 	if value.Ip == "" {
 		fmt.Print("ip is empty, avoiding kafka push")
 		return nil
