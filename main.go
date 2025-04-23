@@ -60,6 +60,7 @@ var filterHeaderValueMap = make(map[string]string)
 
 var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
+var threatEnabled = false
 var (
 	handle *pcap.Handle
 	err    error
@@ -406,7 +407,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		//printLog("req-resp.String() " + string(out))
 		// insert kafka record for runtime
-		go ProduceStr(kafkaWriter, ctx, string(out))
+		if threatEnabled {
+			go ProduceStr(kafkaWriter, ctx, string(out))
+		}
 
 		// insert kafka record for threat client
 		go Produce(kafkaWriter, ctx, payload)
@@ -850,6 +853,14 @@ func main() {
 		log.Println("ignoreIpTraffic: ", ignoreIpTraffic)
 	} else {
 		log.Println("ignoreIpTraffic: missing. defaulting to false")
+	}
+
+	threatEnabledVar := os.Getenv("AKTO_THREAT_ENABLED")
+	if len(threatEnabledVar) > 0 {
+		threatEnabled = strings.ToLower(threatEnabledVar) == "true"
+		log.Println("threatEnabled: ", threatEnabled)
+	} else {
+		log.Println("threatEnabled: missing. defaulting to false")
 	}
 
 	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
