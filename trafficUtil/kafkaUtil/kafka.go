@@ -189,13 +189,16 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 
 func ProduceStr(ctx context.Context, message string) error {
 	// intialize the writer with the broker addresses, and the topic
+	topic := "akto.api.logs"
 	msg := kafka.Message{
+		Topic: topic,
 		Value: []byte(message),
 	}
+	
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
-		slog.Error("ERROR while writing messages", "error", err)
+		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}
 	return nil
@@ -204,7 +207,6 @@ func ProduceStr(ctx context.Context, message string) error {
 func getKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	return &kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
-		Topic:        topic,
 		BatchSize:    batchSize,
 		BatchTimeout: batchTimeout,
 		MaxAttempts:  1,
