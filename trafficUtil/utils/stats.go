@@ -7,10 +7,12 @@ import (
 )
 
 var aktoMemThreshRestart = 500
+var aktoSysMemThreshRestart = 1000
 
 func init() {
 	InitVar("AKTO_MEM_THRESH_RESTART", &aktoMemThreshRestart)
 	InitVar("AKTO_MEM_HARD_LIMIT", &aktoMemThreshRestart)
+	InitVar("AKTO_SYS_MEM_HARD_LIMIT", &aktoSysMemThreshRestart)
 }
 
 func LogMemoryStats() int {
@@ -25,13 +27,13 @@ func LogMemoryStats() int {
 	*/
 	mem := int(m.Alloc / 1024 / 1024)
 	if mem > aktoMemThreshRestart {
-		slog.Error("current alloc mem usage", "mem", mem)
+		slog.Error("Refreshing, current alloc mem usage", "mem", mem, "threshold", aktoMemThreshRestart)
 		os.Exit(3)
 	}
 
 	sysMem := int(m.Sys / 1024 / 1024)
-	if sysMem > aktoMemThreshRestart {
-		slog.Error("current sys mem usage", "mem", sysMem)
+	if sysMem > aktoSysMemThreshRestart {
+		slog.Error("Refreshing, current sys mem usage", "mem", sysMem, "threshold", aktoSysMemThreshRestart)
 		os.Exit(3)
 	}
 
