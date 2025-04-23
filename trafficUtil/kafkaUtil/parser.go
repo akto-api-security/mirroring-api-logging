@@ -80,8 +80,8 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
-func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
-	sourceIp string, destIp string, vxlanID int, isPending bool, trafficSource string, isComplete bool, direction int) {
+func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
+	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
@@ -273,6 +273,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte,
 			"is_pending":      fmt.Sprint(isPending),
 			"source":          trafficSource,
 			"direction":       fmt.Sprint(direction),
+			"process_id":      fmt.Sprint(idfd >> 32),
+			"socket_id":       fmt.Sprint(fd),
+			"daemonset_id":    fmt.Sprint(daemonsetIdentifier),
+			"enable_graph":    fmt.Sprint(utils.EnableGraph),
 		}
 
 		out, _ := json.Marshal(value)

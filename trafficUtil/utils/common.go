@@ -23,11 +23,13 @@ func PrintLog(val string, args ...any) {
 
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
+var EnableGraph = false
 
 func init() {
 	SetupLogger()
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
+	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {

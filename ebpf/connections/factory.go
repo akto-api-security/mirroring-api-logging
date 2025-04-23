@@ -6,12 +6,12 @@ import (
 	"log/slog"
 	"net"
 	"sort"
-
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/google/uuid"
 )
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
@@ -72,6 +72,9 @@ var (
 	inactivityThreshold  = 3 * time.Second
 	// Value in MB
 	bufferMemThreshold = 400
+
+	// unique id of daemonset
+	uniqueDaemonsetId = uuid.New().String()
 )
 
 func init() {
@@ -106,10 +109,10 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1)
+	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2)
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
 	}
 }
 
