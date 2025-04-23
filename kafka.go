@@ -3,11 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -26,24 +25,25 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 	// intialize the writer with the broker addresses, and the topic
 	protoBytes, err := proto.Marshal(value)
 	if err != nil {
-		log.Println("Failed to serialize protobuf message: ", err)
+		slog.Error("Failed to serialize protobuf message", "error=", err)
 		return err
 	}
 	
 	if value.Ip == "" {
-		fmt.Print("ip is empty, avoiding kafka push")
+		slog.Warn("ip is empty, avoiding kafka push")
 		return nil
 	}
 	// Send serialized message to Kafka
+	topic := "akto.api.logs2"
 	msg := kafka.Message{
-		Topic: "akto.api.logs2",
+		Topic: topic,
 		Key:   []byte(value.Ip), // what to do when ip is empty?
 		Value: protoBytes,
 	}
 
 	err = kafkaWriter.WriteMessages(ctx, msg)
 	if err != nil {
-		log.Println("ERROR while writing messages: ", err)
+		slog.Error("Kafka write for runtime failed", "topic=", topic, "error=", err)
 	}
 	return err
 }
@@ -57,8 +57,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 				for _, part := range parts {
 					ip := strings.TrimSpace(part)
 					if ip != "" {
-						fmt.Println("found value of ip in header ", header)
-						fmt.Println("returning ip ", ip)
+						slog.Debug("Ip found in", "the header=",  header)
 						return ip
 					}
 				}
@@ -66,21 +65,21 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 		}
 	}
 
-	// if no headers found
-	fmt.Println("ip not found in headers, returning packet value ", packetIp)
+	slog.Debug("No ip found in headers returning", "packetIp=", packetIp)
 	return packetIp
 }
 
 func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {
 	// intialize the writer with the broker addresses, and the topic
+	topic := "akto.api.logs"
 	msg := kafka.Message{
-		Topic: "akto.api.logs",
+		Topic: topic,
 		Value: []byte(message),
 	}
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
-		log.Println("ERROR while writing messages: ", err)
+		slog.Error("Kafka write for runtime failed", "topic=", topic, "error=", err)
 		return err
 	}
 
@@ -117,7 +116,7 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	defer func(r *kafka.Reader) {
 		err := r.Close()
 		if err != nil {
-			log.Printf("could not close reader: %v", err)
+			slog.Error("could not close kafka reader", "error=", err)
 		}
 	}(r)
 
@@ -127,25 +126,25 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Timeout reached, no message received.")
+			slog.Error("Timeout reached, no message received.")
 			return msg // Return empty Credential if timeout occurs
 		default:
 			// Attempt to read a message from the Kafka topic
 			m, err := r.ReadMessage(ctx)
 			if err != nil {
 				if err == context.DeadlineExceeded {
-					log.Println("Timeout reached, no message received.")
+					slog.Error("Timeout reached, no message received.")
 					return msg
 				}
-				log.Printf("could not read message: %v", err)
+				slog.Error("Kafka Read failed for", "topic=", topic, "error=", err)
 				return msg // Return empty Credential on read error
 			}
 
-			log.Println("Found message: " + string(m.Value))
+			slog.Debug("Found message: " + string(m.Value))
 
 			err = json.Unmarshal(m.Value, &msg)
 			if err != nil {
-				log.Printf("could not unmarshal message: %v", err)
+				slog.Error("could not unmarshal kafka message", "error=", err)
 				return msg // Return empty Credential on unmarshal error
 			}
 
