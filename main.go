@@ -410,6 +410,7 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 func tryReadFromBD(bd *bidi, isPending bool) {
 	if len(bd.a.bytes) > 24 && string(bd.a.bytes[0:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
 		bd.a.bytes = bd.a.bytes[24:]
+		log.Println("grpc request detected")
 		tryParseAsHttp2Request(bd, isPending)
 		return
 	}
