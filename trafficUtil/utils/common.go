@@ -8,11 +8,15 @@ import (
 	"time"
 )
 
-var printCounter = 500
+var printCounter = 1000
 
-func PrintLog(val string) {
+/*
+Initial 1000 logs, marking as warn.
+Help in checking if the module started as expected.
+*/
+func PrintLog(val string, args ...any) {
 	if printCounter > 0 {
-		slog.Debug(val)
+		slog.Warn(val, args...)
 		printCounter--
 	}
 }
@@ -34,26 +38,26 @@ func InitVar(envVarName string, targetVar interface{}) {
 		switch v := targetVar.(type) {
 		case *bool:
 			*v = strings.ToLower(envVar) == "true"
-			slog.Debug("Setting env value", "name", envVarName, "value", *v)
+			slog.Warn("Setting env value", "name", envVarName, "value", *v)
 		case *string:
 			*v = envVar
-			slog.Debug("Setting env value", "name", envVarName, "value", *v)
+			slog.Warn("Setting env value", "name", envVarName, "value", *v)
 		case *time.Duration:
 			temp, err := time.ParseDuration(envVar + "s")
 			if err == nil {
 				*v = temp
-				slog.Debug("Setting env value", "name", envVarName, "value", *v)
+				slog.Warn("Setting env value", "name", envVarName, "value", *v)
 			}
 		case *int:
 			temp, err := strconv.Atoi(envVar)
 			if err == nil {
 				*v = temp
-				slog.Debug("Setting env value", "name", envVarName, "value", *v)
+				slog.Warn("Setting env value", "name", envVarName, "value", *v)
 			}
 		default:
-			slog.Info("Unsupported type for targetVar", "type", v)
+			slog.Warn("Unsupported type for targetVar", "type", v)
 		}
 	} else {
-		slog.Info("Missing env value", "name", envVarName)
+		slog.Warn("Missing env value, using default value", "name", envVarName)
 	}
 }
