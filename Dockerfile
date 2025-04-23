@@ -1,4 +1,4 @@
-FROM golang:1.16-alpine
+FROM golang:1.22-alpine
 RUN apk add build-base
 RUN apk add libpcap-dev
 
@@ -12,6 +12,7 @@ RUN go mod download
 
 COPY *.go ./
 COPY db ./db
+COPY api ./api
 COPY utils ./utils
 
 RUN go build -o /mirroring-api-logging
