@@ -7,7 +7,7 @@ import (
 )
 
 var aktoMemThreshRestart = 500
-var aktoSysMemThreshRestart = 1000
+var aktoSysMemThreshRestart = 950
 
 func init() {
 	InitVar("AKTO_MEM_THRESH_RESTART", &aktoMemThreshRestart)
