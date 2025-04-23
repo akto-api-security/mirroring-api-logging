@@ -283,11 +283,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = &trafficpb.StringList{
+				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
 					Values: []string{value},
 				}
 			}
 		}
+		ip := GetSourceIp(reqHeader, bd.key.net.Src().String())
 
 		reqHeader["host"] = &trafficpb.StringList{
 			Values: []string{req.Host},
@@ -327,7 +328,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				respHeader[name] = &trafficpb.StringList{
+				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
 					Values: []string{value},
 				}
 			}
@@ -350,7 +351,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			ResponseHeaders: respHeader,
 			RequestPayload:  requestsContent[i],
 			ResponsePayload: responsesContent[i],
-			Ip:              bd.key.net.Src().String(),
+			Ip:              ip,
 			Time:            int32(time.Now().Unix()),
 			StatusCode:      int32(resp.StatusCode),
 			Type:            string(req.Proto),
