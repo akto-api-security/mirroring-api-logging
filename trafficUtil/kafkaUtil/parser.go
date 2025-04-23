@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
@@ -105,7 +105,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			return
 		}
-		body, err := ioutil.ReadAll(req.Body)
+		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
@@ -140,7 +140,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			return
 		}
 
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
 			return
@@ -156,7 +156,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 		if err == nil {
-			body, err = ioutil.ReadAll(r)
+			body, err = io.ReadAll(r)
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()
 			}
@@ -204,7 +204,23 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		id := ""
 
-		reqHeader := make(map[string]string)
+		// build req headers for threat client
+		reqHeader := make(map[string]*trafficpb.StringList)
+		for name, values := range req.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
+					Values: []string{value},
+				}
+			}
+		}
+		ip := GetSourceIp(reqHeader, sourceIp)
+
+		reqHeader["host"] = &trafficpb.StringList{
+			Values: []string{req.Host},
+		}
+
+		reqHeaderStr := make(map[string]string)
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
@@ -212,14 +228,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 					strings.EqualFold(name, "x-debug-token") {
 					id = value
 				}
-				reqHeader[name] = value
+				reqHeaderStr[name] = value
 			}
 		}
 
-		reqHeader["host"] = req.Host
+		reqHeaderStr["host"] = req.Host
 
-		passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeader)
-		//printLog("Req header: " + mapToString(reqHeader))
+		passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaderStr)
+		//printLog("Req header: " + mapToString(reqHeaderStr))
 		//printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
@@ -237,24 +253,57 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			continue
 		}
 
-		var skipPacket = utils.FilterPacket(reqHeader)
+		var skipPacket = utils.FilterPacket(reqHeaderStr)
 
 		if skipPacket {
 			i++
 			continue
 		}
 
-		respHeader := make(map[string]string)
+		// build resp headers for threat client
+		respHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				respHeader[name] = value
+				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
 
-		reqHeaderString, _ := json.Marshal(reqHeader)
-		respHeaderString, _ := json.Marshal(respHeader)
+		
 
+		// TODO: remove and use protobuf instead
+		respHeaderStr := make(map[string]string)
+		for name, values := range resp.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				respHeaderStr[name] = value
+			}
+		}
+
+		// build kafka paylaod for threat client
+		payload := &trafficpb.HttpResponseParam{
+			Method:          req.Method,
+			Path:            req.URL.String(),
+			RequestHeaders:  reqHeader,
+			ResponseHeaders: respHeader,
+			RequestPayload:  requestsContent[i],
+			ResponsePayload: responsesContent[i],
+			Ip:              ip,
+			Time:            int32(time.Now().Unix()),
+			StatusCode:      int32(resp.StatusCode),
+			Type:            string(req.Proto),
+			Status:          resp.Status,
+			AktoAccountId:   fmt.Sprint(1000000),
+			AktoVxlanId:     fmt.Sprint(vxlanID),
+			IsPending:       isPending,
+		}
+
+		reqHeaderString, _ := json.Marshal(reqHeaderStr)
+		respHeaderString, _ := json.Marshal(respHeaderStr)
+
+		// TODO: remove and use protobuf instead
 		value := map[string]string{
 			"path":            req.URL.String(),
 			"requestHeaders":  string(reqHeaderString),
@@ -290,7 +339,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			return
 		}
 
-		hostString := reqHeader["host"]
+		hostString := reqHeaderStr["host"]
 		if utils.CheckIfIpHost(hostString) {
 			hostString = "ip-host"
 		}
@@ -310,7 +359,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		go Produce(ctx, string(out))
+		go ProduceStr(ctx, string(out))
+
+		// TODDO fix kafka writer to use logs2 topic
+		go Produce(kafkaWriter, ctx, payload)
 		i++
 	}
 }

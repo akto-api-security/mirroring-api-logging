@@ -6,10 +6,14 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+
 	"github.com/segmentio/kafka-go"
+	"google.golang.org/protobuf/proto"
 )
 
 var kafkaWriter *kafka.Writer
@@ -61,7 +65,7 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
-		err := Produce(ctx, string(out))
+		err := ProduceStr(ctx, string(out))
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
@@ -92,26 +96,26 @@ func Close() {
 func LogKafkaStats() {
 	stats := kafkaWriter.Stats()
 	slog.Debug("Kafka Stats",
-    "dials", stats.Dials,
-    "writes", stats.Writes,
-    "messages", stats.Messages,
-    "bytes", stats.Bytes,
-    "errors", stats.Errors,
-    "dialTime", stats.DialTime,
-    "batchTime", stats.BatchTime,
-    "writeTime", stats.WriteTime,
-    "waitTime", stats.WaitTime,
-    "retries", stats.Retries,
-    "batchSize", stats.BatchSize,
-    "batchBytes", stats.BatchBytes,
-    "maxAttempts", stats.MaxAttempts,
-    "maxBatchSize", stats.MaxBatchSize,
-    "batchTimeout", stats.BatchTimeout,
-    "readTimeout", stats.ReadTimeout,
-    "writeTimeout", stats.WriteTimeout,
-    "requiredAcks", stats.RequiredAcks,
-    "async", stats.Async,
-    "topic", stats.Topic,
+		"dials", stats.Dials,
+		"writes", stats.Writes,
+		"messages", stats.Messages,
+		"bytes", stats.Bytes,
+		"errors", stats.Errors,
+		"dialTime", stats.DialTime,
+		"batchTime", stats.BatchTime,
+		"writeTime", stats.WriteTime,
+		"waitTime", stats.WaitTime,
+		"retries", stats.Retries,
+		"batchSize", stats.BatchSize,
+		"batchBytes", stats.BatchBytes,
+		"maxAttempts", stats.MaxAttempts,
+		"maxBatchSize", stats.MaxBatchSize,
+		"batchTimeout", stats.BatchTimeout,
+		"readTimeout", stats.ReadTimeout,
+		"writeTimeout", stats.WriteTimeout,
+		"requiredAcks", stats.RequiredAcks,
+		"async", stats.Async,
+		"topic", stats.Topic,
 	)
 }
 
@@ -127,7 +131,63 @@ func LogKafkaError() {
 	}
 }
 
-func Produce(ctx context.Context, message string) error {
+var CLIENT_IP_HEADERS = []string{
+	"x-forwarded-for",
+	"x-real-ip",
+	"x-cluster-client-ip",
+	"true-client-ip",
+	"x-original-forwarded-for",
+	"x-client-ip",
+	"client-ip",
+}
+
+func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
+	protoBytes, err := proto.Marshal(value)
+	if err != nil {
+		slog.Error("Failed to serialize protobuf message", "error", err)
+		return err
+	}
+
+	if value.Ip == "" {
+		slog.Warn("ip is empty, avoiding kafka push")
+		return nil
+	}
+	topic := "akto.api.logs2"
+	msg := kafka.Message{
+		Topic: topic,
+		Key:   []byte(value.Ip), // what to do when ip is empty?
+		Value: protoBytes,
+	}
+
+	err = kafkaWriter.WriteMessages(ctx, msg)
+	if err != nil {
+		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
+	}
+	return err
+}
+
+func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
+
+	for _, header := range CLIENT_IP_HEADERS {
+		if headerValues, exists := reqHeaders[header]; exists {
+			for _, headerValue := range headerValues.Values {
+				parts := strings.Split(headerValue, ",")
+				for _, part := range parts {
+					ip := strings.TrimSpace(part)
+					if ip != "" {
+						slog.Debug("Ip found in", "the header", header)
+						return ip
+					}
+				}
+			}
+		}
+	}
+
+	slog.Debug("No ip found in headers returning", "packetIp", packetIp)
+	return packetIp
+}
+
+func ProduceStr(ctx context.Context, message string) error {
 	// intialize the writer with the broker addresses, and the topic
 	msg := kafka.Message{
 		Value: []byte(message),
@@ -151,5 +211,7 @@ func getKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		ReadTimeout:  batchTimeout,
 		WriteTimeout: batchTimeout,
 		Async:        true,
+		Balancer:     &kafka.Hash{},
+		Compression:  kafka.Zstd,
 	}
 }

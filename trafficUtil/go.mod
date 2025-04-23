@@ -1,10 +1,13 @@
 module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 
-go 1.17
+go 1.22
+
+toolchain go1.24.2
 
 require (
 	github.com/segmentio/kafka-go v0.4.25
 	go.mongodb.org/mongo-driver v1.11.3
+	google.golang.org/protobuf v1.36.6
 )
 
 require (
