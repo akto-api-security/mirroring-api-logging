@@ -25,7 +25,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 	// intialize the writer with the broker addresses, and the topic
 	protoBytes, err := proto.Marshal(value)
 	if err != nil {
-		slog.Error("Failed to serialize protobuf message", "error=", err)
+		slog.Error("Failed to serialize protobuf message", "error", err)
 		return err
 	}
 	
@@ -43,7 +43,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 
 	err = kafkaWriter.WriteMessages(ctx, msg)
 	if err != nil {
-		slog.Error("Kafka write for runtime failed", "topic=", topic, "error=", err)
+		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
 	}
 	return err
 }
@@ -57,7 +57,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 				for _, part := range parts {
 					ip := strings.TrimSpace(part)
 					if ip != "" {
-						slog.Debug("Ip found in", "the header=",  header)
+						slog.Debug("Ip found in", "the header",  header)
 						return ip
 					}
 				}
@@ -65,7 +65,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 		}
 	}
 
-	slog.Debug("No ip found in headers returning", "packetIp=", packetIp)
+	slog.Debug("No ip found in headers returning", "packetIp", packetIp)
 	return packetIp
 }
 
@@ -79,7 +79,7 @@ func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) 
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
-		slog.Error("Kafka write for runtime failed", "topic=", topic, "error=", err)
+		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
 		return err
 	}
 
@@ -116,7 +116,7 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	defer func(r *kafka.Reader) {
 		err := r.Close()
 		if err != nil {
-			slog.Error("could not close kafka reader", "error=", err)
+			slog.Error("could not close kafka reader", "error", err)
 		}
 	}(r)
 
@@ -136,7 +136,7 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 					slog.Error("Timeout reached, no message received.")
 					return msg
 				}
-				slog.Error("Kafka Read failed for", "topic=", topic, "error=", err)
+				slog.Error("Kafka Read failed for", "topic", topic, "error", err)
 				return msg // Return empty Credential on read error
 			}
 
@@ -144,7 +144,7 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 
 			err = json.Unmarshal(m.Value, &msg)
 			if err != nil {
-				slog.Error("could not unmarshal kafka message", "error=", err)
+				slog.Error("could not unmarshal kafka message", "error", err)
 				return msg // Return empty Credential on unmarshal error
 			}
 
