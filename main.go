@@ -388,6 +388,7 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 
 			value["type"] = "HTTP/2"
 			value["ip"] = bd.key.net.Src().String()
+			value["destIp"] = bd.key.net.Dst().String()
 			value["akto_account_id"] = fmt.Sprint(1000000)
 			value["akto_vxlan_id"] = fmt.Sprint(bd.vxlanID)
 			value["time"] = fmt.Sprint(time.Now().Unix())
