@@ -1,6 +1,6 @@
 module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 
-go 1.17
+go 1.18
 
 require (
 	github.com/segmentio/kafka-go v0.4.25

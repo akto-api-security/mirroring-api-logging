@@ -59,7 +59,7 @@ func replaceArchType() {
 
 func isArmArch() bool {
 	arch := runtime.GOARCH
-	slog.Debug("arch type detected", "arch", arch)
+	trafficUtils.PrintLog("arch type detected", "arch", arch)
 	if strings.Contains(arch, "arm") {
 		return true
 	}
@@ -68,7 +68,7 @@ func isArmArch() bool {
 
 func isAmdArch() bool {
 	arch := runtime.GOARCH
-	slog.Debug("arch type detected", "arch", arch)
+	trafficUtils.PrintLog("arch type detected", "arch", arch)
 	if strings.Contains(arch, "amd") {
 		return true
 	}
