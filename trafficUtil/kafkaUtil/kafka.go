@@ -142,6 +142,11 @@ var CLIENT_IP_HEADERS = []string{
 }
 
 func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
+
+	if !utils.ThreatEnabled {
+		return nil
+	}
+
 	protoBytes, err := proto.Marshal(value)
 	if err != nil {
 		slog.Error("Failed to serialize protobuf message", "error", err)
