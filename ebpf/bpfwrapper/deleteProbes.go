@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 func DeleteExistingAktoKernelProbes() {
@@ -39,7 +41,7 @@ func DeleteExistingAktoKernelProbes() {
 			if err := deleteCmd.Run(); err != nil {
 				slog.Error("Error deleting kprobe", "kprobe", kprobeName, "error", err)
 			} else {
-				slog.Info("Deleted kprobe", "kprobe", kprobeName)
+				utils.PrintLog("Deleted kprobe", "kprobe", kprobeName)
 			}
 		}
 	}
