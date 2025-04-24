@@ -1,6 +1,7 @@
 FROM golang:1.22-alpine
 RUN apk add build-base
 RUN apk add libpcap-dev
+RUN apk add tcpdump
 
 WORKDIR /app
 
