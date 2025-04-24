@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"net"
 
 	"github.com/google/uuid"
 
@@ -399,7 +400,7 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 				printCounter--
 				log.Println("req-resp.String()", string(out))
 			}
-			go Produce(kafkaWriter, ctx, string(out))
+			go ProduceStr(kafkaWriter, ctx, string(out))
 		}
 
 	}
