@@ -359,10 +359,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
+		// TODDO : remove and use protobuf instead 
 		go ProduceStr(ctx, string(out))
 
-		// TODDO fix kafka writer to use logs2 topic
-		go Produce(kafkaWriter, ctx, payload)
+		go Produce(ctx, payload)
 		i++
 	}
 }

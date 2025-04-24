@@ -55,7 +55,7 @@ func InitKafka() {
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
 	for {
-		kafkaWriter = getKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		kafkaWriter = getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		utils.LogMemoryStats()
 		utils.PrintLog("logging kafka stats before pushing message")
 		LogKafkaStats()
@@ -141,7 +141,7 @@ var CLIENT_IP_HEADERS = []string{
 	"client-ip",
 }
 
-func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
+func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 
 	if !utils.ThreatEnabled {
 		return nil
@@ -166,9 +166,10 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 
 	err = kafkaWriter.WriteMessages(ctx, msg)
 	if err != nil {
-		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
+		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
+		return err
 	}
-	return err
+	return nil 
 }
 
 func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
@@ -209,7 +210,7 @@ func ProduceStr(ctx context.Context, message string) error {
 	return nil
 }
 
-func getKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
+func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	return &kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
