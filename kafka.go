@@ -43,7 +43,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 
 	err = kafkaWriter.WriteMessages(ctx, msg)
 	if err != nil {
-		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
+		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
 	}
 	return err
 }

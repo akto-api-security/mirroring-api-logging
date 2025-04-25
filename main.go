@@ -631,11 +631,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		//printLog("req-resp.String() " + string(out))
 		// insert kafka record for runtime
 		if threatEnabled {
-			go ProduceStr(kafkaWriter, ctx, string(out))
+			// insert kafka record for threat client
+			go Produce(kafkaWriter, ctx, payload)
 		}
 
-		// insert kafka record for threat client
-		go Produce(kafkaWriter, ctx, payload)
+		// Todo convert to protobuf
+		go ProduceStr(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
