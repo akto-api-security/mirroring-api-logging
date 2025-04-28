@@ -3,21 +3,83 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
-	"time"
-
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/segmentio/kafka-go"
+	"google.golang.org/protobuf/proto"
+	"log/slog"
+	"strings"
+	"time"
 )
 
-func Produce(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {
+var CLIENT_IP_HEADERS = []string{
+	"x-forwarded-for",
+	"x-real-ip",
+	"x-cluster-client-ip",
+	"true-client-ip",
+	"x-original-forwarded-for",
+	"x-client-ip",
+	"client-ip",
+}
+
+func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
 	// intialize the writer with the broker addresses, and the topic
+	protoBytes, err := proto.Marshal(value)
+	if err != nil {
+		slog.Error("Failed to serialize protobuf message", "error", err)
+		return err
+	}
+	
+	if value.Ip == "" {
+		slog.Warn("ip is empty, avoiding kafka push")
+		return nil
+	}
+	// Send serialized message to Kafka
+	topic := "akto.api.logs2"
 	msg := kafka.Message{
+		Topic: topic,
+		Key:   []byte(value.Ip), // what to do when ip is empty?
+		Value: protoBytes,
+	}
+
+	err = kafkaWriter.WriteMessages(ctx, msg)
+	if err != nil {
+		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
+	}
+	return err
+}
+
+func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
+
+	for _, header := range CLIENT_IP_HEADERS {
+		if headerValues, exists := reqHeaders[header]; exists {
+			for _, headerValue := range headerValues.Values {
+				parts := strings.Split(headerValue, ",")
+				for _, part := range parts {
+					ip := strings.TrimSpace(part)
+					if ip != "" {
+						slog.Debug("Ip found in", "the header",  header)
+						return ip
+					}
+				}
+			}
+		}
+	}
+
+	slog.Debug("No ip found in headers returning", "packetIp", packetIp)
+	return packetIp
+}
+
+func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {
+	// intialize the writer with the broker addresses, and the topic
+	topic := "akto.api.logs"
+	msg := kafka.Message{
+		Topic: topic,
 		Value: []byte(message),
 	}
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
-		log.Println("ERROR while writing messages: ", err)
+		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
 		return err
 	}
 
@@ -28,12 +90,13 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, message string) err
 func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	return &kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
-		Topic:        topic,
 		BatchSize:    batchSize,
 		BatchTimeout: batchTimeout,
 		MaxAttempts:  1,
 		ReadTimeout:  batchTimeout,
 		WriteTimeout: batchTimeout,
+		Balancer:     &kafka.Hash{},
+		Compression: kafka.Zstd,
 	}
 }
 
@@ -53,7 +116,7 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	defer func(r *kafka.Reader) {
 		err := r.Close()
 		if err != nil {
-			log.Printf("could not close reader: %v", err)
+			slog.Error("could not close kafka reader", "error", err)
 		}
 	}(r)
 
@@ -63,25 +126,25 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Timeout reached, no message received.")
+			slog.Error("Timeout reached, no message received.")
 			return msg // Return empty Credential if timeout occurs
 		default:
 			// Attempt to read a message from the Kafka topic
 			m, err := r.ReadMessage(ctx)
 			if err != nil {
 				if err == context.DeadlineExceeded {
-					log.Println("Timeout reached, no message received.")
+					slog.Error("Timeout reached, no message received.")
 					return msg
 				}
-				log.Printf("could not read message: %v", err)
+				slog.Error("Kafka Read failed for", "topic", topic, "error", err)
 				return msg // Return empty Credential on read error
 			}
 
-			log.Println("Found message: " + string(m.Value))
+			slog.Debug("Found message: " + string(m.Value))
 
 			err = json.Unmarshal(m.Value, &msg)
 			if err != nil {
-				log.Printf("could not unmarshal message: %v", err)
+				slog.Error("could not unmarshal kafka message", "error", err)
 				return msg // Return empty Credential on unmarshal error
 			}
 

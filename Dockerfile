@@ -12,6 +12,7 @@ RUN chmod +x ./run.sh
 RUN go mod download
 
 COPY *.go ./
+COPY protobuf ./protobuf
 COPY db ./db
 COPY api ./api
 COPY utils ./utils

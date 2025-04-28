@@ -18,6 +18,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"io"
 	"io/ioutil"
 	"log"
@@ -28,21 +30,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"net"
 
 	"github.com/google/uuid"
 
 	"github.com/akto-api-security/mirroring-api-logging/api"
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
-
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
-
-	"net"
-
 	"github.com/segmentio/kafka-go"
 
 	"golang.org/x/net/http2"
@@ -66,6 +64,7 @@ var filterHeaderValueMap = make(map[string]string)
 
 var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
+var threatEnabled = false
 var (
 	handle *pcap.Handle
 	err    error
@@ -401,7 +400,7 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 				printCounter--
 				log.Println("req-resp.String()", string(out))
 			}
-			go Produce(kafkaWriter, ctx, string(out))
+			go ProduceStr(kafkaWriter, ctx, string(out))
 		}
 
 	}
@@ -502,17 +501,33 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		req := &requests[i]
 		resp := &responses[i]
 
-		reqHeader := make(map[string]string)
+		// build req headers for threat client
+		reqHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = value
+				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
+		ip := GetSourceIp(reqHeader, bd.key.net.Src().String())
 
-		reqHeader["host"] = req.Host
+		reqHeader["host"] = &trafficpb.StringList{
+			Values: []string{req.Host},
+		}
 
-		passes := utils.PassesFilter(filterHeaderValueMap, reqHeader)
+		// build req headers for runtime
+		reqHeaderStr := make(map[string]string)
+		for name, values := range req.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				reqHeaderStr[name] = value
+			}
+		}
+		reqHeaderStr["host"] = req.Host
+
+		passes := utils.PassesFilter(filterHeaderValueMap, reqHeaderStr)
 		//printLog("Req header: " + mapToString(reqHeader))
 		//printLog(fmt.Sprintf("passes %t", passes))
 
@@ -531,16 +546,49 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			continue
 		}
 
-		respHeader := make(map[string]string)
+		// build resp headers for threat client
+		respHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				respHeader[name] = value
+				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
 
-		reqHeaderString, _ := json.Marshal(reqHeader)
-		respHeaderString, _ := json.Marshal(respHeader)
+		// build resp headers for runtime
+		respHeaderStr := make(map[string]string)
+		for name, values := range resp.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				respHeaderStr[name] = value
+			}
+		}
+
+		// build kafka paylaod for threat client
+		payload := &trafficpb.HttpResponseParam{
+			Method:          req.Method,
+			Path:            req.URL.String(),
+			RequestHeaders:  reqHeader,
+			ResponseHeaders: respHeader,
+			RequestPayload:  requestsContent[i],
+			ResponsePayload: responsesContent[i],
+			Ip:              ip,
+			Time:            int32(time.Now().Unix()),
+			StatusCode:      int32(resp.StatusCode),
+			Type:            string(req.Proto),
+			Status:          resp.Status,
+			AktoAccountId:   fmt.Sprint(1000000),
+			AktoVxlanId:     fmt.Sprint(bd.vxlanID),
+			IsPending:       isPending,
+		}
+		ctx := context.Background()
+
+		// build kafka payload for runtime
+
+		reqHeaderString, _ := json.Marshal(reqHeaderStr)
+		respHeaderString, _ := json.Marshal(respHeaderStr)
 
 		value := map[string]string{
 			"path":            req.URL.String(),
@@ -562,11 +610,10 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
-		hostString := reqHeader["host"]
+		hostString := reqHeader["host"].String()
 		if utils.CheckIfIpHost(hostString) {
 			hostString = "ip-host"
 		}
@@ -582,7 +629,14 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		trafficCollectorCount.Inc(1)
 
 		//printLog("req-resp.String() " + string(out))
-		go Produce(kafkaWriter, ctx, string(out))
+		// insert kafka record for runtime
+		if threatEnabled {
+			// insert kafka record for threat client
+			go Produce(kafkaWriter, ctx, payload)
+		}
+
+		// Todo convert to protobuf
+		go ProduceStr(kafkaWriter, ctx, string(out))
 		i++
 	}
 }
@@ -858,13 +912,19 @@ func initKafka() {
 		logMemoryStats()
 		log.Println("logging kafka stats before pushing message")
 		logKafkaStats()
+
 		value := map[string]string{
 			"testConnectionString": "kafkaInit",
 		}
 
-		out, _ := json.Marshal(value)
+		payload := &trafficpb.HttpResponseParam{
+			Method: "GET",
+		}
+
 		ctx := context.Background()
-		err := Produce(kafkaWriter, ctx, string(out))
+		out, _ := json.Marshal(value)
+		err := ProduceStr(kafkaWriter, ctx, string(out))
+		err = Produce(kafkaWriter, ctx, payload)
 		log.Println("logging kafka stats post pushing message")
 		logKafkaStats()
 		if err != nil {
@@ -1017,6 +1077,14 @@ func main() {
 		log.Println("ignoreIpTraffic: ", ignoreIpTraffic)
 	} else {
 		log.Println("ignoreIpTraffic: missing. defaulting to false")
+	}
+
+	threatEnabledVar := os.Getenv("AKTO_THREAT_ENABLED")
+	if len(threatEnabledVar) > 0 {
+		threatEnabled = strings.ToLower(threatEnabledVar) == "true"
+		log.Println("threatEnabled: ", threatEnabled)
+	} else {
+		log.Println("threatEnabled: missing. defaulting to false")
 	}
 
 	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
