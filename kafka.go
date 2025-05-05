@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"log/slog"
+	"os"
+	"strings"
+	"time"
+
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
-	"log/slog"
-	"strings"
-	"time"
 )
 
 var CLIENT_IP_HEADERS = []string{
@@ -21,6 +25,18 @@ var CLIENT_IP_HEADERS = []string{
 	"client-ip",
 }
 
+var useTLS = false
+var InsecureSkipVerify = true
+var tlsCACertPath = "./ca.crt"
+
+func init() {
+
+	InitVar("USE_TLS", &useTLS)
+	InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
+	InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
+
+}
+
 func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
 	// intialize the writer with the broker addresses, and the topic
 	protoBytes, err := proto.Marshal(value)
@@ -28,7 +44,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 		slog.Error("Failed to serialize protobuf message", "error", err)
 		return err
 	}
-	
+
 	if value.Ip == "" {
 		slog.Warn("ip is empty, avoiding kafka push")
 		return nil
@@ -57,7 +73,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 				for _, part := range parts {
 					ip := strings.TrimSpace(part)
 					if ip != "" {
-						slog.Debug("Ip found in", "the header",  header)
+						slog.Debug("Ip found in", "the header", header)
 						return ip
 					}
 				}
@@ -87,8 +103,25 @@ func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) 
 
 }
 
+func NewTLSConfig(caPath string) (*tls.Config, error) {
+	caCert, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, err
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	return &tls.Config{
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: InsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
+	}, nil
+}
+
 func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
-	return &kafka.Writer{
+
+	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
 		BatchTimeout: batchTimeout,
@@ -96,19 +129,37 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		ReadTimeout:  batchTimeout,
 		WriteTimeout: batchTimeout,
 		Balancer:     &kafka.Hash{},
-		Compression: kafka.Zstd,
+		Compression:  kafka.Zstd,
 	}
+
+	if useTLS {
+		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
+		kafkaWriter.Transport = &kafka.Transport{
+			TLS: tlsConfig,
+		}
+	}
+	return &kafkaWriter
 }
 
 func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	// Create a new Kafka reader
-	r := kafka.NewReader(kafka.ReaderConfig{
+
+	config := kafka.ReaderConfig{
 		Brokers:  []string{kafkaURL},
 		GroupID:  groupID,
 		Topic:    topic,
 		MinBytes: 10e3, // 10KB
 		MaxBytes: 10e6, // 10MB
-	})
+	}
+
+	if useTLS {
+		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
+		config.Dialer = &kafka.Dialer{
+			TLS: tlsConfig,
+		}
+	}
+
+	r := kafka.NewReader(config)
 
 	// Set up a context with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

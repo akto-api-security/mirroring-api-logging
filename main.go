@@ -18,11 +18,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -30,7 +29,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"net"
+
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/google/uuid"
 

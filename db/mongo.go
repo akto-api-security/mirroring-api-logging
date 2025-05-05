@@ -26,6 +26,10 @@ func GetMongoClient() (*mongo.Client, error) {
 		//os.Setenv("AKTO_MONGO_CONN", "mongodb://localhost:27017/admini")
 		mongoUrl := os.Getenv("AKTO_MONGO_CONN")
 
+		if mongoUrl == "" {
+			mongoUrl = "mongodb://0.0.0.0:27017/admini"
+		}
+
 		// Define MongoDB client options
 		clientOptions := options.Client().ApplyURI(mongoUrl)
 
