@@ -271,8 +271,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		
-
 		// TODO: remove and use protobuf instead
 		respHeaderStr := make(map[string]string)
 		for name, values := range resp.Header {
@@ -282,7 +280,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		// build kafka paylaod for threat client
+		// build kafka payload for threat client
 		payload := &trafficpb.HttpResponseParam{
 			Method:          req.Method,
 			Path:            req.URL.String(),
@@ -359,7 +357,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		// TODDO : remove and use protobuf instead 
+		// TODO : remove and use protobuf instead
 		go ProduceStr(ctx, string(out))
 
 		go Produce(ctx, payload)
