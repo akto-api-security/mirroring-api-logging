@@ -29,7 +29,7 @@ on:
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   # This workflow contains a single job called "build"
-  build:
+  build-aws:
     # The type of runner that the job will run on
     runs-on: ubuntu-22.04
 
@@ -72,6 +72,21 @@ jobs:
           echo "Building and Pushing image to ECR..."
           docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG . --push
           echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG"
+       
+  build-docker:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-22.04
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '^1.22' # The Go version to download (if necessary) and use.
+      - name: install required packages
+        run: sudo apt install libpcap-dev expect
+      - run: go build -o ./mirroring-api-logging
 
       - name: DockerHub login
         if: ${{ github.event.inputs.Environment == 'prod' }}
