@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"log/slog"
+	"os"
+	"strings"
+	"time"
+
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
-	"log/slog"
-	"strings"
-	"time"
 )
 
 var CLIENT_IP_HEADERS = []string{
@@ -19,6 +23,18 @@ var CLIENT_IP_HEADERS = []string{
 	"x-original-forwarded-for",
 	"x-client-ip",
 	"client-ip",
+}
+
+var useTLS = false
+var InsecureSkipVerify = true
+var tlsCACertPath = "./ca.crt"
+
+func init() {
+
+	InitVar("USE_TLS", &useTLS)
+	InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
+	InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
+
 }
 
 func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
@@ -87,8 +103,25 @@ func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) 
 
 }
 
+func NewTLSConfig(caPath string) (*tls.Config, error) {
+	caCert, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, err
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	return &tls.Config{
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: InsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
+	}, nil
+}
+
 func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
-	return &kafka.Writer{
+
+	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
 		BatchTimeout: batchTimeout,
@@ -98,6 +131,14 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		Balancer:     &kafka.Hash{},
 		Compression: kafka.Zstd,
 	}
+
+	if useTLS {
+		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
+		kafkaWriter.Transport = &kafka.Transport{
+			TLS: tlsConfig,
+		}
+	}
+	return &kafkaWriter
 }
 
 func GetCredential(kafkaURL string, groupID string, topic string) Credential {

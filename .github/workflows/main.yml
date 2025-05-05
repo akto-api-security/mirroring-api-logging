@@ -14,9 +14,11 @@ on:
   workflow_dispatch:
     inputs:
       Tag: 
+        description: 'The tag for the Docker image'
         required: true
         default: 'latest'
       Environment:
+        description: 'The environment to deploy to'
         required: true
         type: choice
         options:
