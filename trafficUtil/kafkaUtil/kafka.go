@@ -2,6 +2,8 @@ package kafkaUtil
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -20,6 +22,18 @@ var kafkaWriter *kafka.Writer
 var KafkaErrMsgCount = 0
 var KafkaErrMsgEpoch = time.Now()
 var BytesInThreshold = 500 * 1024 * 1024
+
+var useTLS = false
+var InsecureSkipVerify = true
+var tlsCACertPath = "./ca.crt"
+
+func init() {
+
+	utils.InitVar("USE_TLS", &useTLS)
+	utils.InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
+	utils.InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
+
+}
 
 func InitKafka() {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
@@ -169,7 +183,7 @@ func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
 		return err
 	}
-	return nil 
+	return nil
 }
 
 func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
@@ -194,13 +208,13 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 }
 
 func ProduceStr(ctx context.Context, message string) error {
-	// intialize the writer with the broker addresses, and the topic
+	// initialize the writer with the broker addresses, and the topic
 	topic := "akto.api.logs"
 	msg := kafka.Message{
 		Topic: topic,
 		Value: []byte(message),
 	}
-	
+
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
@@ -210,8 +224,25 @@ func ProduceStr(ctx context.Context, message string) error {
 	return nil
 }
 
+func NewTLSConfig(caPath string) (*tls.Config, error) {
+	caCert, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, err
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	return &tls.Config{
+		RootCAs:            caCertPool,
+		InsecureSkipVerify: InsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
+	}, nil
+}
+
 func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
-	return &kafka.Writer{
+
+	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
 		BatchTimeout: batchTimeout,
@@ -222,4 +253,12 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Balancer:     &kafka.Hash{},
 		Compression:  kafka.Zstd,
 	}
+
+	if useTLS {
+		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
+		kafkaWriter.Transport = &kafka.Transport{
+			TLS: tlsConfig,
+		}
+	}
+	return &kafkaWriter
 }
