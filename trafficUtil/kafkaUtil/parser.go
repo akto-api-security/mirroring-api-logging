@@ -333,6 +333,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
 			}else{
 				value["tag"] = podLabels
+				slog.Debug("Pod labels", "ip", sourceIp, "labels", podLabels)
 			}
 
 		}
