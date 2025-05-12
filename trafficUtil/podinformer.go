@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
+	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	v1lister "k8s.io/client-go/listers/core/v1"
@@ -26,13 +27,18 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var KubeInjectEnabled = false
 var PodInformerInstance *PodInformer
+
+func init() {
+	trafficUtils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
+}
 
 type PodInformer struct {
 	clientset    *kubernetes.Clientset
 	nodeName     string
-	ipPodMap     sync.Map 
-	podLabelsMap sync.Map 
+	ipPodMap     sync.Map
+	podLabelsMap sync.Map
 }
 
 func equalPodIPs(a, b []corev1.PodIP) bool {
@@ -47,8 +53,11 @@ func equalPodIPs(a, b []corev1.PodIP) bool {
 	return true
 }
 
+func SetupPodInformer() (chan struct{}, error) {
+	if !KubeInjectEnabled {
+		slog.Warn("KubeInject is not enabled, skipping PodInformer setup")
+	}
 
-func SetupPodInformer() (chan struct {}, error) {
 	watcher, err := NewPodInformer()
 	if err != nil {
 		slog.Error("Failed to initialize pod watcher", "error", err)
@@ -111,40 +120,39 @@ func NewPodInformer() (*PodInformer, error) {
 
 func (w *PodInformer) ResolveIPPodLabels(ip string) (string, error) {
 	slog.Debug("Resolving IP to pod labels", "ip", ip)
-    // Step 1: Find the IP key in ipPodMap
-    podUID, ok := w.ipPodMap.Load(ip)
-    if !ok {
-        err := fmt.Errorf("pod informer failed to resolve ip %s", ip)
-        slog.Error(err.Error())
-        return "", err
-    }
+	// Step 1: Find the IP key in ipPodMap
+	podUID, ok := w.ipPodMap.Load(ip)
+	if !ok {
+		err := fmt.Errorf("pod informer failed to resolve ip %s", ip)
+		slog.Error(err.Error())
+		return "", err
+	}
 
-    // Step 2: Use the value (pod.UID) as the key to find labels in podLabelsMap
-    labels, ok := w.podLabelsMap.Load(podUID)
-    if !ok {
-        err := fmt.Errorf("failed to resolve labels of pod uid: %s", podUID)
-        slog.Error(err.Error())
-        return "", err
-    }
+	// Step 2: Use the value (pod.UID) as the key to find labels in podLabelsMap
+	labels, ok := w.podLabelsMap.Load(podUID)
+	if !ok {
+		err := fmt.Errorf("failed to resolve labels of pod uid: %s", podUID)
+		slog.Error(err.Error())
+		return "", err
+	}
 
-    // Step 3: Convert the labels (map[string]string) to a JSON string
-    labelsMap, ok := labels.(map[string]string)
-    if !ok {
-        err := fmt.Errorf("invalid labels format for pod uid: %s", podUID)
-        slog.Error(err.Error())
-        return "", err
-    }
+	// Step 3: Convert the labels (map[string]string) to a JSON string
+	labelsMap, ok := labels.(map[string]string)
+	if !ok {
+		err := fmt.Errorf("invalid labels format for pod uid: %s", podUID)
+		slog.Error(err.Error())
+		return "", err
+	}
 
-    labelsJSON, err := json.Marshal(labelsMap)
-    if err != nil {
-        err := fmt.Errorf("failed to convert labels to JSON for pod uid: %s, error: %v", podUID, err)
-        slog.Error(err.Error())
-        return "", err
-    }
+	labelsJSON, err := json.Marshal(labelsMap)
+	if err != nil {
+		err := fmt.Errorf("failed to convert labels to JSON for pod uid: %s, error: %v", podUID, err)
+		slog.Error(err.Error())
+		return "", err
+	}
 
-    return string(labelsJSON), nil
+	return string(labelsJSON), nil
 }
-
 
 func (w *PodInformer) logPodIPs() {
 	var result string

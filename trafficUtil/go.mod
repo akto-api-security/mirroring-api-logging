@@ -2,7 +2,7 @@ module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 
 go 1.24.0
 
-toolchain go1.24.2
+toolchain go1.24.3
 
 require (
 	github.com/segmentio/kafka-go v0.4.25
