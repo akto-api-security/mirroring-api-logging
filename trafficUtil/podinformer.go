@@ -201,7 +201,8 @@ func (w *PodInformer) initPodIPMap(podInformer cache.SharedIndexInformer, podLis
 func (w *PodInformer) WatchPods(stopCh <-chan struct{}) error {
 
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(w.clientset, 20*time.Second, informers.WithTweakListOptions(func(fi *metav1.ListOptions) {
-		fi.FieldSelector = fmt.Sprintf("spec.nodeName=%s", w.nodeName)
+		nodeFilter := fmt.Sprintf("spec.nodeName=%s", w.nodeName)
+		fi.FieldSelector = "metadata.namespace!=kube-system,metadata.namespace!=kube-public,metadata.namespace!=kube-node-lease," + nodeFilter
 	}))
 
 	podFactory := informerFactory.Core().V1().Pods()
