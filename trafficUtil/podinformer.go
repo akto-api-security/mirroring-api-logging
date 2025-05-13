@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,7 +56,8 @@ func equalPodIPs(a, b []corev1.PodIP) bool {
 
 func SetupPodInformer() (chan struct{}, error) {
 	if !KubeInjectEnabled {
-		slog.Warn("KubeInject is not enabled, skipping PodInformer setup")
+		slog.Warn("AKTO_K8_METADATA_CAPTURE is not true, skipping PodInformer setup")
+		return nil, nil
 	}
 
 	watcher, err := NewPodInformer()
@@ -120,6 +122,7 @@ func NewPodInformer() (*PodInformer, error) {
 
 func (w *PodInformer) ResolveIPPodLabels(ip string) (string, error) {
 	slog.Debug("Resolving IP to pod labels", "ip", ip)
+	ip = strings.Split(ip, ":")[0]
 	// Step 1: Find the IP key in ipPodMap
 	podUID, ok := w.ipPodMap.Load(ip)
 	if !ok {

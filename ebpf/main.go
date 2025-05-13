@@ -217,7 +217,10 @@ func run() {
 	}
 	slog.Info("sniffer is ready")
 	<-sig
-	close(stopCh)
+	if stopCh != nil {
+		slog.Info("Stopping pod watcher")
+		close(stopCh)
+	}
 	
 	slog.Info("signaled to terminate")
 }
