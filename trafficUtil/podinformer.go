@@ -80,7 +80,9 @@ func SetupPodInformer() (chan struct{}, error) {
 }
 
 func GetClientset() (*kubernetes.Clientset, error) {
+	// this works when the pod has service accounts with proper rbac role attached
 	config, err := rest.InClusterConfig()
+	// this is used for out of cluster configuration
 	if err != nil {
 		// Fallback to kubeconfig for local testing
 		kubeconfig := os.Getenv("KUBECONFIG")
