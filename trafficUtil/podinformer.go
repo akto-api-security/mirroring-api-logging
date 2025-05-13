@@ -198,11 +198,21 @@ func (w *PodInformer) initPodIPMap(podInformer cache.SharedIndexInformer, podLis
 	return nil
 }
 
+func (w *PodInformer) getFieldSelector() string {
+	var namespaceFilter string
+	nodeFilter := fmt.Sprintf("spec.nodeName=%s", w.nodeName)
+	if os.Getenv("AKTO_K8_METADATA_CAPTURE_NAMESPACE") != "" {
+		namespaceFilter = fmt.Sprintf("metadata.namespace=%s", os.Getenv("AKTO_K8_METADATA_CAPTURE_NAMESPACE"))
+	} else {
+		namespaceFilter = "metadata.namespace!=kube-system,metadata.namespace!=kube-public,metadata.namespace!=kube-node-lease"
+	}
+	return namespaceFilter + "," + nodeFilter
+}
+
 func (w *PodInformer) WatchPods(stopCh <-chan struct{}) error {
 
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(w.clientset, 20*time.Second, informers.WithTweakListOptions(func(fi *metav1.ListOptions) {
-		nodeFilter := fmt.Sprintf("spec.nodeName=%s", w.nodeName)
-		fi.FieldSelector = "metadata.namespace!=kube-system,metadata.namespace!=kube-public,metadata.namespace!=kube-node-lease," + nodeFilter
+		fi.FieldSelector = w.getFieldSelector()
 	}))
 
 	podFactory := informerFactory.Core().V1().Pods()
