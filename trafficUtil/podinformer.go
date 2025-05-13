@@ -213,7 +213,7 @@ func (w *PodInformer) getFieldSelector() string {
 
 func (w *PodInformer) WatchPods(stopCh <-chan struct{}) error {
 
-	informerFactory := informers.NewSharedInformerFactoryWithOptions(w.clientset, 20*time.Second, informers.WithTweakListOptions(func(fi *metav1.ListOptions) {
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(w.clientset, 60*time.Second, informers.WithTweakListOptions(func(fi *metav1.ListOptions) {
 		fi.FieldSelector = w.getFieldSelector()
 	}))
 
