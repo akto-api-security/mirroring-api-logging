@@ -27,7 +27,6 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 )
 
 var source string = ""
@@ -211,17 +210,8 @@ func run() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	stopCh, err := podutils.SetupPodInformer()
-	if err != nil {
-		slog.Error("Failed to setup pod watcher", "error", err)
-	}
 	slog.Info("sniffer is ready")
 	<-sig
-	if stopCh != nil {
-		slog.Info("Stopping pod watcher")
-		close(stopCh)
-	}
-	
 	slog.Info("signaled to terminate")
 }
 
