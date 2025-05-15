@@ -17,6 +17,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 )
 
 var (
@@ -324,6 +325,17 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			"socket_id":       fmt.Sprint(fd),
 			"daemonset_id":    fmt.Sprint(daemonsetIdentifier),
 			"enable_graph":    fmt.Sprint(utils.EnableGraph),
+		}
+
+		if trafficUtil.PodInformerInstance != nil {
+			podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(sourceIp)
+			if err != nil {
+				slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
+			}else{
+				value["tag"] = podLabels
+				slog.Debug("Pod labels", "ip", sourceIp, "labels", podLabels)
+			}
+
 		}
 
 		out, _ := json.Marshal(value)
