@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 )
 
 var (
@@ -58,10 +58,11 @@ func init() {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
 	}
 	debugStringsEnv := ""
-	utils.InitVar("DEBUG_STRINGS", &debugStringsEnv)
+	utils.InitVar("DEBUG_URLS", &debugStringsEnv)
 	if len(debugStringsEnv) > 0 {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
+	slog.Info("debugStrings", "DebugStrings", DebugStrings)
 }
 
 func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
@@ -95,6 +96,18 @@ func IsValidMethod(method string) bool {
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
 	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string) {
+
+	rcvStr := string(receiveBuffer)
+	sentStr := string(sentBuffer)
+	if len(DebugStrings) > 0 {
+		for _, debugString := range DebugStrings {
+			if strings.Contains(rcvStr, debugString) || strings.Contains(sentStr, debugString) {
+				ctx := context.Background()
+				go ProduceLogs(ctx, fmt.Sprintf("URL found in ParseAndProduce start: receiveBuffer: %s, sentBuffer: %s", string(receiveBuffer), string(sentBuffer)), LogTypeInfo)
+				break
+			}
+		}
+	}
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return

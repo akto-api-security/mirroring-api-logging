@@ -2,18 +2,14 @@ package bpfwrapper
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
-	"fmt"
 	"log/slog"
-	"strings"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/iovisor/gobpf/bcc"
 )
@@ -149,16 +145,6 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		connectionFactory.CreateIfNotExists(connId)
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
-
-		if len(kafkaUtil.DebugStrings) > 0 {
-			for _, debugString := range kafkaUtil.DebugStrings {
-				if strings.Contains(dataStr, debugString) {
-					ctx := context.Background()
-					go kafkaUtil.ProduceLogs(ctx, fmt.Sprintf("Data found in ParseAndProduce: %s", dataStr), kafkaUtil.LogTypeInfo)
-					break
-				}
-			}
-		}
 
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
