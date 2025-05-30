@@ -39,6 +39,13 @@ var (
 		"TRACE":   true,
 		"TRACK":   true,
 		"PATCH":   true}
+	DebugStrings = []string{
+		"partner/v2/transactions",
+		"partner/qa/v2/transactions",
+		"partner/v1/transactions",
+		"partner/qa/v2/products",
+		"partner/v2/products",
+	}
 )
 
 const ONE_MINUTE = 60
@@ -49,6 +56,11 @@ func init() {
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
+	}
+	debugStringsEnv := ""
+	utils.InitVar("DEBUG_STRINGS", &debugStringsEnv)
+	if len(debugStringsEnv) > 0 {
+		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 }
 
@@ -281,6 +293,17 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
+		url := req.URL.String()
+		if len(DebugStrings) > 0 {
+			for _, debugString := range DebugStrings {
+				if strings.Contains(url, debugString) {
+					ctx := context.Background()
+					go ProduceLogs(ctx, fmt.Sprintf("URL found in ParseAndProduce: %s", url), LogTypeInfo)
+					break
+				}
+			}
+		}
+
 		// build kafka payload for threat client
 		payload := &trafficpb.HttpResponseParam{
 			Method:          req.Method,
@@ -331,7 +354,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(sourceIp)
 			if err != nil {
 				slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
-			}else{
+			} else {
 				value["tag"] = podLabels
 				slog.Debug("Pod labels", "ip", sourceIp, "labels", podLabels)
 			}

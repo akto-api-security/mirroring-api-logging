@@ -8,11 +8,12 @@ import (
 )
 
 const LevelOff = slog.Level(99)
+
 var (
-	ingestLogs  bool = false
-	processLogs bool = false
+	ingestLogs   bool = false
+	processLogs  bool = false
 	aktoLogLevel string
-	level slog.Level = slog.LevelWarn
+	level        slog.Level = slog.LevelWarn
 )
 
 func SetupLogger() {
@@ -36,26 +37,26 @@ func SetupLogger() {
 		default:
 			level = slog.LevelWarn
 		}
-	}else{
+	} else {
 		level = slog.LevelWarn
 	}
 
 	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		AddSource: true,
-		Level: level,
+		Level:     level,
 	})
 
 	fmt.Printf("Logger setup done with level %d and log level %s \n", level, aktoLogLevel)
 	slog.SetDefault(slog.New(handler))
 }
 
-func LogIngest(format string, args ...interface{}) {
+func LogIngest(format string, args ...any) {
 	if ingestLogs {
 		slog.Debug(format, args...)
 	}
 }
 
-func LogProcessing(format string, args ...interface{}) {
+func LogProcessing(format string, args ...any) {
 	if processLogs {
 		slog.Debug(format, args...)
 	}

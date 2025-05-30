@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -205,6 +206,35 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 
 	slog.Debug("No ip found in headers returning", "packetIp", packetIp)
 	return packetIp
+}
+
+const (
+	LogTypeError = "ERROR"
+	LogTypeInfo = "INFO"
+)
+
+func ProduceLogs(ctx context.Context, message string, logType string) error {
+	value := map[string]string{
+			"message":            message,
+			"logType":            logType,
+			"source":            "AKTO_K8S_EBPF",
+			"time":            fmt.Sprint(time.Now().Unix()),
+		}
+		out, _ := json.Marshal(value)
+
+	topic := "akto.api.producer.logs"
+	msg := kafka.Message{
+		Topic: topic,
+		Value: []byte(string(out)),
+	}
+
+	err := kafkaWriter.WriteMessages(ctx, msg)
+
+	if err != nil {
+		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
+		return err
+	}
+	return nil
 }
 
 func ProduceStr(ctx context.Context, message string) error {

@@ -2,14 +2,18 @@ package bpfwrapper
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"fmt"
 	"log/slog"
+	"strings"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/iovisor/gobpf/bcc"
 )
@@ -32,7 +36,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
-		metaUtils.LogIngest("Received socket open event", 
+		metaUtils.LogIngest("Received socket open event",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
@@ -55,7 +59,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
-		metaUtils.LogIngest("Received close on", 
+		metaUtils.LogIngest("Received close on",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
@@ -130,7 +134,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
-			metaUtils.LogIngest("Ignoring data for ignore port", 
+			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
@@ -146,10 +150,20 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
 
+		if len(kafkaUtil.DebugStrings) > 0 {
+			for _, debugString := range kafkaUtil.DebugStrings {
+				if strings.Contains(dataStr, debugString) {
+					ctx := context.Background()
+					go kafkaUtil.ProduceLogs(ctx, fmt.Sprintf("Data found in ParseAndProduce: %s", dataStr), kafkaUtil.LogTypeInfo)
+					break
+				}
+			}
+		}
+
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
-		metaUtils.LogIngest("Got data", 
+		metaUtils.LogIngest("Got data",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
