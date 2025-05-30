@@ -97,18 +97,6 @@ func IsValidMethod(method string) bool {
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
 	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string) {
 
-	rcvStr := string(receiveBuffer)
-	sentStr := string(sentBuffer)
-	if len(DebugStrings) > 0 {
-		for _, debugString := range DebugStrings {
-			if strings.Contains(rcvStr, debugString) || strings.Contains(sentStr, debugString) {
-				ctx := context.Background()
-				go ProduceLogs(ctx, fmt.Sprintf("URL found in ParseAndProduce start: receiveBuffer: %s, sentBuffer: %s", string(receiveBuffer), string(sentBuffer)), LogTypeInfo)
-				break
-			}
-		}
-	}
-
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
