@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"strings"
+	"time"
 )
 
 var CLIENT_IP_HEADERS = []string{
@@ -41,6 +42,7 @@ func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.Ht
 	}
 
 	err = kafkaWriter.WriteMessages(ctx, msg)
+
 	if err != nil {
 		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
 	}
@@ -84,4 +86,12 @@ func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) 
 	}
 
 	return nil
+}
+
+func GetKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
+	return &kafka.Writer{
+		Addr:         kafka.TCP(kafkaURL),
+		BatchSize:    batchSize,
+		BatchTimeout: batchTimeout,
+	}
 }

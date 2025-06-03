@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/akto-api-security/gomiddleware"
 	"github.com/akto-api-security/mirroring-api-logging/db"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
@@ -368,11 +367,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
 		}
+		go ProduceStr(kafkaWriter, ctx, string(out))
 		if threatEnabled {
 			// insert kafka record for threat client
 			go Produce(kafkaWriter, ctx, payload)
 		}
-		go ProduceStr(kafkaWriter, ctx, string(out))
 		if totalCounter%1000 == 0 {
 			println("totalCounter: ", totalCounter)
 		}
@@ -459,7 +458,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		log.Println("threatEnabled: missing. defaulting to false")
 	}
 
-	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+	kafkaWriter = GetKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 
 	// Set up pcap packet capture
 	// handle, err = pcap.OpenOffline("/Users/ankushjain/Downloads/dump2.pcap")
