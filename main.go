@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/akto-api-security/gomiddleware"
 	"github.com/akto-api-security/mirroring-api-logging/db"
+	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/segmentio/kafka-go"
 	"io"
@@ -42,6 +43,7 @@ var printCounter = 500
 var assemblerMap = make(map[int]*tcpassembly.Assembler)
 var incomingCountMap = make(map[string]utils.IncomingCounter)
 var outgoingCountMap = make(map[string]utils.OutgoingCounter)
+var threatEnabled = false
 
 var readFiles = make(map[string]bool)
 
@@ -255,26 +257,71 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		}
 
-		reqHeader := make(map[string]string)
+		reqHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range req.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				reqHeader[name] = value
+				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
+		ip := GetSourceIp(reqHeader, bd.key.net.Src().String())
 
-		reqHeader["host"] = req.Host
+		reqHeader["host"] = &trafficpb.StringList{
+			Values: []string{req.Host},
+		}
 
-		respHeader := make(map[string]string)
+		// build req headers for runtime
+		reqHeaderStr := make(map[string]string)
+		for name, values := range req.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				reqHeaderStr[name] = value
+			}
+		}
+		reqHeaderStr["host"] = req.Host
+
+		// build resp headers for threat client
+		respHeader := make(map[string]*trafficpb.StringList)
 		for name, values := range resp.Header {
 			// Loop over all values for the name.
 			for _, value := range values {
-				respHeader[name] = value
+				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
+					Values: []string{value},
+				}
 			}
 		}
 
-		reqHeaderString, _ := json.Marshal(reqHeader)
-		respHeaderString, _ := json.Marshal(respHeader)
+		// build resp headers for runtime
+		respHeaderStr := make(map[string]string)
+		for name, values := range resp.Header {
+			// Loop over all values for the name.
+			for _, value := range values {
+				respHeaderStr[name] = value
+			}
+		}
+
+		payload := &trafficpb.HttpResponseParam{
+			Method:          req.Method,
+			Path:            req.URL.String(),
+			RequestHeaders:  reqHeader,
+			ResponseHeaders: respHeader,
+			RequestPayload:  requestsContent[i],
+			ResponsePayload: string(body),
+			Ip:              ip,
+			Time:            int32(time.Now().Unix()),
+			StatusCode:      int32(resp.StatusCode),
+			Type:            string(req.Proto),
+			Status:          resp.Status,
+			AktoAccountId:   fmt.Sprint(1000000),
+			AktoVxlanId:     fmt.Sprint(bd.vxlanID),
+			IsPending:       isPending,
+		}
+		ctx := context.Background()
+
+		reqHeaderString, _ := json.Marshal(reqHeaderStr)
+		respHeaderString, _ := json.Marshal(respHeaderStr)
 
 		if shouldPrintDebugURL(req.URL.String()) {
 			fmt.Printf("Found debug url %s while creating final value", req.URL.String())
@@ -299,13 +346,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
 
 		totalCounter += 1
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		outgoingBytes := len(bd.a.bytes) + len(bd.b.bytes)
-		hostString := reqHeader["host"]
+		hostString := reqHeader["host"].String()
 		if utils.CheckIfIpHost(hostString) {
 			hostString = "ip-host"
 		}
@@ -322,7 +368,11 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			printCounter--
 			log.Println("req-resp.String()", string(out))
 		}
-		go gomiddleware.Produce(kafkaWriter, ctx, string(out))
+		if threatEnabled {
+			// insert kafka record for threat client
+			go Produce(kafkaWriter, ctx, payload)
+		}
+		go ProduceStr(kafkaWriter, ctx, string(out))
 		if totalCounter%1000 == 0 {
 			println("totalCounter: ", totalCounter)
 		}
@@ -400,6 +450,14 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 		return
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+
+	threatEnabledVar := os.Getenv("AKTO_THREAT_ENABLED")
+	if len(threatEnabledVar) > 0 {
+		threatEnabled = strings.ToLower(threatEnabledVar) == "true"
+		log.Println("threatEnabled: ", threatEnabled)
+	} else {
+		log.Println("threatEnabled: missing. defaulting to false")
+	}
 
 	kafkaWriter = gomiddleware.GetKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 
