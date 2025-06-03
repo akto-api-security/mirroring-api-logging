@@ -1,4 +1,4 @@
-FROM golang:1.16-alpine
+FROM golang:1.22-alpine
 RUN apk add build-base
 RUN apk add libpcap-dev
 RUN apk add tcpdump
@@ -10,6 +10,7 @@ COPY go.sum ./
 RUN go mod download
 
 COPY *.go ./
+COPY protobuf ./protobuf
 COPY db ./db
 COPY utils ./utils
 
