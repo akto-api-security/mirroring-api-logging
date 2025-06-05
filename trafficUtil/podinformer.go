@@ -193,6 +193,7 @@ func (w *PodInformer) initPodIPMap(podInformer cache.SharedIndexInformer, podLis
 		for _, podIp := range pod.Status.PodIPs {
 			w.ipPodMap.Store(podIp.IP, pod.UID)
 		}
+		pod.Labels["namespace"] = pod.Namespace
 		w.podLabelsMap.Store(pod.UID, pod.Labels)
 	}
 	w.logPodIPs()
@@ -266,6 +267,7 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 	for _, podIp := range pod.Status.PodIPs {
 		w.ipPodMap.Store(podIp.IP, pod.UID)
 	}
+	pod.Labels["namespace"] = pod.Namespace
 	w.podLabelsMap.Store(pod.UID, pod.Labels)
 }
 
@@ -289,6 +291,7 @@ func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
 		}
 	}
 	w.podLabelsMap.Delete(oldPod.UID)
+	newPod.Labels["namespace"] = newPod.Namespace
 	w.podLabelsMap.Store(newPod.UID, newPod.Labels)
 }
 
