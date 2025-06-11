@@ -20,7 +20,7 @@ var (
 	DefaultAuthenticationToken       = ""
 )
 
-var CloudprocessorInstance *CloudTrafficProcessor
+var CloudProcessorInstance *CloudTrafficProcessor
 var CloudProcessorConfig *CloudTrafficProcessorConfig
 
 type CloudTrafficProcessorConfig struct {
@@ -37,7 +37,7 @@ type CloudTrafficProcessor struct {
 }
 
 func InitializeCloudTrafficProcessorConfig() error {
-	slog.Warn("Cloud Processor initilization started")
+	slog.Warn("Cloud Processor initialization started")
 	utils.InitVar("CLOUD_PROCESSOR_MODE", &CloudTrafficProcessorModeEnabled)
 
 	if !CloudTrafficProcessorModeEnabled {
@@ -86,7 +86,7 @@ func NewCloudTrafficProcessor() error {
 		return nil
 	}
 
-	CloudprocessorInstance = &CloudTrafficProcessor{
+	CloudProcessorInstance = &CloudTrafficProcessor{
 		Config:        *CloudProcessorConfig,
 		DataQueue:     make([]map[string]string, 0),
 		LastFlushTime: time.Now(),

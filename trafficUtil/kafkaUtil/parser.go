@@ -394,11 +394,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		if apiProcessor.CloudprocessorInstance != nil {
-			apiProcessor.CloudprocessorInstance.Produce(value)
+		if apiProcessor.CloudProcessorInstance != nil {
+			apiProcessor.CloudProcessorInstance.Produce(value)
 
-		}else{
-
+		} else {
+			// Produce to kafka
 			// TODO : remove and use protobuf instead
 			go ProduceStr(ctx, string(out))
 			go Produce(ctx, payload)
