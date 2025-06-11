@@ -16,8 +16,8 @@ import (
 var (
 	CloudTrafficProcessorModeEnabled = false
 	DefaultCloudTrafficProcessorUrl  = "https://cloudprocessor.akto.io/api/ingestData"
-	DefaultFlushInterval             = time.Duration(5) * time.Second
-	DefaultBufferSize                = 10
+	DefaultFlushInterval             = time.Duration(30) * time.Second
+	DefaultBufferSize                = 100
 	DefaultAuthenticationToken       = ""
 )
 
