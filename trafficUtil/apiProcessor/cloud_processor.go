@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	utils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
@@ -34,6 +35,7 @@ type CloudTrafficProcessor struct {
 	Config        CloudTrafficProcessorConfig
 	DataQueue     []map[string]string
 	LastFlushTime time.Time
+	mu            sync.Mutex
 }
 
 func InitializeCloudTrafficProcessorConfig() error {
@@ -90,6 +92,7 @@ func NewCloudTrafficProcessor() error {
 		Config:        *CloudProcessorConfig,
 		DataQueue:     make([]map[string]string, 0),
 		LastFlushTime: time.Now(),
+		mu:            sync.Mutex{},
 	}
 	return nil
 }
@@ -147,6 +150,8 @@ func (c *CloudTrafficProcessor) callIngestAPI(batchData map[string]interface{}) 
 
 func (c *CloudTrafficProcessor) Flush() {
 	slog.Debug("Flush called on CloudTrafficProcessor")
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Only one flush should be running at a time. Is this needed?
 	sliceIndex := min(c.Config.BufferSize, len(c.DataQueue))
