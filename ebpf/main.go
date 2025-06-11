@@ -23,11 +23,12 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
+	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 )
 
 var source string = ""
@@ -106,6 +107,9 @@ func run() {
 
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
+
+	// this needs to be called before InitKafka
+	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
 
 	connectionFactory := connections.NewFactory()

@@ -14,6 +14,7 @@ import (
 
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
@@ -37,6 +38,10 @@ func init() {
 }
 
 func InitKafka() {
+	if apiProcessor.CloudTrafficProcessorModeEnabled {
+		return
+	}
+
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 
 	if len(kafka_url) == 0 {
