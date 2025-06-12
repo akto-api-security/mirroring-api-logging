@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
@@ -393,10 +394,16 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		// TODO : remove and use protobuf instead
-		go ProduceStr(ctx, string(out))
+		if apiProcessor.CloudProcessorInstance != nil {
+			apiProcessor.CloudProcessorInstance.Produce(value)
 
-		go Produce(ctx, payload)
+		} else {
+			// Produce to kafka
+			// TODO : remove and use protobuf instead
+			go ProduceStr(ctx, string(out))
+			go Produce(ctx, payload)
+		}
+
 		i++
 	}
 }
