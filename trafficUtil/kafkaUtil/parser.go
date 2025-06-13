@@ -46,6 +46,19 @@ var (
 		"partner/v1/transactions",
 		"partner/qa/v2/products",
 		"partner/v2/products",
+		"braintree",
+		"braintreegateway",
+		"paypal",
+		"segment",
+		"stripe",
+		"snapcraft",
+		"gremlin",
+		"growsunmo",
+		"snowflakecomputing",
+		"docker",
+		"apple",
+		"mixpanel",
+		"morningstar",
 	}
 )
 
@@ -326,6 +339,19 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		reqHeaderString, _ := json.Marshal(reqHeaderStr)
 		respHeaderString, _ := json.Marshal(respHeaderStr)
+
+		requestHeaderString := string(reqHeaderString)
+
+		if len(DebugStrings) > 0 {
+			for _, debugString := range DebugStrings {
+				if strings.Contains(requestHeaderString, debugString) {
+					ctx := context.Background()
+					slog.Warn("URL found in ParseAndProduce using req header", "url", url, "header", requestHeaderString)
+					go ProduceLogs(ctx, fmt.Sprintf("URL found in ParseAndProduce using req header: %s", url), LogTypeInfo)
+					break
+				}
+			}
+		}
 
 		// TODO: remove and use protobuf instead
 		value := map[string]string{
