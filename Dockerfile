@@ -1,6 +1,7 @@
-FROM golang:1.22-alpine
+FROM golang:1.24-alpine
 RUN apk add build-base
 RUN apk add libpcap-dev
+RUN apk add tcpdump
 
 WORKDIR /app
 
@@ -19,4 +20,4 @@ RUN go build -o /mirroring-api-logging
 
 EXPOSE 4789/udp
 
-CMD "./run.sh"
+CMD ["./run.sh"]
