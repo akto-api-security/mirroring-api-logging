@@ -46,13 +46,13 @@ func replaceBpfLogsMacros() {
 
 func replaceBpfLogsMacros2() {
 
-	printBpfLogsEnv := os.Getenv("PRINT_BPF_LOGS_2")
+	printBpfLogsEnv := os.Getenv("PRINT2_BPF2_LOGS2_2")
 	printBpfLogs := "false"
 	if len(printBpfLogsEnv) > 0 && strings.EqualFold(printBpfLogsEnv, "true") {
 		printBpfLogs = "true"
 	}
 
-	source = strings.Replace(source, "PRINT_BPF_LOGS_2", printBpfLogs, -1)
+	source = strings.Replace(source, "PRINT2_BPF2_LOGS2_2", printBpfLogs, -1)
 }
 
 func replaceMaxConnectionMapSize() {
@@ -104,6 +104,7 @@ func run() {
 	source = string(byteString)
 
 	replaceBpfLogsMacros()
+	replaceBpfLogsMacros2()
 	replaceMaxConnectionMapSize()
 	replaceArchType()
 
@@ -142,7 +143,7 @@ func run() {
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.ConcurrentEventLoop(runtime.NumCPU()*2, bpfwrapper.SocketDataEventCallback)))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)

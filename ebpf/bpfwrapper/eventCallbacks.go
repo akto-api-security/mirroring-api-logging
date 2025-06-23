@@ -93,71 +93,85 @@ func min(a, b int32) int32 {
 	return b
 }
 
-func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-	for data := range inputChan {
-		if data == nil {
-			return
-		}
+func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory) {
+	// for data := range inputChan {
+	if data == nil {
+		return
+	}
 
-		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			metaUtils.LogIngest("Connections filled")
-			continue
-		}
+	if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
+		metaUtils.LogIngest("Connections filled")
+		return
+	}
 
-		var event structs.SocketDataEvent
+	var event structs.SocketDataEvent
 
-		// binary.Read require the input data to be at the same size of the object.
-		// Since the Msg field might be mostly empty, binary.read fails.
-		// So we split the loading into the fixed size attribute parts, and copying the message separately.
+	// binary.Read require the input data to be at the same size of the object.
+	// Since the Msg field might be mostly empty, binary.read fails.
+	// So we split the loading into the fixed size attribute parts, and copying the message separately.
 
-		// slog.Debug("data", "data", data)
+	// slog.Debug("data", "data", data)
 
-		if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
-			slog.Error("Failed to decode received data", "error", err)
-			continue
-		}
+	if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
+		slog.Error("Failed to decode received data", "error", err)
+		return
+	}
 
-		bytesSent := event.Attr.Bytes_sent
+	bytesSent := event.Attr.Bytes_sent
 
-		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 45
+	// The 4 bytes are being lost in padding, thus, not taking them into consideration.
+	eventAttributesLogicalSize := 45
 
-		if len(data) > eventAttributesLogicalSize {
-			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
-		}
+	if len(data) > eventAttributesLogicalSize {
+		copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
+	}
 
-		connId := event.Attr.ConnId
+	connId := event.Attr.ConnId
 
-		_, ok := ignorePortsMap[connId.Port]
-		if ignorePorts && ok {
-			metaUtils.LogIngest("Ignoring data for ignore port",
-				"fd", connId.Fd,
-				"id", connId.Id,
-				"timestamp", connId.Conn_start_ns,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount)
-			continue
-		}
-
-		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
-		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
-
-		connectionFactory.CreateIfNotExists(connId)
-
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
-
-		connectionFactory.SendEvent(connId, &event)
-		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-
-		metaUtils.LogIngest("Got data",
+	_, ok := ignorePortsMap[connId.Port]
+	if ignorePorts && ok {
+		metaUtils.LogIngest("Ignoring data for ignore port",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port,
-			"data", dataStr,
 			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
-			"ssl", event.Attr.Ssl)
+			"wc", event.Attr.WriteEventsCount)
+		return
+	}
+
+	event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
+	event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
+
+	connectionFactory.CreateIfNotExists(connId)
+
+	dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+
+	connectionFactory.SendEvent(connId, &event)
+	connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
+
+	metaUtils.LogIngest("Got data",
+		"fd", connId.Fd,
+		"id", connId.Id,
+		"timestamp", connId.Conn_start_ns,
+		"ip", connId.Ip,
+		"port", connId.Port,
+		"data", dataStr,
+		"rc", event.Attr.ReadEventsCount,
+		"wc", event.Attr.WriteEventsCount,
+		"ssl", event.Attr.Ssl)
+}
+
+// }
+
+// ConcurrentEventLoop returns a ProbeEventLoop that handles incoming events concurrently.
+func ConcurrentEventLoop(workerCount int, handler func(data []byte, factory *connections.Factory)) ProbeEventLoop {
+	return func(inputChan chan []byte, connectionFactory *connections.Factory) {
+		for i := 0; i < workerCount; i++ {
+			go func() {
+				for data := range inputChan {
+					handler(data, connectionFactory)
+				}
+			}()
+		}
 	}
 }

@@ -246,13 +246,13 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     if (counter != NULL) {
       if ( (*counter) > ( TRAFFIC_MAX_CONNECTION_MAP_SIZE - 5 ) ) {
         conn_counter.update(&zero,&zero);
-        if (PRINT_BPF_LOGS_2){
+        if (PRINT2_BPF2_LOGS2_2){
           bpf_trace_printk("conn_info_counter reset: %d", *counter);
         }
       }
       (*counter)++;
       val = *counter;
-      if (PRINT_BPF_LOGS_2){
+      if (PRINT2_BPF2_LOGS2_2){
         bpf_trace_printk("conn_info_counter found: %d", val);
       }
       u64 *curr = conn_info_map_keys.lookup(&val);
@@ -261,7 +261,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         struct conn_info_t *conn_info = conn_info_map.lookup(&curVal);
         if (conn_info != NULL) {
           conn_info_map.delete(&curVal);
-          if (PRINT_BPF_LOGS_2){
+          if (PRINT2_BPF2_LOGS2_2){
             bpf_trace_printk("conn_info_counter deleting: %d", curVal);
           }
         }
@@ -397,12 +397,11 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     if (bytes_exchanged_minus_1 < MAX_MSG_SIZE) {
         bpf_probe_read(&socket_data_event->msg, bytes_exchanged, args->buf);
         size_to_save = bytes_exchanged;
-        socket_data_event->msg[size_to_save] = '\\0';
+        socket_data_event->msg[size_to_save] = '\0';
     } else if (bytes_exchanged_minus_1 < 0x7fffffff) {
         bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf);
         size_to_save = MAX_MSG_SIZE;
     }
-
     
     socket_data_event->bytes_sent *= size_to_save;
     
