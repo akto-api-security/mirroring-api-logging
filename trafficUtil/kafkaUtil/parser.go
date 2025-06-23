@@ -60,6 +60,8 @@ var (
 		"mixpanel",
 		"morningstar",
 	}
+	globalReader     = &bytes.Reader{}
+	globalReaderLock sync.Mutex
 )
 
 const ONE_MINUTE = 60
@@ -120,7 +122,12 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
 
-	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
+	reader := func() *bufio.Reader {
+		globalReaderLock.Lock()
+		defer globalReaderLock.Unlock()
+		globalReader.Reset(receiveBuffer)
+		return bufio.NewReader(globalReader)
+	}()
 	i := 0
 	requests := []http.Request{}
 	requestsContent := []string{}
@@ -152,7 +159,12 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		return
 	}
 
-	reader = bufio.NewReader(bytes.NewReader(sentBuffer))
+	reader = func() *bufio.Reader {
+		globalReaderLock.Lock()
+		defer globalReaderLock.Unlock()
+		globalReader.Reset(sentBuffer)
+		return bufio.NewReader(globalReader)
+	}()
 	i = 0
 
 	responses := []http.Response{}
