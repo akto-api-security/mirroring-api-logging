@@ -8,17 +8,17 @@ import (
 	"time"
 )
 
-var printCounter = 1000
+// var printCounter = 1000
 
 /*
 Initial 1000 logs, marking as warn.
 Help in checking if the module started as expected.
 */
 func PrintLog(val string, args ...any) {
-	if printCounter > 0 {
-		slog.Warn(val, args...)
-		printCounter--
-	}
+	// if printCounter > 0 {
+	slog.Warn(val, args...)
+	// printCounter--
+	// }
 }
 
 var IgnoreIpTraffic = false
