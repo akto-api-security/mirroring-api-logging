@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"log/slog"
+	"sync"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -27,7 +28,13 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		var event structs.SocketOpenEvent
-		if err := binary.Read(bytes.NewReader(data), bcc.GetHostByteOrder(), &event); err != nil {
+		err := func() error {
+			globalReaderLock.Lock()
+			defer globalReaderLock.Unlock()
+			globalReader.Reset(data)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+		}()
+		if err != nil {
 			slog.Error("Failed to decode received data on socket open", "error", err)
 			continue
 		}
@@ -49,7 +56,13 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 			return
 		}
 		var event structs.SocketCloseEvent
-		if err := binary.Read(bytes.NewReader(data), bcc.GetHostByteOrder(), &event); err != nil {
+		err := func() error {
+			globalReaderLock.Lock()
+			defer globalReaderLock.Unlock()
+			globalReader.Reset(data)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+		}()
+		if err != nil {
 			slog.Error("Failed to decode received data on socket close", "error", err)
 			continue
 		}
@@ -79,7 +92,9 @@ var (
 		27017: true,
 		// redis
 		6379: true}
-	ignorePorts = true
+	ignorePorts      = true
+	globalReader     = &bytes.Reader{}
+	globalReaderLock sync.Mutex
 )
 
 func init() {
@@ -115,6 +130,16 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
 			continue
+		}
+
+		if err := func() error {
+			globalReaderLock.Lock()
+			defer globalReaderLock.Unlock()
+			globalReader.Reset(data[:eventAttributesSize])
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
+		}(); err != nil {
+			slog.Error("Failed to decode received data", "error", err)
+			return
 		}
 
 		bytesSent := event.Attr.Bytes_sent
