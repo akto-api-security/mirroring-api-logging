@@ -44,6 +44,17 @@ func replaceBpfLogsMacros() {
 	source = strings.Replace(source, "PRINT_BPF_LOGS", printBpfLogs, -1)
 }
 
+func replaceBpfLogsMacros2() {
+
+	printBpfLogsEnv := os.Getenv("PRINT_BPF_LOGS_2")
+	printBpfLogs := "false"
+	if len(printBpfLogsEnv) > 0 && strings.EqualFold(printBpfLogsEnv, "true") {
+		printBpfLogs = "true"
+	}
+
+	source = strings.Replace(source, "PRINT_BPF_LOGS_2", printBpfLogs, -1)
+}
+
 func replaceMaxConnectionMapSize() {
 	maxConnectionSizeMapSize := 131072
 	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
@@ -225,7 +236,7 @@ func run() {
 		slog.Info("Stopping pod watcher")
 		close(stopCh)
 	}
-	
+
 	slog.Info("signaled to terminate")
 }
 

@@ -246,13 +246,13 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     if (counter != NULL) {
       if ( (*counter) > ( TRAFFIC_MAX_CONNECTION_MAP_SIZE - 5 ) ) {
         conn_counter.update(&zero,&zero);
-        if (PRINT_BPF_LOGS){
+        if (PRINT_BPF_LOGS_2){
           bpf_trace_printk("conn_info_counter reset: %d", *counter);
         }
       }
       (*counter)++;
       val = *counter;
-      if (PRINT_BPF_LOGS){
+      if (PRINT_BPF_LOGS_2){
         bpf_trace_printk("conn_info_counter found: %d", val);
       }
       u64 *curr = conn_info_map_keys.lookup(&val);
@@ -261,7 +261,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         struct conn_info_t *conn_info = conn_info_map.lookup(&curVal);
         if (conn_info != NULL) {
           conn_info_map.delete(&curVal);
-          if (PRINT_BPF_LOGS){
+          if (PRINT_BPF_LOGS_2){
             bpf_trace_printk("conn_info_counter deleting: %d", curVal);
           }
         }
