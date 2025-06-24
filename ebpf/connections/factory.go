@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
@@ -146,32 +147,70 @@ func init() {
 }
 
 func BufferCheck() bool {
-	//bufferMutex.Lock()
-	//defer bufferMutex.Unlock()
-
-	if (uint64(time.Now().UnixMilli()) - lastReset) > uint64(time.Minute.Milliseconds()) {
-		lastReset = uint64(time.Now().UnixMilli())
-		currentTotalBuffer = int64(0)
-		lastPrint = int64(0)
-		utils.LogIngest("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
+	if sampleBufferPerMin == -1 {
+		return true
 	}
 
-	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
-	return bufferSampleCheck
+	now := uint64(time.Now().UnixMilli())
+	last := atomic.LoadUint64(&lastReset)
+
+	if now-last > uint64(time.Minute.Milliseconds()) {
+		// only one goroutine should succeed in doing the reset
+		if atomic.CompareAndSwapUint64(&lastReset, last, now) {
+			atomic.StoreInt64(&currentTotalBuffer, 0)
+			atomic.StoreInt64(&lastPrint, 0)
+			utils.LogIngest("Buffer reset", "currentTotalBuffer", 0, "lastPrint", 0)
+		}
+	}
+
+	currBuffer := atomic.LoadInt64(&currentTotalBuffer)
+	return currBuffer < int64(sampleBufferPerMin*1024*1024)
 }
 
-func UpdateBufferSize(bufferSize uint64) {
-	//bufferMutex.Lock()
-	//defer bufferMutex.Unlock()
+//func BufferCheck() bool {
+//	//bufferMutex.Lock()
+//	//defer bufferMutex.Unlock()
+//
+//	if (uint64(time.Now().UnixMilli()) - lastReset) > uint64(time.Minute.Milliseconds()) {
+//		lastReset = uint64(time.Now().UnixMilli())
+//		currentTotalBuffer = int64(0)
+//		lastPrint = int64(0)
+//		utils.LogIngest("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
+//	}
+//
+//	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
+//	return bufferSampleCheck
+//}
 
-	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
-		currentTotalBuffer += int64(bufferSize)
-		if currentTotalBuffer/(1024*1024) > lastPrint {
-			lastPrint = currentTotalBuffer / (1024 * 1024)
-			slog.Debug("Current total buffer", "buffer", currentTotalBuffer, "lastPrint", lastPrint)
+func UpdateBufferSize(bufferSize uint64) {
+	if sampleBufferPerMin != -1 {
+		// atomically update the buffer size
+		newVal := atomic.AddInt64(&currentTotalBuffer, int64(bufferSize))
+
+		// log only if new value crosses next MB threshold
+		currentMB := newVal / (1024 * 1024)
+		lastMB := atomic.LoadInt64(&lastPrint)
+
+		if currentMB > lastMB {
+			if atomic.CompareAndSwapInt64(&lastPrint, lastMB, currentMB) {
+				slog.Debug("Current total buffer", "buffer", newVal, "lastPrint", currentMB)
+			}
 		}
 	}
 }
+
+//func UpdateBufferSize(bufferSize uint64) {
+//	bufferMutex.Lock()
+//	defer bufferMutex.Unlock()
+//
+//	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
+//		currentTotalBuffer += int64(bufferSize)
+//		if currentTotalBuffer/(1024*1024) > lastPrint {
+//			lastPrint = currentTotalBuffer / (1024 * 1024)
+//			slog.Debug("Current total buffer", "buffer", currentTotalBuffer, "lastPrint", lastPrint)
+//		}
+//	}
+//}
 
 func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 	factory.mutex.Lock()
