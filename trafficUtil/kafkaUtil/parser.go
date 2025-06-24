@@ -352,7 +352,9 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			"enable_graph":    fmt.Sprint(utils.EnableGraph),
 		}
 
-		if trafficUtil.PodInformerInstance != nil && direction == utils.DirectionInbound {
+		if trafficUtil.PodInformerInstance != nil {
+			slog.Debug("pod direction log", "direction", direction, "host", reqHeaderStr["host"], "path", value["path"], "sourceIp", value["ip"], "destIp", destIp, "socketId", value["socket_id"])
+
 			podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(destIp)
 			if err != nil {
 				slog.Error("Failed to resolve pod labels", "ip", destIp, "error", err)
