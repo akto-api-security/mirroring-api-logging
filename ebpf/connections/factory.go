@@ -146,8 +146,8 @@ func init() {
 }
 
 func BufferCheck() bool {
-	bufferMutex.Lock()
-	defer bufferMutex.Unlock()
+	//bufferMutex.Lock()
+	//defer bufferMutex.Unlock()
 
 	if (uint64(time.Now().UnixMilli()) - lastReset) > uint64(time.Minute.Milliseconds()) {
 		lastReset = uint64(time.Now().UnixMilli())
@@ -161,8 +161,8 @@ func BufferCheck() bool {
 }
 
 func UpdateBufferSize(bufferSize uint64) {
-	bufferMutex.Lock()
-	defer bufferMutex.Unlock()
+	//bufferMutex.Lock()
+	//defer bufferMutex.Unlock()
 
 	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
 		currentTotalBuffer += int64(bufferSize)
