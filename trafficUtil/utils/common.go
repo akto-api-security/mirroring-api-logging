@@ -10,6 +10,12 @@ import (
 
 var printCounter = 1000
 
+const (
+	DirectionInbound = 1
+	DirectionOutbound = 2
+)
+
+
 /*
 Initial 1000 logs, marking as warn.
 Help in checking if the module started as expected.
