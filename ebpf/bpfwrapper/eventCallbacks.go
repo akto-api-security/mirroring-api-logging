@@ -110,10 +110,6 @@ func min(a, b int32) int32 {
 
 func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory) {
 	// for data := range inputChan {
-	if true {
-		return
-	}
-
 	if data == nil {
 		return
 	}
