@@ -104,7 +104,9 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 	return func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
-			slog.Error("kafka error message", "count", KafkaErrMsgCount, "messagesCount", len(messages))
+			slog.Error("kafka error message", "err", err, "count", KafkaErrMsgCount, "messagesCount", len(messages))
+		}else{
+			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
 	}
 }
