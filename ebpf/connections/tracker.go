@@ -1,11 +1,11 @@
 package connections
 
 import (
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
@@ -60,10 +60,10 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 
 	if !conn.ssl && event.Attr.Ssl {
 		for k := range conn.sentBuf {
-			conn.sentBuf[k] = []byte{}
+			conn.sentBuf[k] = conn.sentBuf[k][:0]
 		}
 		for k := range conn.recvBuf {
-			conn.recvBuf[k] = []byte{}
+			conn.recvBuf[k] = conn.recvBuf[k][:0]
 		}
 		conn.sentBytes = 0
 		conn.recvBytes = 0
@@ -76,11 +76,14 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 
 	bytesSent := event.Attr.Bytes_sent
 
+	idxWrite := int(event.Attr.WriteEventsCount)
+	idxRead := int(event.Attr.ReadEventsCount)
+
 	if bytesSent > 0 {
-		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
+		conn.sentBuf[idxWrite] = append(conn.sentBuf[idxWrite], event.Msg[:utils.Abs(bytesSent)]...)
 		conn.sentBytes += uint64(utils.Abs(bytesSent))
 	} else {
-		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
+		conn.recvBuf[idxRead] = append(conn.recvBuf[idxRead], event.Msg[:utils.Abs(bytesSent)]...)
 		conn.recvBytes += uint64(utils.Abs(bytesSent))
 	}
 
@@ -105,6 +108,7 @@ func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	conn.closeTimestamp = uint64(time.Now().UnixNano())
-	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	now := uint64(time.Now().UnixNano())
+	conn.closeTimestamp = now
+	conn.lastAccessTimestamp = now
 }

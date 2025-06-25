@@ -87,8 +87,8 @@ func init() {
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
-	tracker.mutex.Lock()
-	defer tracker.mutex.Unlock()
+	//tracker.mutex.Lock()
+	//defer tracker.mutex.Unlock()
 
 	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 		return
@@ -249,8 +249,14 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
-					factory.ProcessAndStopWorker(connID)
-					factory.DeleteWorker(connID)
+
+					tracker, existsTracker := factory.DeleteWorkerAndReturnTracker(connID)
+
+					if existsTracker {
+						go factory.ProcessAndStopWorker(tracker)
+						utils.LogProcessing("Outside ProcessAndStopWorker")
+						close(ch)
+					}
 					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					return
 				}
@@ -258,8 +264,12 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-				factory.ProcessAndStopWorker(connID)
-				factory.DeleteWorker(connID)
+				tracker, existsTracker := factory.DeleteWorkerAndReturnTracker(connID)
+
+				if existsTracker {
+					go factory.ProcessAndStopWorker(tracker)
+				}
+
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
 			}
@@ -267,25 +277,26 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 	}(connectionID, tracker, ch)
 }
 
-func (factory *Factory) ProcessAndStopWorker(connectionID structs.ConnID) {
-	tracker, connExists := factory.getTracker(connectionID)
-	if connExists {
-		ProcessTrackerData(connectionID, tracker, tracker.IsComplete())
-	}
+func (factory *Factory) ProcessAndStopWorker(tracker *Tracker) {
+	ProcessTrackerData(tracker.connID, tracker, tracker.IsComplete())
 }
 
 // StopWorker gracefully stops the worker for a connectionId.
-func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
+func (factory *Factory) DeleteWorkerAndReturnTracker(connectionID structs.ConnID) (*Tracker, bool) {
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
 
-	if ch, exists := factory.processor[connectionID]; exists {
-		close(ch)
+	var tracker *Tracker
+	var existsTracker bool
+
+	if _, exists := factory.processor[connectionID]; exists {
+		//close(ch)
 		delete(factory.processor, connectionID)
 		utils.LogProcessing("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 	}
 
 	if _, exists := factory.connections[connectionID]; exists {
+		tracker, existsTracker = factory.getTracker(connectionID)
 		delete(factory.connections, connectionID)
 		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
@@ -312,6 +323,8 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 			}
 		}
 	}
+
+	return tracker, existsTracker
 }
 
 func (factory *Factory) getChannel(connectionID structs.ConnID) (chan interface{}, bool) {
@@ -322,8 +335,8 @@ func (factory *Factory) getChannel(connectionID structs.ConnID) (chan interface{
 }
 
 func (factory *Factory) getTracker(connectionID structs.ConnID) (*Tracker, bool) {
-	factory.mutex.RLock()
-	defer factory.mutex.RUnlock()
+	//factory.mutex.RLock()
+	//defer factory.mutex.RUnlock()
 	tracker, exists := factory.connections[connectionID]
 	return tracker, exists
 }
@@ -333,20 +346,20 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 	ch, exists := factory.getChannel(connectionID)
 
 	if exists {
-		utils.LogProcessing("Received event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		//utils.LogProcessing("Received event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		defer func() {
 			if r := recover(); r != nil {
 				// Recover from a panic, caused by sending to a closed channel
-				utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
+				//utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
 			}
 		}()
 		select {
 		case ch <- event: // Try sending the event to the worker's channel
-			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+			//utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		default: // Avoid blocking if the channel is full
-			utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
+			//utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
 		}
 	} else {
-		utils.LogProcessing("No worker found for", "connectionId", connectionID)
+		//utils.LogProcessing("No worker found for", "connectionId", connectionID)
 	}
 }
