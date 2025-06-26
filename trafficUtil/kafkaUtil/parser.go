@@ -352,15 +352,29 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			"enable_graph":    fmt.Sprint(utils.EnableGraph),
 		}
 
-		if trafficUtil.PodInformerInstance != nil {
-			slog.Debug("pod direction log", "direction", direction, "host", reqHeaderStr["host"], "path", value["path"], "sourceIp", value["ip"], "destIp", destIp, "socketId", value["socket_id"])
+		if utils.HasLogIntervalPassed() {
+			slog.Warn("pod direction log", "direction", direction, "host", reqHeaderStr["host"], "path", value["path"], "sourceIp", sourceIp, "destIp", destIp, "socketId", value["socket_id"])
+		}
 
-			podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(destIp)
-			if err != nil {
-				slog.Error("Failed to resolve pod labels", "ip", destIp, "error", err)
+		if trafficUtil.PodInformerInstance != nil {
+			// Direction outbound means sourceIp is my pod's IP.
+			if direction == utils.DirectionOutbound {
+				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(sourceIp)
+				if err != nil {
+					slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
+				} else {
+					value["tag"] = podLabels
+					slog.Debug("Pod labels", "ip", sourceIp, "labels", podLabels)
+				}
 			} else {
-				value["tag"] = podLabels
-				slog.Debug("Pod labels", "ip", destIp, "labels", podLabels)
+				// Direction inbound means destIp is my pod's IP.
+				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(destIp)
+				if err != nil {
+					slog.Error("Failed to resolve pod labels", "ip", destIp, "error", err)
+				} else {
+					value["tag"] = podLabels
+					slog.Debug("Pod labels", "ip", destIp, "labels", podLabels)
+				}
 			}
 
 		}

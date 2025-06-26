@@ -109,6 +109,14 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
+	utils.LogProcessing("Processing tracker data",
+		"fd", connID.Fd,
+		"id", connID.Id,
+		"timestamp", connID.Conn_start_ns,
+		"ip", destIpStr,
+		"srcIp", srcIpStr,
+	)
+
 	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.

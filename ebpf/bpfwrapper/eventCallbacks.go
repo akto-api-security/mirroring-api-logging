@@ -37,7 +37,10 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
 			"ip", connId.Ip,
-			"port", connId.Port)
+			"port", connId.Port,
+			"srcIp", event.SrcIp,
+			"srcPort", event.SrcPort,
+		)
 		connectionFactory.CreateIfNotExists(connId)
 		connectionFactory.SendEvent(connId, &event)
 	}
