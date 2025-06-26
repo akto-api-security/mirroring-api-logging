@@ -127,11 +127,6 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		// slog.Debug("data", "data", data)
 
-		if err := binary.Read(bytes.NewReader(data[:eventAttributesSize]), bcc.GetHostByteOrder(), &event.Attr); err != nil {
-			slog.Error("Failed to decode received data", "error", err)
-			continue
-		}
-
 		if err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
