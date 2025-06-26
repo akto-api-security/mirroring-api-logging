@@ -134,7 +134,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
 		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
-			return
+			continue
 		}
 
 		bytesSent := event.Attr.Bytes_sent
