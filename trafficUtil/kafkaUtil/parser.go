@@ -47,6 +47,8 @@ var (
 		"partner/qa/v2/products",
 		"partner/v2/products",
 	}
+	logCounter = 0
+	maxLogs   = 1000
 )
 
 const ONE_MINUTE = 60
@@ -352,8 +354,9 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			"enable_graph":    fmt.Sprint(utils.EnableGraph),
 		}
 
-		if utils.HasLogIntervalPassed() {
+		if logCounter < maxLogs {
 			slog.Warn("pod direction log", "direction", direction, "host", reqHeaderStr["host"], "path", value["path"], "sourceIp", sourceIp, "destIp", destIp, "socketId", value["socket_id"])
+			logCounter++
 		}
 
 		if trafficUtil.PodInformerInstance != nil {
