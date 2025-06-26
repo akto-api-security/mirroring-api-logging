@@ -15,7 +15,7 @@ var (
 	processLogs  bool = false
 	aktoLogLevel string
 	level        slog.Level = slog.LevelWarn
-	logInterval  time.Duration = 10 * time.Second 
+	logInterval  time.Duration = 120 * time.Second 
 	lastCallTime time.Time
 )
 
