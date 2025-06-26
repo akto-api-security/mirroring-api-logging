@@ -368,6 +368,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				}
 			} else {
 				// Direction inbound means destIp is my pod's IP.
+				// TODO: fix at kernel layer, currently we are capturing 0.0.0.0 as destIp.
 				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(destIp)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "ip", destIp, "error", err)
