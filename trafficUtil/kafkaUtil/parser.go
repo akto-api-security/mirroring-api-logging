@@ -374,7 +374,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			if err != nil {
 				slog.Error("Failed to resolve pod name", "processId", idfd>>32, "error", err)
 			}else{
-				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(podName)
+				podLabels, err := trafficUtil.PodInformerInstance.ResolvePodLabels(podName)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
 				} else {
