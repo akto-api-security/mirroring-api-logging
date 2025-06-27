@@ -355,32 +355,33 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		if logCounter < maxLogs {
-			slog.Warn("pod direction log", "direction", direction, "host", reqHeaderStr["host"], "path", value["path"], "sourceIp", sourceIp, "destIp", destIp, "socketId", value["socket_id"])
+			slog.Warn("pod direction log", "direction", 
+				direction, "host", 
+				reqHeaderStr["host"], 
+				"path", value["path"], 
+				"sourceIp", sourceIp, "destIp", 
+				destIp, "socketId", value["socket_id"],
+				"processId", idfd >> 32,
+			)
 			logCounter++
 		}
 
 		if trafficUtil.PodInformerInstance != nil {
-			// Direction outbound means sourceIp is my pod's IP.
-			if direction == utils.DirectionOutbound {
-				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(sourceIp)
+			// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
+			// Shifting by 32 gives us the process id on host machine. 
+			podName, err := utils.ReadEnvVarForProcessId("HOSTNAME", idfd >> 32)
+
+			if err != nil {
+				slog.Error("Failed to resolve pod name", "processId", idfd>>32, "error", err)
+			}else{
+				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(podName)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
 				} else {
 					value["tag"] = podLabels
 					slog.Debug("Pod labels", "ip", sourceIp, "labels", podLabels)
 				}
-			} else {
-				// Direction inbound means destIp is my pod's IP.
-				// TODO: fix at kernel layer, currently we are capturing 0.0.0.0 as destIp.
-				podLabels, err := trafficUtil.PodInformerInstance.ResolveIPPodLabels(destIp)
-				if err != nil {
-					slog.Error("Failed to resolve pod labels", "ip", destIp, "error", err)
-				} else {
-					value["tag"] = podLabels
-					slog.Debug("Pod labels", "ip", destIp, "labels", podLabels)
-				}
 			}
-
 		}
 
 		out, _ := json.Marshal(value)

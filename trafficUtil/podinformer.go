@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -36,22 +35,9 @@ func init() {
 }
 
 type PodInformer struct {
-	clientset    *kubernetes.Clientset
-	nodeName     string
-	ipPodMap     sync.Map
-	podLabelsMap sync.Map
-}
-
-func equalPodIPs(a, b []corev1.PodIP) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].IP != b[i].IP {
-			return false
-		}
-	}
-	return true
+	clientset        *kubernetes.Clientset
+	nodeName         string
+	podNameLabelsMap sync.Map // Maps pod names to their labels directly
 }
 
 func SetupPodInformer() (chan struct{}, error) {
@@ -115,43 +101,34 @@ func NewPodInformer() (*PodInformer, error) {
 		return nil, fmt.Errorf("NODE_NAME environment variable not set")
 	}
 	return &PodInformer{
-		clientset:    clientset,
-		nodeName:     nodeName,
-		ipPodMap:     sync.Map{},
-		podLabelsMap: sync.Map{},
+		clientset:        clientset,
+		nodeName:         nodeName,
+		podNameLabelsMap: sync.Map{},
 	}, nil
 }
 
-func (w *PodInformer) ResolveIPPodLabels(ip string) (string, error) {
-	slog.Debug("Resolving IP to pod labels", "ip", ip)
-	ip = strings.Split(ip, ":")[0]
-	// Step 1: Find the IP key in ipPodMap
-	podUID, ok := w.ipPodMap.Load(ip)
+func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
+	slog.Debug("Resolving Pod Name to labels", "podName", podName)
+
+	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
+	labels, ok := w.podNameLabelsMap.Load(podName)
 	if !ok {
-		err := fmt.Errorf("pod informer failed to resolve ip %s", ip)
+		err := fmt.Errorf("failed to resolve labels of pod name: %s", podName)
 		slog.Error(err.Error())
 		return "", err
 	}
 
-	// Step 2: Use the value (pod.UID) as the key to find labels in podLabelsMap
-	labels, ok := w.podLabelsMap.Load(podUID)
-	if !ok {
-		err := fmt.Errorf("failed to resolve labels of pod uid: %s", podUID)
-		slog.Error(err.Error())
-		return "", err
-	}
-
-	// Step 3: Convert the labels (map[string]string) to a JSON string
+	// Step 2: Convert the labels (map[string]string) to a JSON string
 	labelsMap, ok := labels.(map[string]string)
 	if !ok {
-		err := fmt.Errorf("invalid labels format for pod uid: %s", podUID)
+		err := fmt.Errorf("invalid labels format for pod name: %s", podName)
 		slog.Error(err.Error())
 		return "", err
 	}
 
 	labelsJSON, err := json.Marshal(labelsMap)
 	if err != nil {
-		err := fmt.Errorf("failed to convert labels to JSON for pod uid: %s, error: %v", podUID, err)
+		err := fmt.Errorf("failed to convert labels to JSON for pod name: %s, error: %v", podName, err)
 		slog.Error(err.Error())
 		return "", err
 	}
@@ -159,44 +136,31 @@ func (w *PodInformer) ResolveIPPodLabels(ip string) (string, error) {
 	return string(labelsJSON), nil
 }
 
-func (w *PodInformer) logPodIPs() {
+func (w *PodInformer) logPodNameLabelsMap() {
 	var result string
-	w.ipPodMap.Range(func(key, value interface{}) bool {
-		result += fmt.Sprintf("IP: %s, Pod UID: %s; ", key, value)
+	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
+		result += fmt.Sprintf("Name: %s, Labels: %s; ", key, value)
 		return true
 	})
-	slog.Debug("Pod IP Map", "map", result)
+	slog.Debug("Pod Name Labels Map", "map", result)
 }
 
-func (w *PodInformer) logPodLabels() {
-	var result string
-	w.podLabelsMap.Range(func(key, value interface{}) bool {
-		result += fmt.Sprintf("Pod UID: %s, label: %s; ", key, value)
-		return true
-	})
-	slog.Debug("Pod Labels Map", "map", result)
-}
-
-func (w *PodInformer) initPodIPMap(podInformer cache.SharedIndexInformer, podLister v1lister.PodLister) error {
-	slog.Info("Initializing ipPod and podLabels maps")
+func (w *PodInformer) initpodNameLabelsMap(podInformer cache.SharedIndexInformer, podLister v1lister.PodLister) error {
+	slog.Info("Initializing podNameLabels map")
 	if !podInformer.HasSynced() {
 		return fmt.Errorf("failed to wait for cache sync")
 	}
 
-	slog.Info("Pod watcher synced adding pods to ipPodMap")
+	slog.Info("Pod watcher synced adding pods to podNameLabelsMap")
 	pods, err := podLister.List(labels.Everything())
 	if err != nil {
 		return fmt.Errorf("failed to List pods after syncing: %v", err)
 	}
 
 	for _, pod := range pods {
-		for _, podIp := range pod.Status.PodIPs {
-			w.ipPodMap.Store(podIp.IP, pod.UID)
-		}
-		w.podLabelsMap.Store(pod.UID, pod.Labels)
+		w.podNameLabelsMap.Store(pod.Name, pod.Labels)
 	}
-	w.logPodIPs()
-	w.logPodLabels()
+	w.logPodNameLabelsMap()
 	return nil
 }
 
@@ -228,9 +192,9 @@ func (w *PodInformer) WatchPods(stopCh <-chan struct{}) error {
 	res := informerFactory.WaitForCacheSync(stopCh)
 	slog.Info("Pod informer cache sync complete", "map", res)
 
-	err := w.initPodIPMap(podInformer, podLister)
+	err := w.initpodNameLabelsMap(podInformer, podLister)
 	if err != nil {
-		return fmt.Errorf("failed to init pod ip and label maps: %v", err)
+		return fmt.Errorf("failed to init pod name and label maps: %v", err)
 	}
 
 	_, err = w.registerPodEventHandlers(podInformer)
@@ -259,48 +223,35 @@ func (w *PodInformer) registerPodEventHandlers(podInformer cache.SharedIndexInfo
 func (w *PodInformer) handlePodAdd(obj interface{}) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
-		slog.Error("Pod handler recived invalid", "pod", obj)
+		slog.Error("Pod handler received invalid", "pod", obj)
 		return
 	}
 	slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
-	for _, podIp := range pod.Status.PodIPs {
-		w.ipPodMap.Store(podIp.IP, pod.UID)
-	}
-	w.podLabelsMap.Store(pod.UID, pod.Labels)
+	w.podNameLabelsMap.Store(pod.Name, pod.Labels)
 }
 
 func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
 	oldPod, ok := oldObj.(*corev1.Pod)
 	if !ok {
-		slog.Error("Pod handler recived invalid", "pod", oldObj)
+		slog.Error("Pod handler received invalid", "pod", oldObj)
 		return
 	}
 	newPod, ok := newObj.(*corev1.Pod)
 	if !ok {
-		slog.Error("Pod handler recived invalid", "pod", newObj)
+		slog.Error("Pod handler received invalid", "pod", newObj)
 		return
 	}
 	slog.Debug("Pod update:", "namespace", newPod.Namespace, "podName", newPod.Name)
-	// TOOD potential bug, remove the oldIps from map ??
-	// What comes in the update call, new IPs only or all the IPs ??
-	if !equalPodIPs(oldPod.Status.PodIPs, newPod.Status.PodIPs) {
-		for _, podIp := range newPod.Status.PodIPs {
-			w.ipPodMap.Store(podIp.IP, newPod.UID)
-		}
-	}
-	w.podLabelsMap.Delete(oldPod.UID)
-	w.podLabelsMap.Store(newPod.UID, newPod.Labels)
+	w.podNameLabelsMap.Delete(oldPod.Name)
+	w.podNameLabelsMap.Store(newPod.Name, newPod.Labels)
 }
 
 func (w *PodInformer) handlePodDelete(obj interface{}) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
-		slog.Error("Pod handler recived invalid", "pod", obj)
+		slog.Error("Pod handler received invalid", "pod", obj)
 		return
 	}
-	slog.Debug("Pod update:", "namespace", pod.Namespace, "podName", pod.Name)
-	for _, podIp := range pod.Status.PodIPs {
-		w.ipPodMap.Delete(podIp.IP)
-	}
-	w.podLabelsMap.Delete(pod.UID)
+	slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
+	w.podNameLabelsMap.Delete(pod.Name)
 }
