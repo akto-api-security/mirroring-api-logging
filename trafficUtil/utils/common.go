@@ -28,7 +28,7 @@ func PrintLog(val string, args ...any) {
 
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
-var EnableGraph = false
+var EnableGraph = true
 var ThreatEnabled = false
 
 func init() {
