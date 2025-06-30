@@ -2,9 +2,9 @@ package ssl
 
 import (
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/iovisor/gobpf/bcc"
 	"log/slog"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 )
 
 type NodeTLSSymbolAddress struct {
@@ -45,16 +45,16 @@ func TryNodeProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, e
 	}
 
 	slog.Debug("Attaching on", "pid", pid, "path", symLinkHostPath)
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.SslHooks); err != nil {
+	if err := AttachUprobes(symLinkHostPath, -1, bpfModule, structs.SslHooks); err != nil {
 		slog.Error("failed to attach SSL uprobe", "error", err)
 	}
 
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.NodeSSLHooks); err != nil {
+	if err := AttachUprobes(symLinkHostPath, -1, bpfModule, structs.NodeSSLHooks); err != nil {
 		slog.Error("failed to attach Node SSL uprobe", "error", err)
 	}
 
 	nodeTlsProbes := getNodeTlsHooks(v)
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, nodeTlsProbes); err != nil {
+	if err := AttachUprobes(symLinkHostPath, -1, bpfModule, nodeTlsProbes); err != nil {
 		slog.Error("failed to attach Node TLS uprobe", "error", err)
 	}
 

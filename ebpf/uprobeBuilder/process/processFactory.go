@@ -24,6 +24,7 @@ type Process struct {
 	containerId string // cgroup
 	linkType    LinkType
 	probeType   ssl.ProbeType
+	hostName 	string
 	// command     string // cmdline
 	// ppid        int32  // stat [4]
 }
@@ -33,6 +34,8 @@ type ProcessFactory struct {
 	mutex             *sync.RWMutex
 	unattachedProcess map[int32]bool
 }
+
+var ProcessFactoryInstance *ProcessFactory
 
 // NewFactory creates a new instance of the factory.
 func NewFactory() *ProcessFactory {
@@ -49,6 +52,15 @@ var (
 
 func init() {
 	utils.InitVar("PROBE_ALL_PID", &probeAllPid)
+}
+
+func SetupProcessFactory() {
+	if ProcessFactoryInstance == nil {
+		ProcessFactoryInstance = NewFactory()
+		slog.Info("ProcessFactory initialized")
+	} else {
+		slog.Warn("ProcessFactory already initialized, skipping re-initialization")
+	}
 }
 
 func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Module) {
@@ -106,6 +118,16 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 					continue
 				}
 			}
+			// TODO verify this change carefully.
+			// Can a PID be skipped due to CHeckProcessCGroupBelongToKube returning an error?
+			// Does the existing behaviour remain the same? We were trying to attach any one the ssl libraries.
+
+			processFactory.processMap[pid] = Process{
+				pid:         pid,
+				containerId: containers[0],
+				hostName:    ReadEnvVarForProcessId("HOSTNAME", pid),
+			}
+			slog.Debug("Process found", "pid", pid, "containerId", containers[0], "hostName", processFactory.processMap[pid].hostName)
 
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {
@@ -119,13 +141,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
 			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    DynamicLink,
-					probeType:   ssl.OpenSSL,
-				}
-				processFactory.processMap[pid] = p
+				pOld := processFactory.processMap[pid]
+				pOld.linkType = DynamicLink
+				pOld.probeType = ssl.OpenSSL
+				processFactory.processMap[pid] = pOld
 				continue
 			} else if err != nil {
 				slog.Error("openSSL probing error", "pid", pid, "error", err)
@@ -133,13 +152,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
 			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    StaticLink,
-					probeType:   ssl.GoTLS,
-				}
-				processFactory.processMap[pid] = p
+				pOld := processFactory.processMap[pid]
+				pOld.linkType = StaticLink
+				pOld.probeType = ssl.GoTLS
+				processFactory.processMap[pid] = pOld
 				continue
 			} else if err != nil {
 				slog.Error("GoTLS probing error", "pid", pid, "error", err)
@@ -147,13 +163,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
 			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    StaticLink,
-					probeType:   ssl.Node,
-				}
-				processFactory.processMap[pid] = p
+				pOld := processFactory.processMap[pid]
+				pOld.linkType = StaticLink
+				pOld.probeType = ssl.Node
+				processFactory.processMap[pid] = pOld
 				continue
 			} else if err != nil {
 				slog.Error("Node probing error", "pid", pid, "error", err)
@@ -163,6 +176,18 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 		}
 	}
+}
+
+
+func (processFactory *ProcessFactory) GetPodNameByProcessId(pid int32) string {
+	processFactory.mutex.RLock()
+	defer processFactory.mutex.RUnlock()
+	if p, ok := processFactory.processMap[pid]; ok {
+		slog.Debug("Processing tracker data hostname for", "processId", pid, "hostName", p.hostName)
+		return p.hostName
+	}
+	slog.Debug("Processing tracker data hostname not found for", "processId", pid)
+	return ""
 }
 
 func checkSelf(pid int32) bool {

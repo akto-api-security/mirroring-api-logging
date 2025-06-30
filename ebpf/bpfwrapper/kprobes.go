@@ -6,35 +6,14 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/iovisor/gobpf/bcc"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 )
 
 const (
 	maxActiveConnections = 1024
 )
 
-// ProbeType represents whether the probe is an entry or a return.
-type ProbeType int
 
-const (
-	EntryType ProbeType = iota
-	ReturnType
-	EntryType_Matching_Suf
-	ReturnType_Matching_Suf_Addr
-	EntryType_Matching_Pre
-	ReturnType_Matching_Pre
-)
-
-// Kprobe represents a single Kprobe hook.
-type Kprobe struct {
-	// The name of the function to hook.
-	FunctionToHook string
-	// The name of the hook function.
-	HookName string
-	// Whether a Kprobe or ret-Kprobe.
-	Type ProbeType
-	// Whether the function to hook is syscall or not.
-	IsSyscall bool
-}
 
 func PlatformPrefix() string {
 	switch runtime.GOARCH {
@@ -70,7 +49,7 @@ func PlatformPrefix() string {
 }
 
 // AttachKprobes attaches the given Kprobe list.
-func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
+func AttachKprobes(bpfModule *bcc.Module, kprobeList []structs.Kprobe) error {
 	for _, probe := range kprobeList {
 		functionToHook := probe.FunctionToHook
 		if probe.IsSyscall {
@@ -84,13 +63,13 @@ func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
 		}
 
 		switch probe.Type {
-		case EntryType:
+		case structs.EntryType:
 			utils.PrintLog("Loading kprobe", "hook", probe.HookName, "as kprobe", functionToHook)
 			if err = bpfModule.AttachKprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
 				slog.Error("failed to attach kprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
 			}
 			continue
-		case ReturnType:
+		case structs.ReturnType:
 			utils.PrintLog("Loading kretprobe", "hook", probe.HookName, "as kretprobe", functionToHook)
 			if err = bpfModule.AttachKretprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
 				slog.Error("failed to attach kretprobe", "hook", probe.HookName, "function", functionToHook, "error", err)

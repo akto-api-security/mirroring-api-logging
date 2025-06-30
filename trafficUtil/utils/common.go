@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -70,25 +69,3 @@ func InitVar(envVarName string, targetVar interface{}) {
 	}
 }
 
-// Since akto runs in root mode in host pid namespace. We can read the environment variables of any process.
-// For this function to work the processId must be kubernetes pod process id.
-func ReadEnvVarForProcessId(envVarname string, processId uint64) (string, error) {
-	filePath := "/proc/" + strconv.FormatUint(processId, 10) + "/environ"
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		slog.Error("Failed to read environ file", "filePath", filePath, "error", err)
-		return "", err
-	}
-
-	// Split the data by null character
-	parts := strings.Split(string(data), "\x00")
-	// Iterate through the parts to find the desired environment variable
-	for _, part := range parts {
-		if strings.HasPrefix(part, envVarname+"=") {
-			// Return the value of the environment variable
-			return strings.TrimPrefix(part, envVarname+"="), nil
-		}
-	}
-	slog.Warn("Environment variable not found", "envVarname", envVarname, "processId", processId)
-	return "", fmt.Errorf("environment variable not found")
-}

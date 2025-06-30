@@ -1,4 +1,4 @@
-package bpfwrapper
+package structs 
 
 var (
 	Level1hooks = []Kprobe{

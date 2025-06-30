@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/google/uuid"
 )
@@ -117,10 +118,12 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		"srcIp", srcIpStr,
 	)
 
-	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId)
+	hostName := process.ProcessFactoryInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
+
+	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, utils.DirectionOutbound, connID.Id, connID.Fd, uniqueDaemonsetId)
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, utils.DirectionOutbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	}
 }
 

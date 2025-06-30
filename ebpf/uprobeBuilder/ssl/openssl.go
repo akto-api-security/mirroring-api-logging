@@ -2,13 +2,13 @@ package ssl
 
 import (
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/iovisor/gobpf/bcc"
 )
 
@@ -55,20 +55,20 @@ func TryOpensslProbes(m map[string]bool, bpfModule *bcc.Module) (bool, error) {
 	slog.Debug("Attaching on", "path", libSslPath)
 	switch addresses.version {
 	case V_1_0:
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_1_0); err != nil {
+		if err := AttachUprobes(libSslPath, -1, bpfModule, structs.SslHooks_1_0); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		break
 	case V_1_1:
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_1_1); err != nil {
+		if err := AttachUprobes(libSslPath, -1, bpfModule, structs.SslHooks_1_1); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		break
 	case V_3_0:
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_3_0); err != nil {
+		if err := AttachUprobes(libSslPath, -1, bpfModule, structs.SslHooks_3_0); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_3_0_ex); err != nil {
+		if err := AttachUprobes(libSslPath, -1, bpfModule, structs.SslHooks_3_0_ex); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
 		break

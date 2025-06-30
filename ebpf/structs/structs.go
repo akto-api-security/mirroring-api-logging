@@ -52,3 +52,40 @@ type SocketCloseEvent struct {
 	ConnId         ConnID
 	Socket_open_ns uint64
 }
+
+// ProbeType represents whether the probe is an entry or a return.
+type ProbeType int
+
+const (
+	EntryType ProbeType = iota
+	ReturnType
+	EntryType_Matching_Suf
+	ReturnType_Matching_Suf_Addr
+	EntryType_Matching_Pre
+	ReturnType_Matching_Pre
+)
+
+type Kprobe struct {
+	// The name of the function to hook.
+	FunctionToHook string
+	// The name of the hook function.
+	HookName string
+	// Whether a Kprobe or ret-Kprobe.
+	Type ProbeType
+	// Whether the function to hook is syscall or not.
+	IsSyscall bool
+}
+
+
+// Uprobe represents a single uprobe hook.
+type Uprobe struct {
+	// The name of the function to hook.
+	FunctionToHook string
+	// The name of the hook function.
+	HookName string
+	// Whether an uprobe or ret-uprobe.
+	Type ProbeType
+	// Whether the function to hook is syscall or not.
+	BinaryPath string
+	Addresses  []uint64
+}

@@ -1,4 +1,4 @@
-package bpfwrapper
+package structs 
 
 var (
 	GoTlsHooks = []Uprobe{

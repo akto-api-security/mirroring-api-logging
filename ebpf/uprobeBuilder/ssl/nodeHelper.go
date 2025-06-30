@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/version"
 )
 
@@ -64,10 +64,10 @@ func findNodeTLSAddrConfig(v *version.Version) (*NodeTLSSymbolAddress, error) {
 	return nil, fmt.Errorf("could not support version: %s", v)
 }
 
-func getNodeTlsHooks(v *version.Version) []bpfwrapper.Uprobe {
+func getNodeTlsHooks(v *version.Version) []structs.Uprobe {
 	newV := version.Build(15, 0, 0)
 	if v.GreaterOrEquals(newV) {
-		return bpfwrapper.NodeTLSMemHooks_15_0_0
+		return structs.NodeTLSMemHooks_15_0_0
 	}
-	return bpfwrapper.NodeTLSMemHooks_12_3_1
+	return structs.NodeTLSMemHooks_12_3_1
 }

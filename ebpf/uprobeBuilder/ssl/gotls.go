@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/elf"
 	"github.com/iovisor/gobpf/bcc"
 )
@@ -70,28 +70,28 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 		return false, fmt.Errorf("setting the Go TLS argument location failure, pid: %d, error: %v", pid, err)
 	}
 
-	for i, probe := range bpfwrapper.GoTlsRetHooks {
+	for i, probe := range structs.GoTlsRetHooks {
 		if strings.EqualFold(probe.FunctionToHook, goTLSWriteSymbol) {
 			address, err := findAddressForFunc(goTLSWriteSymbol, elfFile)
 			slog.Debug("Addresses for gotls sym", "pid", pid, "symbol", goTLSWriteSymbol, "address", address, "error", err)
 			if err == nil {
-				bpfwrapper.GoTlsRetHooks[i].Addresses = address
+				structs.GoTlsRetHooks[i].Addresses = address
 			}
 
 		} else if strings.EqualFold(probe.FunctionToHook, goTLSReadSymbol) {
 			address, err := findAddressForFunc(goTLSReadSymbol, elfFile)
 			slog.Debug("Addresses for gotls sym", "pid", pid, "symbol", goTLSReadSymbol, "address", address, "error", err)
 			if err == nil {
-				bpfwrapper.GoTlsRetHooks[i].Addresses = address
+				structs.GoTlsRetHooks[i].Addresses = address
 			}
 		}
 	}
 
 	slog.Debug("Attaching on", "path", symLinkHostPath)
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.GoTlsHooks); err != nil {
+	if err := AttachUprobes(symLinkHostPath, -1, bpfModule, structs.GoTlsHooks); err != nil {
 		slog.Error("failed to attach Go TLS uprobe", "error", err)
 	}
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.GoTlsRetHooks); err != nil {
+	if err := AttachUprobes(symLinkHostPath, -1, bpfModule, structs.GoTlsRetHooks); err != nil {
 		slog.Error("failed to attach Go TLS uretprobe", "error", err)
 	}
 	return true, nil

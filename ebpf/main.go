@@ -20,6 +20,7 @@ import (
 	"github.com/iovisor/gobpf/bcc"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
@@ -32,6 +33,7 @@ import (
 )
 
 var source string = ""
+var ProcessFactoryInstance *process.ProcessFactory
 
 func replaceBpfLogsMacros() {
 
@@ -127,23 +129,23 @@ func run() {
 		captureAll = captureAllEnv
 	}
 
-	hooks := make([]bpfwrapper.Kprobe, 0)
+	hooks := make([]structs.Kprobe, 0)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
-	hooks = append(hooks, bpfwrapper.Level1hooks...)
-	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
+	hooks = append(hooks, structs.Level1hooks...)
+	hooks = append(hooks, structs.Level1hooksType2...)
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
-			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
-			hooks = append(hooks, bpfwrapper.Level3hooksEgress...)
+			hooks = append(hooks, structs.Level2hooksEgress...)
+			hooks = append(hooks, structs.Level3hooksEgress...)
 		} else {
-			hooks = append(hooks, bpfwrapper.Level2hooks...)
-			hooks = append(hooks, bpfwrapper.Level3hooks...)
+			hooks = append(hooks, structs.Level2hooks...)
+			hooks = append(hooks, structs.Level3hooks...)
 
 		}
 	}
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback))
-	hooks = append(hooks, bpfwrapper.Level4hooks...)
+	hooks = append(hooks, structs.Level4hooks...)
 
 	if err := bpfwrapper.LaunchPerfBufferConsumers(bpfModule, connectionFactory, callbacks); err != nil {
 		slog.Error("failed to launch perf buffer consumers", "error", err)
@@ -154,7 +156,7 @@ func run() {
 		fmt.Errorf("Error in attaching kprobes %v", err)
 	}
 
-	processFactory := process.NewFactory()
+	process.SetupProcessFactory()
 
 	var isRunning_2 bool
 	var mu_2 = &sync.Mutex{}
@@ -167,28 +169,16 @@ func run() {
 
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
-			slog.Debug("Starting to attach to processes in ticker start")
 			ticker := time.NewTicker(pollInterval) // Create a ticker to trigger every minute
 			defer ticker.Stop()
+
+			// Calling once to start the process probing immediately
+			slog.Debug("Starting to attach to processes immediately")
+			AddProcessProbesTask(isRunning_2, mu_2, bpfModule)
 			for range ticker.C {
 				slog.Debug("Starting to attach to processes in ticker")
-				if !isRunning_2 {
-					mu_2.Lock()
-					if isRunning_2 {
-						mu_2.Unlock()
-						return
-					}
-					isRunning_2 = true
-					mu_2.Unlock()
-
-					slog.Info("Starting to attach to processes")
-					processFactory.AddNewProcessesToProbe(bpfModule)
-					slog.Debug("Ended attaching to processes")
-					mu_2.Lock()
-					isRunning_2 = false
-					mu_2.Unlock()
-				}
-				slog.Debug("Ended attaching to processes in ticker")
+				AddProcessProbesTask(isRunning_2, mu_2, bpfModule)
+				slog.Debug("Ended attaching to processes in ticker")	
 			}
 			slog.Debug("Ended attaching to processes in ticker end")
 		}()
@@ -227,6 +217,25 @@ func run() {
 	}
 	
 	slog.Info("signaled to terminate")
+}
+
+func AddProcessProbesTask(isRunning_2 bool, mu_2 *sync.Mutex, bpfModule *bcc.Module) {
+	if !isRunning_2 {
+		mu_2.Lock()
+		if isRunning_2 {
+			mu_2.Unlock()
+			return
+		}
+		isRunning_2 = true
+		mu_2.Unlock()
+
+		slog.Info("Starting to attach to processes")
+		process.ProcessFactoryInstance.AddNewProcessesToProbe(bpfModule)
+		slog.Debug("Ended attaching to processes")
+		mu_2.Lock()
+		isRunning_2 = false
+		mu_2.Unlock()
+	}
 }
 
 func captureMemoryProfile() {

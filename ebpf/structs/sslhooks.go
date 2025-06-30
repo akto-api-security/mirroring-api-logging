@@ -1,4 +1,5 @@
-package bpfwrapper
+package structs 
+
 
 var (
 	SslHooks_1_0 = []Uprobe{

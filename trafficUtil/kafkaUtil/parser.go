@@ -98,7 +98,7 @@ func IsValidMethod(method string) bool {
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
-	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string) {
+	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
@@ -355,31 +355,32 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		if logCounter < maxLogs {
-			slog.Warn("pod direction log", "direction", 
+			slog.Debug("pod direction log", "direction", 
 				direction, "host", 
 				reqHeaderStr["host"], 
 				"path", value["path"], 
 				"sourceIp", sourceIp, "destIp", 
 				destIp, "socketId", value["socket_id"],
 				"processId", idfd >> 32,
+				"hostName", hostName,
 			)
 			logCounter++
 		}
 
-		if trafficUtil.PodInformerInstance != nil {
+
+		if trafficUtil.PodInformerInstance != nil && direction == utils.DirectionInbound{
 			// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
 			// Shifting by 32 gives us the process id on host machine. 
-			podName, err := utils.ReadEnvVarForProcessId("HOSTNAME", idfd >> 32)
 
-			if err != nil {
-				slog.Error("Failed to resolve pod name", "processId", idfd>>32, "error", err)
+			if hostName == "" {
+				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", idfd>>32, "hostName", hostName)
 			}else{
-				podLabels, err := trafficUtil.PodInformerInstance.ResolvePodLabels(podName)
+				podLabels, err := trafficUtil.PodInformerInstance.ResolvePodLabels(hostName)
 				if err != nil {
-					slog.Error("Failed to resolve pod labels", "ip", sourceIp, "error", err)
+					slog.Error("Failed to resolve pod labels", "error", err)
 				} else {
 					value["tag"] = podLabels
-					slog.Debug("Pod labels", "ip", sourceIp, "labels", podLabels)
+					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
 				}
 			}
 		}
