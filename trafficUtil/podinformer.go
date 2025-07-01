@@ -112,18 +112,19 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 	slog.Debug("Resolving Pod Name to labels", "podName", podName)
 
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
+	// Hostname captured from PID has the format clusterName-nodeName-podName
+	// But the podLabelsMap is stored with just the podName, hence we check for suffix match.
+
 	var labelsMap map[string]string
-	found := false
-	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
-		if strings.HasSuffix(podName, key.(string)) {
-			labelsMap = value.(map[string]string)
-			found = true
-			return false
+	w.podNameLabelsMap.Range(func(k8PodName, labels interface{}) bool {
+		if strings.HasSuffix(podName, k8PodName.(string)) {
+			labelsMap = labels.(map[string]string)
+			return false // stop iteration
 		}
-		return true
+		return true // continue iteration
 	})
 
-	if !found {
+	if len(labelsMap) == 0 {
 		err := fmt.Errorf("pod labels cache miss for pod name: %s", podName)
 		return "", err
 	}
