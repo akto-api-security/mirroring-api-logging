@@ -113,8 +113,7 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
 	labels, ok := w.podNameLabelsMap.Load(podName)
 	if !ok {
-		err := fmt.Errorf("failed to resolve labels of pod name: %s", podName)
-		slog.Error(err.Error())
+		err := fmt.Errorf("pod labels cache miss for pod name: %s", podName)
 		return "", err
 	}
 
@@ -122,14 +121,12 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 	labelsMap, ok := labels.(map[string]string)
 	if !ok {
 		err := fmt.Errorf("invalid labels format for pod name: %s", podName)
-		slog.Error(err.Error())
 		return "", err
 	}
 
 	labelsJSON, err := json.Marshal(labelsMap)
 	if err != nil {
 		err := fmt.Errorf("failed to convert labels to JSON for pod name: %s, error: %v", podName, err)
-		slog.Error(err.Error())
 		return "", err
 	}
 
@@ -142,16 +139,16 @@ func (w *PodInformer) logPodNameLabelsMap() {
 		result += fmt.Sprintf("Name: %s, Labels: %s; ", key, value)
 		return true
 	})
-	slog.Debug("Pod Name Labels Map", "map", result)
+	slog.Warn("Pod Name Labels Map", "map", result)
 }
 
 func (w *PodInformer) initpodNameLabelsMap(podInformer cache.SharedIndexInformer, podLister v1lister.PodLister) error {
-	slog.Info("Initializing podNameLabels map")
+	slog.Warn("Initializing podNameLabels map")
 	if !podInformer.HasSynced() {
 		return fmt.Errorf("failed to wait for cache sync")
 	}
 
-	slog.Info("Pod watcher synced adding pods to podNameLabelsMap")
+	slog.Warn("Pod watcher synced adding pods to podNameLabelsMap")
 	pods, err := podLister.List(labels.Everything())
 	if err != nil {
 		return fmt.Errorf("failed to List pods after syncing: %v", err)
@@ -185,12 +182,12 @@ func (w *PodInformer) WatchPods(stopCh <-chan struct{}) error {
 	podInformer := podFactory.Informer()
 	podLister := podFactory.Lister()
 
-	slog.Info("Starting pod informer factory on", "node", w.nodeName)
+	slog.Warn("Starting pod informer factory on", "node", w.nodeName)
 	informerFactory.Start(stopCh)
 
-	slog.Info("Waiting for pod informer cache sync")
+	slog.Warn("Waiting for pod informer cache sync")
 	res := informerFactory.WaitForCacheSync(stopCh)
-	slog.Info("Pod informer cache sync complete", "map", res)
+	slog.Warn("Pod informer cache sync complete", "map", res)
 
 	err := w.initpodNameLabelsMap(podInformer, podLister)
 	if err != nil {

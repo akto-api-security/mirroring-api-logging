@@ -389,10 +389,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}else{
 				podLabels, err := trafficUtil.PodInformerInstance.ResolvePodLabels(hostName)
 				if err != nil {
-					slog.Error("Failed to resolve pod labels", "error", err)
+					slog.Warn("Failed to resolve pod labels", "hostName", hostName, "error", err)
 				} else {
 					value["tag"] = podLabels
-					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
+					if logCounter < maxLogs {
+						slog.Warn("Pod labels", "podName", hostName, "labels", podLabels)
+						logCounter++
+					}
 				}
 			}
 		}
