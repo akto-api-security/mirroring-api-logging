@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,16 +112,19 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 	slog.Debug("Resolving Pod Name to labels", "podName", podName)
 
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
-	labels, ok := w.podNameLabelsMap.Load(podName)
-	if !ok {
-		err := fmt.Errorf("pod labels cache miss for pod name: %s", podName)
-		return "", err
-	}
+	var labelsMap map[string]string
+	found := false
+	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
+		if strings.HasSuffix(podName, key.(string)) {
+			labelsMap = value.(map[string]string)
+			found = true
+			return false
+		}
+		return true
+	})
 
-	// Step 2: Convert the labels (map[string]string) to a JSON string
-	labelsMap, ok := labels.(map[string]string)
-	if !ok {
-		err := fmt.Errorf("invalid labels format for pod name: %s", podName)
+	if !found {
+		err := fmt.Errorf("pod labels cache miss for pod name: %s", podName)
 		return "", err
 	}
 
