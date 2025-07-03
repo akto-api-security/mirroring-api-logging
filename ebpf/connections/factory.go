@@ -257,7 +257,7 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})
-			utils.LogProcessing("Deleting all trackers at mem", "mem", mem)
+			slog.Warn("Deleting all trackers at mem", "mem", mem)
 			for k := range factory.connections {
 				trackersToDelete[k] = struct{}{}
 			}
