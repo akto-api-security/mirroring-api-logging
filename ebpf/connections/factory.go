@@ -187,9 +187,6 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 }
 
 func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracker, ch chan interface{}) {
-	if true {
-		return
-	}
 
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
