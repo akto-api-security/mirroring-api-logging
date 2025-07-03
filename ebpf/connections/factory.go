@@ -187,6 +187,10 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 }
 
 func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracker, ch chan interface{}) {
+	if true {
+		return
+	}
+
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
 		utils.LogProcessing("Starting go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)

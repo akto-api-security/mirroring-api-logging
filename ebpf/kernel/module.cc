@@ -397,7 +397,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     if (bytes_exchanged_minus_1 < MAX_MSG_SIZE) {
         bpf_probe_read(&socket_data_event->msg, bytes_exchanged, args->buf);
         size_to_save = bytes_exchanged;
-        socket_data_event->msg[size_to_save] = '\\0';
+        socket_data_event->msg[size_to_save] = '\0';
     } else if (bytes_exchanged_minus_1 < 0x7fffffff) {
         bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf);
         size_to_save = MAX_MSG_SIZE;

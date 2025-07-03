@@ -2,6 +2,7 @@ package bpfwrapper
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/iovisor/gobpf/bcc"
 
@@ -35,7 +36,7 @@ func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 
 // Start initiate a goroutine for the event loop handler, for a lost events messages and the perf map.
 func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *connections.Factory) error {
-	probeChannel.eventChannel = make(chan []byte)
+	probeChannel.eventChannel = make(chan []byte, 10000)
 	probeChannel.lostEventsChannel = make(chan uint64)
 
 	table := bcc.NewTable(module.TableId(probeChannel.name), module)
@@ -48,8 +49,9 @@ func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *c
 
 	go probeChannel.eventLoop(probeChannel.eventChannel, connectionFactory)
 	go func() {
-		for {
-			<-probeChannel.lostEventsChannel
+		log.Printf("⚠️ Lost events on channel, starting to listen for lost events on channel %s", probeChannel.name)
+		for lost := range probeChannel.lostEventsChannel {
+			log.Printf("⚠️ Lost %d events on channel %s", lost, probeChannel.name)
 		}
 	}()
 
