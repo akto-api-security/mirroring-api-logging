@@ -66,7 +66,8 @@ jobs:
           IMAGE_TAG: ${{ github.event.inputs.cleanupTag }}
         run: |
           # Build a docker container and push it to DockerHub 
-          docker build -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.cleanup .
+          docker buildx create --use
+          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.cleanup .
           echo "Pushing image to DockerHub..."
           docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
@@ -79,7 +80,8 @@ jobs:
           IMAGE_TAG: ${{ github.event.inputs.tcpdumpTag }}
         run: |
           # Build a docker container and push it to DockerHub 
-          docker build -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.tcpdump .
+          docker buildx create --use
+          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.tcpdump .
           echo "Pushing image to DockerHub..."
           docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
