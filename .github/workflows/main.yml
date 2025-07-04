@@ -67,9 +67,7 @@ jobs:
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.cleanup .
-          echo "Pushing image to DockerHub..."
-          docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
+          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.cleanup . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
        
       - name: Build, tag, and push the image to DockerHub tcpdump
@@ -81,8 +79,5 @@ jobs:
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.tcpdump .
-          echo "Pushing image to DockerHub..."
-          docker push $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG
+          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.tcpdump . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
-       
