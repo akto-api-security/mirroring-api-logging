@@ -1,6 +1,7 @@
 package process
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ type Process struct {
 	containerId string // cgroup
 	linkType    LinkType
 	probeType   ssl.ProbeType
-	hostName 	string
+	hostName    string
 	// command     string // cmdline
 	// ppid        int32  // stat [4]
 }
@@ -48,6 +49,7 @@ func NewFactory() *ProcessFactory {
 
 var (
 	probeAllPid = false
+	logCounter = 0
 )
 
 func init() {
@@ -176,8 +178,31 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 		}
 	}
+	go processFactory.logProcessMap()
 }
 
+func (processFactory *ProcessFactory) logProcessMap() {
+	if logCounter > 3 {
+		slog.Warn("Process map logging skipped, already logged 3 times")
+		return
+	}
+	slog.Warn("Logging processMap to file", "file", utils.GoPidLogFile)
+	var builder strings.Builder
+
+	// Write headers
+	builder.WriteString("PID\tHostname\tContainerId\n")
+
+	// Write process data
+	processFactory.mutex.RLock()
+	defer processFactory.mutex.RUnlock()
+	for pid, p := range processFactory.processMap {
+		builder.WriteString(fmt.Sprintf("%d\t%s\t%s\n", pid, p.hostName, p.containerId))
+	}
+
+	// Log to file in one go
+	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
+	logCounter++
+}
 
 func (processFactory *ProcessFactory) GetPodNameByProcessId(pid int32) string {
 	processFactory.mutex.RLock()

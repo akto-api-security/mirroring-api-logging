@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -29,7 +31,33 @@ import (
 )
 
 var KubeInjectEnabled = false
+// TODO: Make this configurable, or account based.
+var labelNames = []string{"catalog.agoda.com/component", "privatecloud.agoda.com/service"}
 var PodInformerInstance *PodInformer
+
+
+type PodFileLog struct {
+	hostCount   int               `json:"host_count"`
+	cacheMissPods []string        `json:"cache_miss_pods"`
+	pids       []int              `json:"pids"`
+	labels     map[string]int     `json:"labels"`
+}
+
+var ReqHostLog map[string]PodFileLog
+var reqHostPodResolutionLog strings.Builder
+
+func uniqueAppends(slice []string, item string) []string {
+	if !slices.Contains(slice, item) {
+		return append(slice, item)
+	}
+	return slice
+}
+
+func logReqHostPodResolution() {
+	
+}
+
+
 
 func init() {
 	trafficUtils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
@@ -138,6 +166,26 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 	return string(labelsJSON), nil
 }
 
+func (w *PodInformer) logPodLabelsMapFile() {
+	var builder strings.Builder
+	builder.WriteString("PodName\tLabels:\n")
+	
+	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
+		labelsMap, _ := value.(map[string]string)
+
+		// For each pod, we only log the labels that are in labelNames
+		var labelString strings.Builder
+		for labelName, value := range labelsMap {
+			if slices.Contains(labelNames, labelName){
+				labelString.WriteString(fmt.Sprintf("%s=%s, ", labelName, value))
+			}
+		}
+		builder.WriteString(fmt.Sprintf("%s\t%s\n", key, labelString.String()))
+		return true
+	})
+	utils.LogToSpecificFile(utils.LabelsMapLogFile, builder.String())
+}
+
 func (w *PodInformer) logPodNameLabelsMap() {
 	var result string
 	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
@@ -145,6 +193,7 @@ func (w *PodInformer) logPodNameLabelsMap() {
 		return true
 	})
 	slog.Warn("Pod Name Labels Map", "map", result)
+	w.logPodLabelsMapFile()
 }
 
 func (w *PodInformer) initpodNameLabelsMap(podInformer cache.SharedIndexInformer, podLister v1lister.PodLister) error {

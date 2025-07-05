@@ -392,10 +392,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
 				} else {
 					value["tag"] = podLabels
-					if logCounter < maxLogs {
-						slog.Warn("Pod labels", "podName", hostName, "labels", podLabels)
-						logCounter++
-					}
+					slog.Warn("Pod labels", "podName", hostName, "labels", podLabels)
 				}
 			}
 		}
