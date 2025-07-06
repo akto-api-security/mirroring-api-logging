@@ -1,13 +1,17 @@
 package process
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/iovisor/gobpf/bcc"
 	"github.com/shirou/gopsutil/process"
@@ -102,6 +106,8 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			slog.Debug("Not attempting for process", "pid", pid)
 			continue
 		}
+
+		// TODO: What if the pid was re-assgined to a different process?
 		_, ok = processFactory.processMap[pid]
 		if !ok {
 
@@ -130,6 +136,19 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				hostName:    ReadEnvVarForProcessId("HOSTNAME", pid),
 			}
 			slog.Debug("Process found", "pid", pid, "containerId", containers[0], "hostName", processFactory.processMap[pid].hostName)
+			if processFactory.processMap[pid].hostName != "" {
+				slog.Debug("logging pid, hostname to daemonset mapping to kafka")
+				message := map[string]string{
+					"pid":         fmt.Sprint(pid),
+					"hostName":	processFactory.processMap[pid].hostName,
+					"aktoDaemonSet": os.Getenv("POD_NAME"),
+					"nodeName": os.Getenv("NODE_NAME"),
+					"lastUpdated": fmt.Sprint(time.Now().Format(time.RFC3339)),
+				}
+				out, _ := json.Marshal(message)
+				kafkaUtil.ProducePodMapping(context.Background(), string(out))
+			}
+
 
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {

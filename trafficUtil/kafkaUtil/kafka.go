@@ -12,11 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/compress"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -95,6 +96,10 @@ func InitKafka() {
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
+			err := CreateKafkaTopic(kafka_url, "akto.podmapping.logs", false)
+			if err != nil {
+				slog.Error("error creating topic akto.podmapping.logs", "error", err)
+			}
 			break
 		}
 	}
@@ -105,7 +110,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
 			slog.Error("kafka error message", "err", err, "count", KafkaErrMsgCount, "messagesCount", len(messages))
-		}else{
+		} else {
 			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
 	}
@@ -163,6 +168,23 @@ var CLIENT_IP_HEADERS = []string{
 	"client-ip",
 }
 
+func ProducePodMapping(ctx context.Context, message string) error {
+	msg := kafka.Message{
+		Topic: "akto.podmapping.logs",
+		Value: []byte(message),
+	}
+
+	kafkaWriter.Compression = compress.None
+
+	err := kafkaWriter.WriteMessages(ctx, msg)
+	if err != nil {
+		slog.Error("Failed to write Kafka message", "error", err)
+		return err
+	}
+	return nil
+}
+
+
 func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 
 	if !utils.ThreatEnabled {
@@ -217,7 +239,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 
 const (
 	LogTypeError = "ERROR"
-	LogTypeInfo = "INFO"
+	LogTypeInfo  = "INFO"
 )
 
 func ProduceLogs(ctx context.Context, message string, logType string) error {
@@ -298,4 +320,37 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		}
 	}
 	return &kafkaWriter
+}
+
+func CreateKafkaTopic(kafkaUrl string, topicName string, compressed bool) error {
+
+	conn, err := kafka.Dial("tcp", kafkaUrl)
+	if err != nil {
+		return fmt.Errorf("failed to connect to kafka broker: %v", err)
+	}
+	defer conn.Close()
+
+	// Create the topic
+	topic := kafka.TopicConfig{
+		Topic:             topicName,
+		NumPartitions:     1,
+		ReplicationFactor: 1,
+	}
+
+	if compressed {
+		topic.ConfigEntries = []kafka.ConfigEntry{
+			{
+				ConfigName:  "compression.type",
+				ConfigValue: "gzip",
+			},
+		}
+	}
+
+	err = conn.CreateTopics(topic)
+	if err != nil {
+		return fmt.Errorf("failed to create topic: %v", err)
+	}
+
+	slog.Warn("Kafka topic created successfully", "topic", topicName)
+	return nil
 }
