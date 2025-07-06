@@ -168,10 +168,18 @@ var CLIENT_IP_HEADERS = []string{
 	"client-ip",
 }
 
-func ProducePodMapping(ctx context.Context, message string) error {
+func ProducePodMapping(ctx context.Context, podName string) error {
+	message := map[string]string{
+		"podName":     podName,
+		"aktoDaemonSet": os.Getenv("POD_NAME"),
+		"nodeName":    os.Getenv("NODE_NAME"),
+		"lastUpdated": fmt.Sprint(time.Now().Format(time.RFC3339)),
+	}
+
+	out, _:= json.Marshal(message)
 	msg := kafka.Message{
 		Topic: "akto.podmapping.logs",
-		Value: []byte(message),
+		Value: []byte(string(out)),
 	}
 
 	kafkaWriter.Compression = compress.None

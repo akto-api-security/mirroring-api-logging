@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -380,14 +379,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 
-		if trafficUtil.PodInformerInstance != nil && direction == utils.DirectionInbound{
+		if PodInformerInstance != nil && direction == utils.DirectionInbound{
 			// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
 			// Shifting by 32 gives us the process id on host machine. 
 
 			if hostName == "" {
 				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", idfd>>32, "hostName", hostName)
 			}else{
-				podLabels, err := trafficUtil.PodInformerInstance.ResolvePodLabels(hostName)
+				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
 				} else {

@@ -1,4 +1,4 @@
-package trafficUtil
+package kafkaUtil
 
 /*
 The PodInformer module is a Kubernetes utility designed to watch and manage pod events.
@@ -7,6 +7,7 @@ with the Kubernetes API and maintain mappings of pod IPs and labels for efficien
 */
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	v1lister "k8s.io/client-go/listers/core/v1"
@@ -76,10 +76,8 @@ func logReqHostPodResolution(reqHost string, labelsJson string, pid int, podHost
 	ReqHostLog[reqHost] = podfileLog
 }
 
-
-
 func init() {
-	trafficUtils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
+	utils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
 	reqHostPodResolutionLog.WriteString("reqHost\tlabelsCount\tpidCount\tcacheMisspodHostName\n")
 }
 
@@ -230,6 +228,7 @@ func (w *PodInformer) initpodNameLabelsMap(podInformer cache.SharedIndexInformer
 
 	for _, pod := range pods {
 		w.podNameLabelsMap.Store(pod.Name, pod.Labels)
+		ProducePodMapping(context.Background(), pod.Name)
 	}
 	w.logPodNameLabelsMap()
 	return nil
@@ -290,7 +289,8 @@ func (w *PodInformer) registerPodEventHandlers(podInformer cache.SharedIndexInfo
 	slog.Info("Pod event handlers registered")
 	return handler, err
 }
-
+// node, pod, daemonset, lastSyncTime 
+// node, podId, daemonset, lastSyncTime
 func (w *PodInformer) handlePodAdd(obj interface{}) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -299,6 +299,7 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 	}
 	slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Store(pod.Name, pod.Labels)
+	ProducePodMapping(context.Background(), pod.Name)
 }
 
 func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
