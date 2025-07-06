@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -39,15 +40,9 @@ var (
 		"TRACE":   true,
 		"TRACK":   true,
 		"PATCH":   true}
-	DebugStrings = []string{
-		"partner/v2/transactions",
-		"partner/qa/v2/transactions",
-		"partner/v1/transactions",
-		"partner/qa/v2/products",
-		"partner/v2/products",
-	}
-	logCounter = 0
-	maxLogs   = 1000
+	DebugStrings     = []string{}
+	logCounter       = 0
+	maxLogs          = 1000
 	globalReader     = &bytes.Reader{}
 	globalReaderLock sync.Mutex
 )
@@ -67,6 +62,76 @@ func init() {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
+
+	// Start ticker to read debug URLs from file every 30 seconds
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			UpdateDebugStringsFromFile()
+			<-ticker.C
+		}
+	}()
+}
+
+// Reads /ebpf/debug-urls.txt and updates DebugStrings with any new URLs found in the file (one per line)
+func UpdateDebugStringsFromFile() {
+	filePath := "/ebpf/debug-urls.txt"
+	f, err := os.Open(filePath)
+	if err != nil {
+		// File may not exist, that's fine
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	fileUrls := []string{}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			fileUrls = append(fileUrls, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return
+	}
+
+	if len(fileUrls) > 0 {
+		// Merge with env DebugStrings, avoid duplicates
+		urlSet := make(map[string]struct{})
+		for _, u := range DebugStrings {
+			urlSet[u] = struct{}{}
+		}
+		newUrls := []string{}
+		for _, u := range fileUrls {
+			if _, exists := urlSet[u]; !exists {
+				newUrls = append(newUrls, u)
+			}
+			urlSet[u] = struct{}{}
+		}
+		if len(newUrls) > 0 {
+			merged := make([]string, 0, len(urlSet))
+			for u := range urlSet {
+				merged = append(merged, u)
+			}
+			DebugStrings = merged
+			utils.PrintLogDebug("New debugStrings found in file", "newUrls", newUrls, "DebugStrings", DebugStrings)
+		}
+	}
+}
+
+func checkDebugUrlAndPrint(url string, message string) {
+	if len(DebugStrings) > 0 {
+		for _, debugString := range DebugStrings {
+			if strings.Contains(url, debugString) {
+				ctx := context.Background()
+				logMsg := fmt.Sprintf("%s : %s", message, url)
+				utils.PrintLogDebug(logMsg)
+				go ProduceLogs(ctx, logMsg, LogTypeInfo)
+				break
+			}
+		}
+	}
 }
 
 func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
@@ -184,11 +249,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 		if err == nil {
-			body, err = io.ReadAll(r)
+			body, _ = io.ReadAll(r)
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()
 			}
-
 		}
 
 		responses = append(responses, *resp)
@@ -309,15 +373,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		url := req.URL.String()
-		if len(DebugStrings) > 0 {
-			for _, debugString := range DebugStrings {
-				if strings.Contains(url, debugString) {
-					ctx := context.Background()
-					go ProduceLogs(ctx, fmt.Sprintf("URL found in ParseAndProduce: %s", url), LogTypeInfo)
-					break
-				}
-			}
-		}
+		checkDebugUrlAndPrint(url, "URL found in ParseAndProduce")
 
 		// build kafka payload for threat client
 		payload := &trafficpb.HttpResponseParam{
@@ -365,35 +421,40 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			"enable_graph":    fmt.Sprint(utils.EnableGraph),
 		}
 
+		var pid = idfd >> 32
 		if logCounter < maxLogs {
-			slog.Debug("pod direction log", "direction", 
-				direction, "host", 
-				reqHeaderStr["host"], 
-				"path", value["path"], 
-				"sourceIp", sourceIp, "destIp", 
+			slog.Debug("pod direction log", "direction",
+				direction, "host",
+				reqHeaderStr["host"],
+				"path", value["path"],
+				"sourceIp", sourceIp, "destIp",
 				destIp, "socketId", value["socket_id"],
-				"processId", idfd >> 32,
+				"processId", pid,
 				"hostName", hostName,
 			)
 			logCounter++
 		}
 
-
-		if PodInformerInstance != nil && direction == utils.DirectionInbound{
+		if PodInformerInstance != nil && direction == utils.DirectionInbound {
 			// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
-			// Shifting by 32 gives us the process id on host machine. 
+			// Shifting by 32 gives us the process id on host machine.
 
 			if hostName == "" {
-				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", idfd>>32, "hostName", hostName)
-			}else{
+				checkDebugUrlAndPrint(url, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
+				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
+			} else {
 				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
+					checkDebugUrlAndPrint(url, "Error resolving pod labels "+hostName)
 				} else {
 					value["tag"] = podLabels
+					checkDebugUrlAndPrint(url, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
 					slog.Warn("Pod labels", "podName", hostName, "labels", podLabels)
 				}
 			}
+		} else {
+			checkDebugUrlAndPrint(url, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
 		}
 
 		out, _ := json.Marshal(value)

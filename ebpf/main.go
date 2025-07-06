@@ -20,14 +20,14 @@ import (
 	"github.com/iovisor/gobpf/bcc"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
-	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
+	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
@@ -178,7 +178,7 @@ func run() {
 			for range ticker.C {
 				slog.Debug("Starting to attach to processes in ticker")
 				AddProcessProbesTask(isRunning_2, mu_2, bpfModule)
-				slog.Debug("Ended attaching to processes in ticker")	
+				slog.Debug("Ended attaching to processes in ticker")
 			}
 			slog.Debug("Ended attaching to processes in ticker end")
 		}()
@@ -215,7 +215,7 @@ func run() {
 		slog.Info("Stopping pod watcher")
 		close(stopCh)
 	}
-	
+
 	slog.Info("signaled to terminate")
 }
 

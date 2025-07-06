@@ -26,6 +26,13 @@ func PrintLog(val string, args ...any) {
 	}
 }
 
+/*
+Print all debug logs as warn.
+*/
+func PrintLogDebug(val string, args ...any) {
+	slog.Warn(val, args...)
+}
+
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 var EnableGraph = true
@@ -68,4 +75,3 @@ func InitVar(envVarName string, targetVar interface{}) {
 		slog.Warn("Missing env value, using default value", "name", envVarName)
 	}
 }
-

@@ -1,4 +1,4 @@
-package ssl 
+package ssl
 
 import (
 	"fmt"
@@ -6,11 +6,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/iovisor/gobpf/bcc"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
+	"github.com/iovisor/gobpf/bcc"
 )
-
-
 
 var uprobeRegexp = regexp.MustCompile("[^a-zA-Z0-9_]")
 
