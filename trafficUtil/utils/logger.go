@@ -118,6 +118,9 @@ func LogToSpecificFile(filePath string, format string, args ...any) {
 }
 
 func SetupAllFileLoggers() {
+	if _, err := os.Stat(HOST_MAPPING_PATH); os.IsNotExist(err) {
+		os.Mkdir(HOST_MAPPING_PATH, 0755) 
+	}
 	SetupFileLogger(OSPidLogFile, slog.LevelInfo)
 	SetupFileLogger(GoPidLogFile, slog.LevelInfo)
 	SetupFileLogger(LabelsMapLogFile, slog.LevelInfo)
