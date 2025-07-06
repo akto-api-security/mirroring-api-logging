@@ -32,35 +32,55 @@ import (
 
 var KubeInjectEnabled = false
 // TODO: Make this configurable, or account based.
-var labelNames = []string{"catalog.agoda.com/component", "privatecloud.agoda.com/service"}
+var SERVICE_IDENTIFIER_LABELS = []string{"catalog.agoda.com/component", "privatecloud.agoda.com/service"}
 var PodInformerInstance *PodInformer
 
 
 type PodFileLog struct {
-	hostCount   int               `json:"host_count"`
-	cacheMissPods []string        `json:"cache_miss_pods"`
-	pids       []int              `json:"pids"`
-	labels     map[string]int     `json:"labels"`
+	hostCount   int
+	cacheMissPods map[string]int
+	pids       map[int]int
+	labelsCountMap     map[string]int
 }
 
-var ReqHostLog map[string]PodFileLog
+var ReqHostLog = make(map[string]*PodFileLog)
 var reqHostPodResolutionLog strings.Builder
 
-func uniqueAppends(slice []string, item string) []string {
-	if !slices.Contains(slice, item) {
-		return append(slice, item)
+func logReqHostPodResolution(reqHost string, labelsJson string, pid int, podHostName string) {
+	podfileLog, exists := ReqHostLog[reqHost]
+	if !exists {
+		podfileLog = &PodFileLog{
+			hostCount:   0,
+			cacheMissPods: make(map[string]int),
+			pids:      make(map[int]int), 
+			labelsCountMap:     make(map[string]int),
+		}
 	}
-	return slice
-}
-
-func logReqHostPodResolution() {
-	
+	podfileLog.hostCount++
+	if labelsJson == "" {
+		podfileLog.cacheMissPods[podHostName]++
+	}else{
+		var labelsMap map[string]string
+		if err := json.Unmarshal([]byte(labelsJson), &labelsMap); err == nil {
+			for labelName, value := range labelsMap {
+				if slices.Contains(SERVICE_IDENTIFIER_LABELS, labelName) {
+					podfileLog.labelsCountMap[labelName+ ":" + value]++ 
+				}
+			}
+		} else {
+			slog.Error("Failed to unmarshal labels JSON", "error", err)
+		}
+		reqHostPodResolutionLog.WriteString(fmt.Sprintf("reqHost: %s,\t labels: %s, \t pid: %d, podHostName: %s\n", reqHost, labelsJson, pid, podHostName))
+	}
+	podfileLog.pids[pid]++
+	ReqHostLog[reqHost] = podfileLog
 }
 
 
 
 func init() {
 	trafficUtils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
+	reqHostPodResolutionLog.WriteString("reqHost\tlabelsCount\tpidCount\tcacheMisspodHostName\n")
 }
 
 type PodInformer struct {
@@ -173,10 +193,10 @@ func (w *PodInformer) logPodLabelsMapFile() {
 	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
 		labelsMap, _ := value.(map[string]string)
 
-		// For each pod, we only log the labels that are in labelNames
+		// For each pod, we only log the labels that are in SERVICE_IDENTIFIER_LABELS  
 		var labelString strings.Builder
 		for labelName, value := range labelsMap {
-			if slices.Contains(labelNames, labelName){
+			if slices.Contains(SERVICE_IDENTIFIER_LABELS, labelName){
 				labelString.WriteString(fmt.Sprintf("%s=%s, ", labelName, value))
 			}
 		}
