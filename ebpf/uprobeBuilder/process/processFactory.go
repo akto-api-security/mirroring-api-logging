@@ -49,7 +49,7 @@ func NewFactory() *ProcessFactory {
 
 var (
 	probeAllPid = false
-	logCounter = 0
+	logCounter  = 0
 )
 
 func init() {
@@ -132,7 +132,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				hostName:    ReadEnvVarForProcessId("HOSTNAME", pid),
 			}
 			slog.Debug("Process found", "pid", pid, "containerId", containers[0], "hostName", processFactory.processMap[pid].hostName)
-			
+
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {
 				slog.Debug("No libraries for process", "pid", pid, "error", err)
@@ -192,13 +192,13 @@ func (processFactory *ProcessFactory) logProcessMap() {
 	var builder strings.Builder
 
 	// Write headers
-	builder.WriteString("PID\tHostname\tContainerId\n")
+	fmt.Fprintf(&builder, "PID\tHostname\n")
 
 	// Write process data
 	processFactory.mutex.RLock()
 	defer processFactory.mutex.RUnlock()
 	for pid, p := range processFactory.processMap {
-		builder.WriteString(fmt.Sprintf("%d\t%s\t%s\n", pid, p.hostName, p.containerId))
+		fmt.Fprintf(&builder, "%d\t%s\t\n", pid, p.hostName)
 	}
 
 	// Log to file in one go

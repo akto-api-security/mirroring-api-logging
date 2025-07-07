@@ -186,8 +186,8 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 
 func (w *PodInformer) logPodLabelsMapFile() {
 	var builder strings.Builder
-	builder.WriteString("PodName\tLabels:\n")
-	
+	fmt.Fprintf(&builder, "PodName\tLabels:\n")
+
 	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
 		labelsMap, _ := value.(map[string]string)
 
@@ -198,7 +198,7 @@ func (w *PodInformer) logPodLabelsMapFile() {
 				labelString.WriteString(fmt.Sprintf("%s=%s, ", labelName, value))
 			}
 		}
-		builder.WriteString(fmt.Sprintf("%s\t%s\n", key, labelString.String()))
+		fmt.Fprintf(&builder, "%s\t%s\n", key, labelString.String())
 		return true
 	})
 	utils.LogToSpecificFile(utils.LabelsMapLogFile, builder.String())
