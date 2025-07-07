@@ -88,21 +88,21 @@ const (
 	ResolveLabelsLogFile = HOST_MAPPING_PATH + "resolvelabels.txt"
 )
 
-func SetupFileLogger(filePath string, logLevel slog.Level) {
+func SetupFileLogger(filePath string) {
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	fileHandlers[filePath] = file
 	if err != nil {
-		fmt.Printf("Failed to open log file: %s, error: %v\n", filePath, err)
+		slog.Error("Failed to open log file", "filePath", filePath, "error", err)
 		return
 	}
 
-	fmt.Printf("File logger setup done with level %d and file path %s\n", logLevel, filePath)
+	slog.Warn("File logger setup done with level", "and file path", filePath)
 }
 
 func LogToSpecificFile(filePath string, message string, args ...any) {
 	handler, exists := fileHandlers[filePath]
 	if !exists {
-		fmt.Printf("Logger for file %s is not initialized\n", filePath)
+		slog.Error("Logger not initialized for", "filePath", filePath)
 		return
 	}
 	if _, err := handler.WriteString(message); err != nil {
@@ -113,13 +113,13 @@ func LogToSpecificFile(filePath string, message string, args ...any) {
 }
 
 func SetupAllFileLoggers() {
-	if _, err := os.Stat(HOST_MAPPING_PATH); os.IsNotExist(err) {
-		os.Mkdir(HOST_MAPPING_PATH, 0755) 
+	if err := os.MkdirAll(HOST_MAPPING_PATH, 0755); err != nil {
+		slog.Error("Failed to create log directory", "path", HOST_MAPPING_PATH, "error", err)
 	}
-	SetupFileLogger(OSPidLogFile, slog.LevelInfo)
-	SetupFileLogger(GoPidLogFile, slog.LevelInfo)
-	SetupFileLogger(LabelsMapLogFile, slog.LevelInfo)
-	SetupFileLogger(ResolveLabelsLogFile, slog.LevelInfo)
+	SetupFileLogger(OSPidLogFile)
+	SetupFileLogger(GoPidLogFile)
+	SetupFileLogger(LabelsMapLogFile)
+	SetupFileLogger(ResolveLabelsLogFile)
 }
 
 func CloseAllFileLoggers() {
