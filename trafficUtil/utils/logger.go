@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -79,9 +78,8 @@ func HasLogIntervalPassed() bool {
 	return true
 }
 
-var fileLoggers = make(map[string]*slog.Logger)
 var fileHandlers = make(map[string]*os.File)
-const HOST_MAPPING_PATH = "/host/var/log/akto/"
+const HOST_MAPPING_PATH = "/ebpf/logs/akto/"
 
 const (
 	OSPidLogFile         = HOST_MAPPING_PATH + "ospidlog.txt"
@@ -98,22 +96,19 @@ func SetupFileLogger(filePath string, logLevel slog.Level) {
 		return
 	}
 
-	handler := slog.NewTextHandler(file, &slog.HandlerOptions{
-		AddSource: true,
-		Level:     logLevel,
-	})
-
-	fileLoggers[filePath] = slog.New(handler)
 	fmt.Printf("File logger setup done with level %d and file path %s\n", logLevel, filePath)
 }
 
-func LogToSpecificFile(filePath string, format string, args ...any) {
-	logger, exists := fileLoggers[filePath]
+func LogToSpecificFile(filePath string, message string, args ...any) {
+	handler, exists := fileHandlers[filePath]
 	if !exists {
 		fmt.Printf("Logger for file %s is not initialized\n", filePath)
 		return
 	}
-	logger.Log(context.Background(), slog.LevelInfo, format, args...)
+	if _, err := handler.WriteString(message); err != nil {
+		slog.Error("Failed to write to log file", "filePath", filePath, "error", err)
+		return
+	}
 
 }
 
