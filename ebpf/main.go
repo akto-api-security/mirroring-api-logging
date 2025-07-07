@@ -27,7 +27,6 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
-	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
