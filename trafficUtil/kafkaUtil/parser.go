@@ -120,12 +120,19 @@ func UpdateDebugStringsFromFile() {
 	}
 }
 
-func checkDebugUrlAndPrint(url string, message string) {
+func checkDebugUrlAndPrint(url string, host string, message string) {
+	// url or host. [array string]
 	if len(DebugStrings) > 0 {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
 				ctx := context.Background()
 				logMsg := fmt.Sprintf("%s : %s", message, url)
+				utils.PrintLogDebug(logMsg)
+				go ProduceLogs(ctx, logMsg, LogTypeInfo)
+				break
+			}else if strings.Contains(host, debugString) {
+				ctx := context.Background()
+				logMsg := fmt.Sprintf("%s : %s", message, host)
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
@@ -373,7 +380,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		url := req.URL.String()
-		checkDebugUrlAndPrint(url, "URL found in ParseAndProduce")
+		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
 
 		// build kafka payload for threat client
 		payload := &trafficpb.HttpResponseParam{
@@ -422,16 +429,19 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		var pid = idfd >> 32
+		log := fmt.Sprintf("pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
+			direction,
+			reqHeaderStr["host"],
+			value["path"],
+			sourceIp,
+			destIp,
+			value["socket_id"],
+			pid,
+			hostName,
+		)
+		checkDebugUrlAndPrint(url, req.Host, log)
 		if logCounter < maxLogs {
-			slog.Debug("pod direction log", "direction",
-				direction, "host",
-				reqHeaderStr["host"],
-				"path", value["path"],
-				"sourceIp", sourceIp, "destIp",
-				destIp, "socketId", value["socket_id"],
-				"processId", pid,
-				"hostName", hostName,
-			)
+			slog.Debug(log)
 			logCounter++
 		}
 
@@ -440,21 +450,21 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			// Shifting by 32 gives us the process id on host machine.
 
 			if hostName == "" {
-				checkDebugUrlAndPrint(url, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
+				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
 				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
 			} else {
 				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
-					checkDebugUrlAndPrint(url, "Error resolving pod labels "+hostName)
+					checkDebugUrlAndPrint(url, req.Host, "Error resolving pod labels "+hostName)
 				} else {
 					value["tag"] = podLabels
-					checkDebugUrlAndPrint(url, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
+					checkDebugUrlAndPrint(url, req.Host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
 					slog.Warn("Pod labels", "podName", hostName, "labels", podLabels)
 				}
 			}
 		} else {
-			checkDebugUrlAndPrint(url, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
+			checkDebugUrlAndPrint(url,req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
 		}
 
 		out, _ := json.Marshal(value)
