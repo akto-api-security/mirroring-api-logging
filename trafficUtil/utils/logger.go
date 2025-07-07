@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -22,7 +21,7 @@ var (
 // create a function that returns false is 10 seconds have not passed since the last call
 
 func SetupLogger() {
-	fmt.Println("Setting up logger")
+	slog.Warn("Setting up logger")
 	InitVar("INGEST_LOGS", &ingestLogs)
 	InitVar("PROCESS_LOGS", &processLogs)
 	InitVar("AKTO_LOG_LEVEL", &aktoLogLevel)
@@ -51,7 +50,7 @@ func SetupLogger() {
 		Level:     level,
 	})
 
-	fmt.Printf("Logger setup done with level %d and log level %s \n", level, aktoLogLevel)
+	slog.Warn("Logger setup done with level", "level", level, "log level", aktoLogLevel)
 	slog.SetDefault(slog.New(handler))
 	SetupAllFileLoggers()
 }
