@@ -7,7 +7,7 @@ import (
 
 func PassesFilter(filterHeaderValueMap map[string]string, reqHeaders map[string]string) bool {
 
-	if filterHeaderValueMap == nil || len(filterHeaderValueMap) == 0 {
+	if len(filterHeaderValueMap) == 0 {
 		return true
 	}
 
