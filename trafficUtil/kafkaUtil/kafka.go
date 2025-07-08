@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
@@ -105,7 +105,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
 			slog.Error("kafka error message", "err", err, "count", KafkaErrMsgCount, "messagesCount", len(messages))
-		}else{
+		} else {
 			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
 	}
@@ -217,17 +217,17 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 
 const (
 	LogTypeError = "ERROR"
-	LogTypeInfo = "INFO"
+	LogTypeInfo  = "INFO"
 )
 
 func ProduceLogs(ctx context.Context, message string, logType string) error {
 	value := map[string]string{
-			"message":            message,
-			"logType":            logType,
-			"source":            "AKTO_K8S_EBPF",
-			"time":            fmt.Sprint(time.Now().Unix()),
-		}
-		out, _ := json.Marshal(value)
+		"message": message,
+		"logType": logType,
+		"source":  "AKTO_K8S_EBPF",
+		"time":    fmt.Sprint(time.Now().Unix()),
+	}
+	out, _ := json.Marshal(value)
 
 	topic := "akto.api.producer.logs"
 	msg := kafka.Message{
@@ -288,7 +288,6 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		WriteTimeout: batchTimeout,
 		Async:        true,
 		Balancer:     &kafka.Hash{},
-		Compression:  kafka.Zstd,
 	}
 
 	if useTLS {
