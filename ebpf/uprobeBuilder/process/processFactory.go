@@ -181,7 +181,6 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 		}
 	}
 	slog.Debug("Process probing completed", "count", len(processFactory.processMap))
-	processFactory.logProcessMap()
 }
 
 func (processFactory *ProcessFactory) logProcessMap() {
