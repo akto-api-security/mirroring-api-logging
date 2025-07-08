@@ -193,8 +193,9 @@ func (w *PodInformer) BuildPidHostNameMap() {
 	w.logPidHostNameMap()
 }
 
-func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
+func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (string, error) {
 	slog.Debug("Resolving Pod Name to labels", "podName", podName)
+	checkDebugUrlAndPrint(url, reqHost, "Resolving Pod Name to labels for "+podName)
 
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
 	// Hostname captured from PID has the format clusterName-nodeName-podName
@@ -211,6 +212,7 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 
 	if len(labelsMap) == 0 {
 		err := fmt.Errorf("pod labels cache miss for pod name: %s", podName)
+		checkDebugUrlAndPrint(url, reqHost, err.Error())
 		return "", err
 	}
 

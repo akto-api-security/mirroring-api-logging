@@ -453,7 +453,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
 				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
 			} else {
-				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName)
+				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, req.Host)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
 					checkDebugUrlAndPrint(url, req.Host, "Error resolving pod labels "+hostName)
