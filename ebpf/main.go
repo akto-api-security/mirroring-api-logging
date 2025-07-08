@@ -113,6 +113,11 @@ func run() {
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
 
+	stopCh, err := kafkaUtil.SetupPodInformer()
+	if err != nil {
+		slog.Error("Failed to setup pod watcher", "error", err)
+	}
+
 	connectionFactory := connections.NewFactory()
 
 	trafficMetrics.InitTrafficMaps()
@@ -204,10 +209,6 @@ func run() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	stopCh, err := kafkaUtil.SetupPodInformer()
-	if err != nil {
-		slog.Error("Failed to setup pod watcher", "error", err)
-	}
 	slog.Info("sniffer is ready")
 	<-sig
 	if stopCh != nil {

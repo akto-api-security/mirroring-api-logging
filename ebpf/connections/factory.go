@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/google/uuid"
 )
 
@@ -118,7 +118,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		"srcIp", srcIpStr,
 	)
 
-	hostName := process.ProcessFactoryInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
+	hostName := kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id>>32))
 
 	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	if !disableEgress {

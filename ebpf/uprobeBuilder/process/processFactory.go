@@ -180,15 +180,16 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 		}
 	}
-	go processFactory.logProcessMap()
+	slog.Debug("Process probing completed", "count", len(processFactory.processMap))
+	processFactory.logProcessMap()
 }
 
 func (processFactory *ProcessFactory) logProcessMap() {
+	slog.Warn("Logging processMap to file", "file", utils.GoPidLogFile)
 	if logCounter > 3 {
 		slog.Warn("Process map logging skipped, already logged 3 times")
 		return
 	}
-	slog.Warn("Logging processMap to file", "file", utils.GoPidLogFile)
 	var builder strings.Builder
 
 	// Write headers
@@ -201,6 +202,7 @@ func (processFactory *ProcessFactory) logProcessMap() {
 		fmt.Fprintf(&builder, "%d\t%s\t\n", pid, p.hostName)
 	}
 
+	fmt.Fprintf(&builder, "-------Total processes tracked: %d----------\n", len(processFactory.processMap))
 	// Log to file in one go
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
 	logCounter++
@@ -210,10 +212,17 @@ func (processFactory *ProcessFactory) GetPodNameByProcessId(pid int32) string {
 	processFactory.mutex.RLock()
 	defer processFactory.mutex.RUnlock()
 	if p, ok := processFactory.processMap[pid]; ok {
-		slog.Debug("Processing tracker data hostname for", "processId", pid, "hostName", p.hostName)
+		slog.Debug("Hostname in processMap found for", "processId", pid, "hostName", p.hostName)
 		return p.hostName
 	}
-	slog.Debug("Processing tracker data hostname not found for", "processId", pid)
+	slog.Debug("Reading from filesystem, hostname not found for", "processId", pid)
+	hostName := ReadEnvVarForProcessId("HOSTNAME", pid)
+	if hostName != "" {
+		slog.Debug("Hostname read from filesystem for", "processId", pid, "hostName", hostName)
+		// processFactory.processMap
+		return hostName
+	}
+	slog.Debug("Hostname not found for", "processId", pid)
 	return ""
 }
 

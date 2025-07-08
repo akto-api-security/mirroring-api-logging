@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,16 +33,16 @@ import (
 )
 
 var KubeInjectEnabled = false
+
 // TODO: Make this configurable, or account based.
 var SERVICE_IDENTIFIER_LABELS = []string{"catalog.agoda.com/component", "privatecloud.agoda.com/service"}
 var PodInformerInstance *PodInformer
 
-
 type PodFileLog struct {
-	hostCount   int
-	cacheMissPods map[string]int
-	pids       map[int]int
-	labelsCountMap     map[string]int
+	hostCount      int
+	cacheMissPods  map[string]int
+	pids           map[int]int
+	labelsCountMap map[string]int
 }
 
 var ReqHostLog = make(map[string]*PodFileLog)
@@ -50,21 +52,21 @@ func logReqHostPodResolution(reqHost string, labelsJson string, pid int, podHost
 	podfileLog, exists := ReqHostLog[reqHost]
 	if !exists {
 		podfileLog = &PodFileLog{
-			hostCount:   0,
-			cacheMissPods: make(map[string]int),
-			pids:      make(map[int]int), 
-			labelsCountMap:     make(map[string]int),
+			hostCount:      0,
+			cacheMissPods:  make(map[string]int),
+			pids:           make(map[int]int),
+			labelsCountMap: make(map[string]int),
 		}
 	}
 	podfileLog.hostCount++
 	if labelsJson == "" {
 		podfileLog.cacheMissPods[podHostName]++
-	}else{
+	} else {
 		var labelsMap map[string]string
 		if err := json.Unmarshal([]byte(labelsJson), &labelsMap); err == nil {
 			for labelName, value := range labelsMap {
 				if slices.Contains(SERVICE_IDENTIFIER_LABELS, labelName) {
-					podfileLog.labelsCountMap[labelName+ ":" + value]++ 
+					podfileLog.labelsCountMap[labelName+":"+value]++
 				}
 			}
 		} else {
@@ -85,7 +87,9 @@ type PodInformer struct {
 	clientset        *kubernetes.Clientset
 	nodeName         string
 	podNameLabelsMap sync.Map // Maps pod names to their labels directly
+	pidHostNameMap   map[int32]string
 }
+
 
 func SetupPodInformer() (chan struct{}, error) {
 	if !KubeInjectEnabled {
@@ -98,6 +102,8 @@ func SetupPodInformer() (chan struct{}, error) {
 		slog.Error("Failed to initialize pod watcher", "error", err)
 		return nil, err
 	}
+	watcher.BuildPidHostNameMap()
+	slog.Info("PodInformer initialized successfully", "nodeName", watcher.nodeName)
 
 	stopCh := make(chan struct{})
 	// Start watching pods
@@ -151,7 +157,40 @@ func NewPodInformer() (*PodInformer, error) {
 		clientset:        clientset,
 		nodeName:         nodeName,
 		podNameLabelsMap: sync.Map{},
+		pidHostNameMap:   make(map[int32]string),
 	}, nil
+}
+
+func (w *PodInformer) GetPodNameByProcessId(pid int32) string {
+	if hostName, ok := w.pidHostNameMap[pid]; ok {
+		slog.Debug("Hostname in processMap found for", "processId", pid, "hostName", hostName)
+		return hostName
+	}
+	slog.Warn("Hostname not found for", "processId", pid)
+	return ""
+}
+
+func (w *PodInformer) BuildPidHostNameMap() {
+
+	cmd := exec.Command("sh", "-c", "for dir in /host/proc/[0-9]*; do pid=$(echo \"$dir\" | cut -d'/' -f4); if [ -f \"$dir/environ\" ]; then hostname=$(strings \"$dir/environ\" | grep '^HOSTNAME=' | cut -d'=' -f2); if [ -n \"$hostname\" ]; then echo \"$pid $hostname\"; fi; fi; done")
+	output, err := cmd.Output()
+	if err != nil {
+		slog.Error("Failed to execute shell command", "error", err)
+		return
+	}
+	slog.Debug("Shell command output for PID to Hostname mapping", "output", string(output))
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			pid, err := strconv.Atoi(parts[0])
+			if err == nil {
+				w.pidHostNameMap[int32(pid)] = parts[1]
+			}
+		}
+	}
+	slog.Info("PID to Hostname map built successfully", "map", w.pidHostNameMap)
+	w.logPidHostNameMap()
 }
 
 func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
@@ -184,6 +223,18 @@ func (w *PodInformer) ResolvePodLabels(podName string) (string, error) {
 	return string(labelsJSON), nil
 }
 
+func (w *PodInformer) logPidHostNameMap() {
+	slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "PID\tHostname:\n")
+
+	for pid, hostName := range w.pidHostNameMap {
+		fmt.Fprintf(&builder, "%d\t%s\n", pid, hostName)
+	}
+	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
+	slog.Warn("PID to Hostname Map logged", "map", w.pidHostNameMap)
+}
+
 func (w *PodInformer) logPodLabelsMapFile() {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PodName\tLabels:\n")
@@ -191,10 +242,10 @@ func (w *PodInformer) logPodLabelsMapFile() {
 	w.podNameLabelsMap.Range(func(key, value interface{}) bool {
 		labelsMap, _ := value.(map[string]string)
 
-		// For each pod, we only log the labels that are in SERVICE_IDENTIFIER_LABELS  
+		// For each pod, we only log the labels that are in SERVICE_IDENTIFIER_LABELS
 		var labelString strings.Builder
 		for labelName, value := range labelsMap {
-			if slices.Contains(SERVICE_IDENTIFIER_LABELS, labelName){
+			if slices.Contains(SERVICE_IDENTIFIER_LABELS, labelName) {
 				labelString.WriteString(fmt.Sprintf("%s=%s, ", labelName, value))
 			}
 		}
@@ -289,7 +340,8 @@ func (w *PodInformer) registerPodEventHandlers(podInformer cache.SharedIndexInfo
 	slog.Info("Pod event handlers registered")
 	return handler, err
 }
-// node, pod, daemonset, lastSyncTime 
+
+// node, pod, daemonset, lastSyncTime
 // node, podId, daemonset, lastSyncTime
 func (w *PodInformer) handlePodAdd(obj interface{}) {
 	pod, ok := obj.(*corev1.Pod)
