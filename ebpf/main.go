@@ -225,7 +225,7 @@ func run() {
 		slog.Info("Stopping pod watcher")
 		close(stopCh)
 	}
-	
+
 	slog.Info("signaled to terminate")
 }
 

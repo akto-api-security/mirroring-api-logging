@@ -10,16 +10,22 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
-	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
+
+var readerSlicePool = sync.Pool{
+	New: func() interface{} {
+		return make([]io.Reader, 0, 64)
+	},
+}
 
 var (
 	goodRequests               = 0
@@ -52,6 +58,13 @@ var (
 )
 
 const ONE_MINUTE = 60
+
+var bodyBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 0, 32*1024) // 32KB
+		return &buf
+	},
+}
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
@@ -97,24 +110,68 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
-func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
+func multiReaderFromMap(bufMap map[int][]byte) io.Reader {
+	if len(bufMap) == 0 {
+		return bytes.NewReader(nil)
+	}
+
+	var keys []int
+	for k := range bufMap {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
+	kPrev := -1
+	for _, k := range keys {
+		if kPrev == -1 {
+			if k != 1 {
+				utils.LogProcessing("Bad start sequence", "key", k)
+				return bytes.NewReader(nil)
+			}
+		} else {
+			if k != kPrev+1 {
+				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k)
+				return bytes.NewReader(nil)
+			}
+		}
+		kPrev = k
+	}
+
+	readers := readerSlicePool.Get().([]io.Reader)
+	readers = readers[:0] // reset
+
+	for _, k := range keys {
+		readers = append(readers, bytes.NewReader(bufMap[k]))
+	}
+
+	r := io.MultiReader(readers...)
+
+	readerSlicePool.Put(readers)
+
+	return r
+}
+
+func ParseAndProduce(receiveBuffer map[int][]byte, sentBuffer map[int][]byte, sourceIp string, destIp string, vxlanID int, isPending bool,
 	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
 
-	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
-	if shouldPrint {
-		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
-	}
+	//shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+	//if shouldPrint {
+	//	slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+	//}
 
-	reader := func() *bufio.Reader {
-		globalReaderLock.Lock()
-		defer globalReaderLock.Unlock()
-		globalReader.Reset(receiveBuffer)
-		return bufio.NewReader(globalReader)
-	}()
+	reader := bufio.NewReader(multiReaderFromMap(receiveBuffer))
+	shouldPrint := false
+
+	//reader := func() *bufio.Reader {
+	//	globalReaderLock.Lock()
+	//	defer globalReaderLock.Unlock()
+	//	globalReader.Reset(receiveBuffer)
+	//	return bufio.NewReader(globalReader)
+	//}()
 	i := 0
 	requests := []http.Request{}
 	requestsContent := []string{}
@@ -127,6 +184,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			return
 		}
+
+		bufPtr := bodyBufPool.Get().(*[]byte)
+		buf := *bufPtr
+		buf = buf[:0] // reset
+
 		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
@@ -139,19 +201,22 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		i++
 	}
 
-	if shouldPrint {
-		slog.Debug("ParseAndProduce", "count", i)
-	}
+	//if shouldPrint {
+	//	slog.Debug("ParseAndProduce", "count", i)
+	//}
 	if len(requests) == 0 {
 		return
 	}
+	//
+	//reader = func() *bufio.Reader {
+	//	globalReaderLock.Lock()
+	//	defer globalReaderLock.Unlock()
+	//	globalReader.Reset(sentBuffer)
+	//	return bufio.NewReader(globalReader)
+	//}()
 
-	reader = func() *bufio.Reader {
-		globalReaderLock.Lock()
-		defer globalReaderLock.Unlock()
-		globalReader.Reset(sentBuffer)
-		return bufio.NewReader(globalReader)
-	}()
+	reader = bufio.NewReader(multiReaderFromMap(sentBuffer))
+
 	i = 0
 
 	responses := []http.Response{}
@@ -196,6 +261,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		i++
 	}
 
+	if true {
+		return
+	}
+
 	if shouldPrint {
 
 		slog.Debug("ParseAndProduce", "count", i)
@@ -231,21 +300,21 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		id := ""
 
-		// build req headers for threat client
-		reqHeader := make(map[string]*trafficpb.StringList)
-		for name, values := range req.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
-					Values: []string{value},
-				}
-			}
-		}
-		ip := GetSourceIp(reqHeader, sourceIp)
+		// // build req headers for threat client
+		// reqHeader := make(map[string]*trafficpb.StringList)
+		// for name, values := range req.Header {
+		// 	// Loop over all values for the name.
+		// 	for _, value := range values {
+		// 		reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
+		// 			Values: []string{value},
+		// 		}
+		// 	}
+		// }
+		//ip := GetSourceIp(reqHeader, sourceIp)
 
-		reqHeader["host"] = &trafficpb.StringList{
-			Values: []string{req.Host},
-		}
+		// reqHeader["host"] = &trafficpb.StringList{
+		// 	Values: []string{req.Host},
+		// }
 
 		reqHeaderStr := make(map[string]string)
 		for name, values := range req.Header {
@@ -288,15 +357,15 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		// build resp headers for threat client
-		respHeader := make(map[string]*trafficpb.StringList)
-		for name, values := range resp.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
-					Values: []string{value},
-				}
-			}
-		}
+		// respHeader := make(map[string]*trafficpb.StringList)
+		// for name, values := range resp.Header {
+		// 	// Loop over all values for the name.
+		// 	for _, value := range values {
+		// 		respHeader[strings.ToLower(name)] = &trafficpb.StringList{
+		// 			Values: []string{value},
+		// 		}
+		// 	}
+		// }
 
 		// TODO: remove and use protobuf instead
 		respHeaderStr := make(map[string]string)
@@ -319,22 +388,22 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		// build kafka payload for threat client
-		payload := &trafficpb.HttpResponseParam{
-			Method:          req.Method,
-			Path:            req.URL.String(),
-			RequestHeaders:  reqHeader,
-			ResponseHeaders: respHeader,
-			RequestPayload:  requestsContent[i],
-			ResponsePayload: responsesContent[i],
-			Ip:              ip,
-			Time:            int32(time.Now().Unix()),
-			StatusCode:      int32(resp.StatusCode),
-			Type:            string(req.Proto),
-			Status:          resp.Status,
-			AktoAccountId:   fmt.Sprint(1000000),
-			AktoVxlanId:     fmt.Sprint(vxlanID),
-			IsPending:       isPending,
-		}
+		// payload := &trafficpb.HttpResponseParam{
+		// 	Method:          req.Method,
+		// 	Path:            req.URL.String(),
+		// 	RequestHeaders:  reqHeader,
+		// 	ResponseHeaders: respHeader,
+		// 	RequestPayload:  requestsContent[i],
+		// 	ResponsePayload: responsesContent[i],
+		// 	Ip:              ip,
+		// 	Time:            int32(time.Now().Unix()),
+		// 	StatusCode:      int32(resp.StatusCode),
+		// 	Type:            string(req.Proto),
+		// 	Status:          resp.Status,
+		// 	AktoAccountId:   fmt.Sprint(1000000),
+		// 	AktoVxlanId:     fmt.Sprint(vxlanID),
+		// 	IsPending:       isPending,
+		// }
 
 		reqHeaderString, _ := json.Marshal(reqHeaderStr)
 		respHeaderString, _ := json.Marshal(respHeaderStr)
@@ -413,7 +482,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			// Produce to kafka
 			// TODO : remove and use protobuf instead
 			go ProduceStr(ctx, string(out))
-			go Produce(ctx, payload)
+			//go Produce(ctx, payload)
 		}
 
 		i++

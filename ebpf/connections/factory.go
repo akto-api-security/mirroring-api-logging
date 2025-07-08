@@ -92,8 +92,8 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
 		return
 	}
-	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
-	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
+	//receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
+	//sentBuffer := convertToSingleByteArr(tracker.sentBuf)
 
 	originalInt := uint32(connID.Ip)
 	// Convert integer to little-endian byte slice
@@ -109,11 +109,11 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
-	if !disableEgress {
-		// attempt to parse the egress as well by switching the recv and sent buffers.
-		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
-	}
+	tryReadFromBD(destIpStr, srcIpStr, tracker, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
+	// if !disableEgress {
+	// 	// attempt to parse the egress as well by switching the recv and sent buffers.
+	// 	tryReadFromBD(srcIpStr, destIpStr, tracker, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
+	// }
 }
 
 func (factory *Factory) CanBeFilled() bool {

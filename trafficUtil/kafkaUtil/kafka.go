@@ -203,13 +203,15 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 				for _, part := range parts {
 					ip := strings.TrimSpace(part)
 					if ip != "" {
-						slog.Debug("Ip found in", "the header", header)
+						//slog.Debug("Ip found in", "the header", header)
 						return ip
 					}
 				}
 			}
 		}
 	}
+
+	//slog.Debug("No ip found in headers returning", "packetIp", packetIp)
 	return packetIp
 }
 
@@ -286,7 +288,6 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		WriteTimeout: batchTimeout,
 		Async:        true,
 		Balancer:     &kafka.Hash{},
-		Compression:  kafka.Zstd,
 	}
 
 	if useTLS {
