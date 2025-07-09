@@ -86,7 +86,7 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
-		err := ProduceStr(ctx, string(out))
+		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost")
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
@@ -274,7 +274,7 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 	return nil
 }
 
-func ProduceStr(ctx context.Context, message string) error {
+func ProduceStr(ctx context.Context, message string, url, reqHost string ) error {
 	// initialize the writer with the broker addresses, and the topic
 	topic := "akto.api.logs"
 	msg := kafka.Message{
@@ -288,6 +288,8 @@ func ProduceStr(ctx context.Context, message string) error {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}
+	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: " + message)
+
 	return nil
 }
 

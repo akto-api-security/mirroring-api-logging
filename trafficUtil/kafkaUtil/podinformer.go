@@ -355,6 +355,7 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 	slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Store(pod.Name, pod.Labels)
 	// Build the PID to Hostname map again to ensure it is up-to-date
+	// TODO: Optimize this ? What's the rate of pod add events?
 	w.BuildPidHostNameMap()
 	go ProducePodMapping(context.Background(), pod.Name)
 }
@@ -384,5 +385,6 @@ func (w *PodInformer) handlePodDelete(obj interface{}) {
 	slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Delete(pod.Name)
 	// Build the PID to Hostname map again to ensure it is up-to-date
+	// TODO: Optimize this ? What's the rate of pod add events?
 	w.BuildPidHostNameMap()
 }

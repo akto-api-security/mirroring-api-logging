@@ -77,8 +77,14 @@ func HasLogIntervalPassed() bool {
 	return true
 }
 
-var fileHandlers = make(map[string]*os.File)
+type textLogger struct {
+	handler      *os.File
+	lastWriteTime int64
+}
+
+var fileHandlers = make(map[string]*textLogger)
 const HOST_MAPPING_PATH = "/ebpf/logs/akto/"
+const LOG_ROTATE_INTERVAL = 60 * 5 // 5 minutes
 
 const (
 	OSPidLogFile         = HOST_MAPPING_PATH + "ospidlog.txt"
@@ -89,7 +95,10 @@ const (
 
 func SetupFileLogger(filePath string) {
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	fileHandlers[filePath] = file
+	fileHandlers[filePath] = &textLogger{
+		handler:      file,
+		lastWriteTime: time.Now().Unix(),
+	}
 	if err != nil {
 		slog.Error("Failed to open log file", "filePath", filePath, "error", err)
 		return
@@ -99,16 +108,24 @@ func SetupFileLogger(filePath string) {
 }
 
 func LogToSpecificFile(filePath string, message string, args ...any) {
-	handler, exists := fileHandlers[filePath]
+	textLogger, exists := fileHandlers[filePath]
 	if !exists {
 		slog.Error("Logger not initialized for", "filePath", filePath)
 		return
 	}
-	if _, err := handler.WriteString(message); err != nil {
+	now := time.Now().Unix()
+	if now-textLogger.lastWriteTime > LOG_ROTATE_INTERVAL {
+		// empty the file contents
+		if err := os.Truncate(filePath, 0); err != nil {
+			slog.Error("Failed to truncate log file", "filePath", filePath, "error", err)
+		}
+		slog.Debug("Truncated log file due to rotation interval", "filePath", filePath)
+	}
+	textLogger.lastWriteTime = now 
+	if _, err := textLogger.handler.WriteString(message); err != nil {
 		slog.Error("Failed to write to log file", "filePath", filePath, "error", err)
 		return
 	}
-
 }
 
 func SetupAllFileLoggers() {
@@ -122,8 +139,8 @@ func SetupAllFileLoggers() {
 }
 
 func CloseAllFileLoggers() {
-	for filePath, file := range fileHandlers {
-		err := file.Close()
+	for filePath, textLogger := range fileHandlers {
+		err := textLogger.handler.Close()
 		if err != nil {
 			slog.Error("Failed to close log file", "filePath", filePath, "error", err)
 			continue

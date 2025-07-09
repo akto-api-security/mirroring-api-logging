@@ -504,7 +504,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		} else {
 			// Produce to kafka
 			// TODO : remove and use protobuf instead
-			go ProduceStr(ctx, string(out))
+			go ProduceStr(ctx, string(out), url, req.Host)
 			go Produce(ctx, payload)
 		}
 
