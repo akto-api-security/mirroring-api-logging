@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/host"
@@ -18,28 +17,6 @@ var (
 	mapFileContentRegex = regexp.MustCompile("(?P<StartAddr>[a-f\\d]+)\\-(?P<EndAddr>[a-f\\d]+)\\s(?P<Perm>[^\\s]+)" +
 		"\\s(?P<Offset>[a-f\\d]+)\\s[a-f\\d]+\\:[a-f\\d]+\\s\\d+\\s+(?P<Name>[^\\n]+)")
 )
-
-
-func ReadEnvVarForProcessId(envVarname string, processId int32) (string) {
-	filePath := host.GetFileInHost("/proc/" + strconv.Itoa(int(processId)) + "/environ")
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		slog.Error("Failed to read environ file", "filePath", filePath, "error", err)
-		return ""
-	}
-
-	// Split the data by null character
-	parts := strings.Split(string(data), "\x00")
-	// Iterate through the parts to find the desired environment variable
-	for _, part := range parts {
-		if strings.HasPrefix(part, envVarname+"=") {
-			// Return the value of the environment variable
-			return strings.TrimPrefix(part, envVarname+"=")
-		}
-	}
-	slog.Warn("Environment variable not found", "envVarname", envVarname, "processId", processId)
-	return "" 
-}
 
 func CheckProcessCGroupBelongToKube(pid int32) ([]string, error) {
 	cgroupAbsPath := fmt.Sprintf("/proc/%d/cgroup", pid)

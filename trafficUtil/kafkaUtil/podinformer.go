@@ -163,7 +163,7 @@ func NewPodInformer() (*PodInformer, error) {
 
 func (w *PodInformer) GetPodNameByProcessId(pid int32) string {
 	if hostName, ok := w.pidHostNameMap[pid]; ok {
-		slog.Debug("Hostname in processMap found for", "processId", pid, "hostName", hostName)
+		slog.Debug("Hostname env found for", "processId", pid, "hostName", hostName)
 		return hostName
 	}
 	slog.Warn("Hostname not found for", "processId", pid)
@@ -354,7 +354,9 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 	}
 	slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Store(pod.Name, pod.Labels)
-	ProducePodMapping(context.Background(), pod.Name)
+	// Build the PID to Hostname map again to ensure it is up-to-date
+	w.BuildPidHostNameMap()
+	go ProducePodMapping(context.Background(), pod.Name)
 }
 
 func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
@@ -381,4 +383,6 @@ func (w *PodInformer) handlePodDelete(obj interface{}) {
 	}
 	slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Delete(pod.Name)
+	// Build the PID to Hostname map again to ensure it is up-to-date
+	w.BuildPidHostNameMap()
 }

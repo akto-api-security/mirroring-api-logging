@@ -1,7 +1,6 @@
 package process
 
 import (
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -25,7 +24,6 @@ type Process struct {
 	containerId string // cgroup
 	linkType    LinkType
 	probeType   ssl.ProbeType
-	hostName    string
 	// command     string // cmdline
 	// ppid        int32  // stat [4]
 }
@@ -129,9 +127,8 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			processFactory.processMap[pid] = Process{
 				pid:         pid,
 				containerId: containers[0],
-				hostName:    ReadEnvVarForProcessId("HOSTNAME", pid),
 			}
-			slog.Debug("Process found", "pid", pid, "containerId", containers[0], "hostName", processFactory.processMap[pid].hostName)
+			slog.Debug("Process found", "pid", pid, "containerId", containers[0])
 
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {
@@ -181,48 +178,6 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 		}
 	}
 	slog.Debug("Process probing completed", "count", len(processFactory.processMap))
-}
-
-func (processFactory *ProcessFactory) logProcessMap() {
-	slog.Warn("Logging processMap to file", "file", utils.GoPidLogFile)
-	if logCounter > 3 {
-		slog.Warn("Process map logging skipped, already logged 3 times")
-		return
-	}
-	var builder strings.Builder
-
-	// Write headers
-	fmt.Fprintf(&builder, "PID\tHostname\n")
-
-	// Write process data
-	processFactory.mutex.RLock()
-	defer processFactory.mutex.RUnlock()
-	for pid, p := range processFactory.processMap {
-		fmt.Fprintf(&builder, "%d\t%s\t\n", pid, p.hostName)
-	}
-
-	fmt.Fprintf(&builder, "-------Total processes tracked: %d----------\n", len(processFactory.processMap))
-	// Log to file in one go
-	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
-	logCounter++
-}
-
-func (processFactory *ProcessFactory) GetPodNameByProcessId(pid int32) string {
-	processFactory.mutex.RLock()
-	defer processFactory.mutex.RUnlock()
-	if p, ok := processFactory.processMap[pid]; ok {
-		slog.Debug("Hostname in processMap found for", "processId", pid, "hostName", p.hostName)
-		return p.hostName
-	}
-	slog.Debug("Reading from filesystem, hostname not found for", "processId", pid)
-	hostName := ReadEnvVarForProcessId("HOSTNAME", pid)
-	if hostName != "" {
-		slog.Debug("Hostname read from filesystem for", "processId", pid, "hostName", hostName)
-		// processFactory.processMap
-		return hostName
-	}
-	slog.Debug("Hostname not found for", "processId", pid)
-	return ""
 }
 
 func checkSelf(pid int32) bool {
