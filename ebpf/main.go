@@ -32,7 +32,6 @@ import (
 )
 
 var source string = ""
-var ProcessFactoryInstance *process.ProcessFactory
 
 func replaceBpfLogsMacros() {
 
@@ -173,15 +172,28 @@ func run() {
 
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
+			slog.Debug("Starting to attach to processes in ticker start")
 			ticker := time.NewTicker(pollInterval) // Create a ticker to trigger every minute
 			defer ticker.Stop()
 
-			// Calling once to start the process probing immediately
-			slog.Debug("Starting to attach to processes immediately")
-			AddProcessProbesTask(isRunning_2, mu_2, bpfModule)
 			for range ticker.C {
 				slog.Debug("Starting to attach to processes in ticker")
-				AddProcessProbesTask(isRunning_2, mu_2, bpfModule)
+				if !isRunning_2 {
+					mu_2.Lock()
+					if isRunning_2 {
+						mu_2.Unlock()
+						return
+					}
+					isRunning_2 = true
+					mu_2.Unlock()
+
+					slog.Info("Starting to attach to processes")
+					process.ProcessFactoryInstance.AddNewProcessesToProbe(bpfModule)
+					slog.Debug("Ended attaching to processes")
+					mu_2.Lock()
+					isRunning_2 = false
+					mu_2.Unlock()
+				}
 				slog.Debug("Ended attaching to processes in ticker")
 			}
 			slog.Debug("Ended attaching to processes in ticker end")
@@ -220,22 +232,6 @@ func run() {
 }
 
 func AddProcessProbesTask(isRunning_2 bool, mu_2 *sync.Mutex, bpfModule *bcc.Module) {
-	if !isRunning_2 {
-		mu_2.Lock()
-		if isRunning_2 {
-			mu_2.Unlock()
-			return
-		}
-		isRunning_2 = true
-		mu_2.Unlock()
-
-		slog.Info("Starting to attach to processes")
-		process.ProcessFactoryInstance.AddNewProcessesToProbe(bpfModule)
-		slog.Debug("Ended attaching to processes")
-		mu_2.Lock()
-		isRunning_2 = false
-		mu_2.Unlock()
-	}
 }
 
 func captureMemoryProfile() {
