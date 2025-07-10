@@ -14,8 +14,6 @@ var (
 	processLogs  bool = false
 	aktoLogLevel string
 	level        slog.Level    = slog.LevelWarn
-	logInterval  time.Duration = 120 * time.Second
-	lastCallTime time.Time
 )
 
 // create a function that returns false is 10 seconds have not passed since the last call
@@ -65,16 +63,6 @@ func LogProcessing(format string, args ...any) {
 	if processLogs {
 		slog.Debug(format, args...)
 	}
-}
-
-// Returns false if 10 seconds have not passed since the last call
-func HasLogIntervalPassed() bool {
-	now := time.Now()
-	if now.Sub(lastCallTime) < logInterval {
-		return false
-	}
-	lastCallTime = now
-	return true
 }
 
 type textLogger struct {

@@ -41,7 +41,6 @@ var (
 		"TRACK":   true,
 		"PATCH":   true}
 	DebugStrings     = []string{}
-	logCounter       = 0
 	maxLogs          = 1000
 	globalReader     = &bytes.Reader{}
 	globalReaderLock sync.Mutex
@@ -440,10 +439,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			hostName,
 		)
 		checkDebugUrlAndPrint(url, req.Host, log)
-		if logCounter < maxLogs {
-			slog.Debug(log)
-			logCounter++
-		}
 
 		if PodInformerInstance != nil && direction == utils.DirectionInbound {
 			// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
@@ -460,7 +455,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				} else {
 					value["tag"] = podLabels
 					checkDebugUrlAndPrint(url, req.Host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
-					slog.Warn("Pod labels", "podName", hostName, "labels", podLabels)
+					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
 				}
 			}
 		} else {
