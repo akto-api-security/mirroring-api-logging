@@ -427,6 +427,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			"enable_graph":    fmt.Sprint(utils.EnableGraph),
 		}
 
+		// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
+		// Shifting by 32 gives us the process id on host machine.
 		var pid = idfd >> 32
 		log := fmt.Sprintf("pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
 			direction,
@@ -441,8 +443,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		checkDebugUrlAndPrint(url, req.Host, log)
 
 		if PodInformerInstance != nil && direction == utils.DirectionInbound {
-			// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
-			// Shifting by 32 gives us the process id on host machine.
 
 			if hostName == "" {
 				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
