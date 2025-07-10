@@ -38,49 +38,8 @@ var KubeInjectEnabled = false
 var SERVICE_IDENTIFIER_LABELS = []string{"catalog.agoda.com/component", "privatecloud.agoda.com/service"}
 var PodInformerInstance *PodInformer
 
-type PodFileLog struct {
-	hostCount      int
-	cacheMissPods  map[string]int
-	pids           map[int]int
-	labelsCountMap map[string]int
-}
-
-var ReqHostLog = make(map[string]*PodFileLog)
-var reqHostPodResolutionLog strings.Builder
-
-func logReqHostPodResolution(reqHost string, labelsJson string, pid int, podHostName string) {
-	podfileLog, exists := ReqHostLog[reqHost]
-	if !exists {
-		podfileLog = &PodFileLog{
-			hostCount:      0,
-			cacheMissPods:  make(map[string]int),
-			pids:           make(map[int]int),
-			labelsCountMap: make(map[string]int),
-		}
-	}
-	podfileLog.hostCount++
-	if labelsJson == "" {
-		podfileLog.cacheMissPods[podHostName]++
-	} else {
-		var labelsMap map[string]string
-		if err := json.Unmarshal([]byte(labelsJson), &labelsMap); err == nil {
-			for labelName, value := range labelsMap {
-				if slices.Contains(SERVICE_IDENTIFIER_LABELS, labelName) {
-					podfileLog.labelsCountMap[labelName+":"+value]++
-				}
-			}
-		} else {
-			slog.Error("Failed to unmarshal labels JSON", "error", err)
-		}
-		reqHostPodResolutionLog.WriteString(fmt.Sprintf("reqHost: %s,\t labels: %s, \t pid: %d, podHostName: %s\n", reqHost, labelsJson, pid, podHostName))
-	}
-	podfileLog.pids[pid]++
-	ReqHostLog[reqHost] = podfileLog
-}
-
 func init() {
 	utils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
-	reqHostPodResolutionLog.WriteString("reqHost\tlabelsCount\tpidCount\tcacheMisspodHostName\n")
 }
 
 type PodInformer struct {
