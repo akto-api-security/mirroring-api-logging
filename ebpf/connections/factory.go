@@ -11,6 +11,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/google/uuid"
 )
 
@@ -109,10 +110,12 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
+	hostName := kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Fd>>32))
+
+	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, utils.DirectionOutbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	}
 }
 

@@ -10,6 +10,11 @@ import (
 
 var printCounter = 1000
 
+const (
+	DirectionInbound  = 1
+	DirectionOutbound = 2
+)
+
 /*
 Initial 1000 logs, marking as warn.
 Help in checking if the module started as expected.
@@ -19,6 +24,13 @@ func PrintLog(val string, args ...any) {
 		slog.Warn(val, args...)
 		printCounter--
 	}
+}
+
+/*
+Print all debug logs as warn.
+*/
+func PrintLogDebug(val string, args ...any) {
+	slog.Warn(val, args...)
 }
 
 var IgnoreIpTraffic = false
