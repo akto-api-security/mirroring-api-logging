@@ -35,7 +35,6 @@ type ProcessFactory struct {
 }
 
 var ProcessFactoryInstance *ProcessFactory
-
 // NewFactory creates a new instance of the factory.
 func NewFactory() *ProcessFactory {
 	return &ProcessFactory{
@@ -47,7 +46,6 @@ func NewFactory() *ProcessFactory {
 
 var (
 	probeAllPid = false
-	logCounter  = 0
 )
 
 func init() {
@@ -100,8 +98,6 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			slog.Debug("Not attempting for process", "pid", pid)
 			continue
 		}
-
-		// TODO: What if the pid was re-assgined to a different process?
 		_, ok = processFactory.processMap[pid]
 		if !ok {
 
@@ -120,15 +116,6 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 					continue
 				}
 			}
-			// TODO verify this change carefully.
-			// Can a PID be skipped due to CHeckProcessCGroupBelongToKube returning an error?
-			// Does the existing behaviour remain the same? We were trying to attach any one the ssl libraries.
-
-			processFactory.processMap[pid] = Process{
-				pid:         pid,
-				containerId: containers[0],
-			}
-			slog.Debug("Process found", "pid", pid, "containerId", containers[0])
 
 			libraries, err := FindLibrariesPathInMapFile(pid)
 			if err != nil {
@@ -142,10 +129,13 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
 			if attached {
-				pOld := processFactory.processMap[pid]
-				pOld.linkType = DynamicLink
-				pOld.probeType = ssl.OpenSSL
-				processFactory.processMap[pid] = pOld
+				p := Process{
+					pid:         pid,
+					containerId: containers[0],
+					linkType:    DynamicLink,
+					probeType:   ssl.OpenSSL,
+				}
+				processFactory.processMap[pid] = p
 				continue
 			} else if err != nil {
 				slog.Error("openSSL probing error", "pid", pid, "error", err)
@@ -153,10 +143,13 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
 			if attached {
-				pOld := processFactory.processMap[pid]
-				pOld.linkType = StaticLink
-				pOld.probeType = ssl.GoTLS
-				processFactory.processMap[pid] = pOld
+				p := Process{
+					pid:         pid,
+					containerId: containers[0],
+					linkType:    StaticLink,
+					probeType:   ssl.GoTLS,
+				}
+				processFactory.processMap[pid] = p
 				continue
 			} else if err != nil {
 				slog.Error("GoTLS probing error", "pid", pid, "error", err)
@@ -164,10 +157,13 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
 			if attached {
-				pOld := processFactory.processMap[pid]
-				pOld.linkType = StaticLink
-				pOld.probeType = ssl.Node
-				processFactory.processMap[pid] = pOld
+				p := Process{
+					pid:         pid,
+					containerId: containers[0],
+					linkType:    StaticLink,
+					probeType:   ssl.Node,
+				}
+				processFactory.processMap[pid] = p
 				continue
 			} else if err != nil {
 				slog.Error("Node probing error", "pid", pid, "error", err)
@@ -177,7 +173,6 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 		}
 	}
-	slog.Debug("Process probing completed", "count", len(processFactory.processMap))
 }
 
 func checkSelf(pid int32) bool {
