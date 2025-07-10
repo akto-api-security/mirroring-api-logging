@@ -231,9 +231,6 @@ func run() {
 	slog.Info("signaled to terminate")
 }
 
-func AddProcessProbesTask(isRunning_2 bool, mu_2 *sync.Mutex, bpfModule *bcc.Module) {
-}
-
 func captureMemoryProfile() {
 	f, _ := os.Create("mem.prof") // Create memory profile file
 	defer f.Close()
