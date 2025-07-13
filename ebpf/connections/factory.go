@@ -16,17 +16,81 @@ import (
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
-	processor   map[structs.ConnID]chan interface{}
-	connections map[structs.ConnID]*Tracker
-	mutex       *sync.RWMutex
+	processor        map[structs.ConnID]chan interface{}
+	connections      map[structs.ConnID]*Tracker
+	mutex            *sync.RWMutex
+	trackersToDelete sync.Map
 }
 
 // NewFactory creates a new instance of the factory.
 func NewFactory() *Factory {
-	return &Factory{
-		processor:   make(map[structs.ConnID]chan interface{}),
-		connections: make(map[structs.ConnID]*Tracker),
-		mutex:       &sync.RWMutex{},
+	f := &Factory{
+		processor:        make(map[structs.ConnID]chan interface{}),
+		connections:      make(map[structs.ConnID]*Tracker),
+		mutex:            &sync.RWMutex{},
+		trackersToDelete: sync.Map{},
+	}
+
+	f.StartCleanupWorker()
+	return f
+}
+
+func (factory *Factory) StartCleanupWorker() {
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+
+			now := time.Now()
+			factory.trackersToDelete.Range(func(key, value interface{}) bool {
+				connID := key.(structs.ConnID)
+				markedAt := value.(time.Time)
+
+				if now.Sub(markedAt) > 1*time.Second {
+					fmt.Println("Proceed to force delete event channel", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+					factory.forceDeleteWorker(connID)
+					factory.trackersToDelete.Delete(connID)
+				}
+				return true
+			})
+		}
+	}()
+}
+
+func (factory *Factory) forceDeleteWorker(connectionID structs.ConnID) {
+	factory.mutex.Lock()
+	defer factory.mutex.Unlock()
+
+	if ch, exists := factory.processor[connectionID]; exists {
+		close(ch)
+		delete(factory.processor, connectionID)
+		fmt.Println("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+	}
+
+	if _, exists := factory.connections[connectionID]; exists {
+		delete(factory.connections, connectionID)
+		fmt.Println("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		requestProcessCount++
+	}
+
+	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
+		lastMemCheck = time.Now().UnixMilli()
+		mem := utils.LogMemoryStats()
+		fmt.Println("Requests processed", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		fmt.Println("connection factory size", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		requestProcessCount = 0
+		if mem >= bufferMemThreshold {
+			trackersToDelete := make(map[structs.ConnID]struct{})
+			for k := range factory.connections {
+				trackersToDelete[k] = struct{}{}
+			}
+			for key := range trackersToDelete {
+				if ch, exists := factory.processor[key]; exists {
+					close(ch)
+					delete(factory.processor, key)
+				}
+				delete(factory.connections, key)
+			}
+		}
 	}
 }
 
@@ -209,7 +273,6 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					factory.ProcessAndStopWorker(connID)
 					factory.DeleteWorker(connID)
 					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					return
 				}
 
 			case <-inactivityTimer.C:
@@ -235,40 +298,7 @@ func (factory *Factory) ProcessAndStopWorker(connectionID structs.ConnID) {
 func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
-
-	if ch, exists := factory.processor[connectionID]; exists {
-		close(ch)
-		delete(factory.processor, connectionID)
-		utils.LogProcessing("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-	}
-
-	if _, exists := factory.connections[connectionID]; exists {
-		delete(factory.connections, connectionID)
-		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-		requestProcessCount++
-	}
-
-	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
-		lastMemCheck = time.Now().UnixMilli()
-		mem := utils.LogMemoryStats()
-		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
-		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
-		requestProcessCount = 0
-		if mem >= bufferMemThreshold {
-			trackersToDelete := make(map[structs.ConnID]struct{})
-			utils.LogProcessing("Deleting all trackers at mem", "mem", mem)
-			for k := range factory.connections {
-				trackersToDelete[k] = struct{}{}
-			}
-			for key := range trackersToDelete {
-				if ch, exists := factory.processor[key]; exists {
-					close(ch)
-					delete(factory.processor, key)
-				}
-				delete(factory.connections, key)
-			}
-		}
-	}
+	factory.trackersToDelete.Store(connectionID, time.Now())
 }
 
 func (factory *Factory) getChannel(connectionID structs.ConnID) (chan interface{}, bool) {
