@@ -81,15 +81,14 @@ const (
 
 func SetupFileLogger(filePath string) {
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	fileHandlers[filePath] = &textLogger{
-		handler:      file,
-		lastWriteTime: time.Now().Unix(),
-	}
 	if err != nil {
 		slog.Error("Failed to open log file", "filePath", filePath, "error", err)
 		return
 	}
-
+	fileHandlers[filePath] = &textLogger{
+		handler:      file,
+		lastWriteTime: time.Now().Unix(),
+	}
 	slog.Warn("File logger setup done", "filePath", filePath)
 }
 
