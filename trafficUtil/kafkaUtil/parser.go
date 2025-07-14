@@ -254,7 +254,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 		if err == nil {
-			body, _ = io.ReadAll(r)
+			body, err = io.ReadAll(r)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
+				return
+			}
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()
 			}
