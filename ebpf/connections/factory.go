@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/google/uuid"
 )
+
+var httpBytes = []byte("HTTP")
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
@@ -38,15 +41,15 @@ func NewFactory() *Factory {
 func (factory *Factory) StartCleanupWorker() {
 	go func() {
 		for {
-			time.Sleep(1 * time.Second)
+			time.Sleep(100 * time.Millisecond)
 
 			now := time.Now()
 			factory.trackersToDelete.Range(func(key, value interface{}) bool {
 				connID := key.(structs.ConnID)
 				markedAt := value.(time.Time)
 
-				if now.Sub(markedAt) > 1*time.Second {
-					fmt.Println("Proceed to force delete event channel", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+				if now.Sub(markedAt) > 100*time.Millisecond {
+					factory.ProcessAndStopWorker(connID)
 					factory.forceDeleteWorker(connID)
 					factory.trackersToDelete.Delete(connID)
 				}
@@ -75,8 +78,9 @@ func (factory *Factory) forceDeleteWorker(connectionID structs.ConnID) {
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
 		lastMemCheck = time.Now().UnixMilli()
 		mem := utils.LogMemoryStats()
-		fmt.Println("Requests processed", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-		fmt.Println("connection factory size", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+
+		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})
@@ -173,10 +177,14 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
+	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
+	}
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
+		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
+			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
+		}
 	}
 }
 
@@ -270,7 +278,6 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
-					factory.ProcessAndStopWorker(connID)
 					factory.DeleteWorker(connID)
 					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				}
@@ -278,8 +285,9 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-				factory.ProcessAndStopWorker(connID)
-				factory.DeleteWorker(connID)
+				if !tracker.IsComplete() {
+					factory.DeleteWorker(connID)
+				}
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
 			}

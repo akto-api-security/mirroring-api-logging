@@ -47,6 +47,7 @@ var (
 		"partner/qa/v2/products",
 		"partner/v2/products",
 	}
+	EventChanBuffSize = 100000
 )
 
 const ONE_MINUTE = 60
@@ -54,6 +55,7 @@ const ONE_MINUTE = 60
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
+	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
@@ -64,6 +66,7 @@ func init() {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
+	slog.Debug("EventChanBuffSize value ", EventChanBuffSize)
 }
 
 func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
@@ -151,13 +154,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP Request error: %s\n", err))
+			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
 			return
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 			return
 		}
 		encoding := resp.Header["Content-Encoding"]
