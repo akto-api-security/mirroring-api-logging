@@ -282,6 +282,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost string ) error
 		Value: []byte(message),
 	}
 
+	kafkaWriter.Compression = compress.Zstd
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
@@ -320,6 +321,7 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		WriteTimeout: batchTimeout,
 		Async:        true,
 		Balancer:     &kafka.Hash{},
+		Compression:  kafka.Zstd,
 	}
 
 	if useTLS {
