@@ -90,7 +90,7 @@ func SetupFileLogger(filePath string) {
 		return
 	}
 
-	slog.Warn("File logger setup done with level", "and file path", filePath)
+	slog.Warn("File logger setup done", "filePath", filePath)
 }
 
 func LogToSpecificFile(filePath string, message string, args ...any) {
