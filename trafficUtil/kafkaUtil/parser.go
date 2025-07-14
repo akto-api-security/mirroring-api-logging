@@ -354,6 +354,12 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			continue
 		}
 
+		if utils.IgnoreEnvoyProxycalls && sourceIp == utils.EnvoyProxyIp && direction == utils.DirectionOutbound {
+			slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", sourceIp, "url", req.URL.String(), "host", req.Host)
+			i++
+			continue
+		}
+
 		var skipPacket = utils.FilterPacket(reqHeaderStr)
 
 		if skipPacket {

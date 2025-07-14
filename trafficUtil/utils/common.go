@@ -35,14 +35,18 @@ func PrintLogDebug(val string, args ...any) {
 
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
+var IgnoreEnvoyProxycalls = false
 var EnableGraph = true
 var ThreatEnabled = false
+
+const EnvoyProxyIp = "127.0.0.6"
 
 func init() {
 	SetupLogger()
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_THREAT_ENABLED", &ThreatEnabled)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
+	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
 }
 
