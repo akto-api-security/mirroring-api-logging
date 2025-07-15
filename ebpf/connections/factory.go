@@ -48,7 +48,7 @@ func (factory *Factory) StartCleanupWorker() {
 				connID := key.(structs.ConnID)
 				markedAt := value.(time.Time)
 
-				if now.Sub(markedAt) > 100*time.Millisecond {
+				if now.Sub(markedAt) > time.Duration(trackerDataProcessInterval)*time.Millisecond {
 					factory.ProcessAndStopWorker(connID)
 					factory.forceDeleteWorker(connID)
 					factory.trackersToDelete.Delete(connID)
@@ -142,7 +142,8 @@ var (
 	bufferMemThreshold = 400
 
 	// unique id of daemonset
-	uniqueDaemonsetId = uuid.New().String()
+	uniqueDaemonsetId          = uuid.New().String()
+	trackerDataProcessInterval = 100
 )
 
 func init() {
@@ -151,6 +152,7 @@ func init() {
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
+	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -285,9 +287,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-				if !tracker.IsComplete() {
-					factory.DeleteWorker(connID)
-				}
+				factory.DeleteWorker(connID)
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
 			}
