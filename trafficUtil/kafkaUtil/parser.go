@@ -43,6 +43,8 @@ var (
 	DebugStrings     = []string{}
 	globalReader     = &bytes.Reader{}
 	globalReaderLock sync.Mutex
+
+	EventChanBuffSize = 100000
 )
 
 const ONE_MINUTE = 60
@@ -50,6 +52,7 @@ const ONE_MINUTE = 60
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
+	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
@@ -137,6 +140,7 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 			}
 		}
 	}
+	slog.Debug("EventChanBuffSize value ", EventChanBuffSize)
 }
 
 func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
@@ -180,12 +184,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
 
-	reader := func() *bufio.Reader {
-		globalReaderLock.Lock()
-		defer globalReaderLock.Unlock()
-		globalReader.Reset(receiveBuffer)
-		return bufio.NewReader(globalReader)
-	}()
+	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
 	i := 0
 	requests := []http.Request{}
 	requestsContent := []string{}
@@ -217,12 +216,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		return
 	}
 
-	reader = func() *bufio.Reader {
-		globalReaderLock.Lock()
-		defer globalReaderLock.Unlock()
-		globalReader.Reset(sentBuffer)
-		return bufio.NewReader(globalReader)
-	}()
+	reader = bufio.NewReader(bytes.NewReader(sentBuffer))
 	i = 0
 
 	responses := []http.Response{}
@@ -234,13 +228,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP Request error: %s\n", err))
+			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
 			return
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 			return
 		}
 		encoding := resp.Header["Content-Encoding"]
