@@ -315,7 +315,7 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 	// Build the PID to Hostname map again to ensure it is up-to-date
 	// TODO: Optimize this ? What's the rate of pod add events?
 	w.BuildPidHostNameMap()
-	go ProducePodMapping(context.Background(), pod.Name)
+	ProducePodMapping(context.Background(), pod.Name)
 }
 
 func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {

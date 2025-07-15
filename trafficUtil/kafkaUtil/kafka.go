@@ -96,10 +96,6 @@ func InitKafka() {
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
-			err := CreateKafkaTopic(kafka_url, "akto.podmapping.logs", false)
-			if err != nil {
-				slog.Error("error creating topic akto.podmapping.logs", "error", err)
-			}
 			break
 		}
 	}
@@ -177,18 +173,7 @@ func ProducePodMapping(ctx context.Context, podName string) error {
 	}
 
 	out, _:= json.Marshal(message)
-	msg := kafka.Message{
-		Topic: "akto.podmapping.logs",
-		Value: []byte(string(out)),
-	}
-
-	kafkaWriter.Compression = compress.None
-
-	err := kafkaWriter.WriteMessages(ctx, msg)
-	if err != nil {
-		slog.Error("Failed to write Kafka message", "error", err)
-		return err
-	}
+	go ProduceLogs(ctx, string(out), LogTypeDebug)
 	return nil
 }
 
@@ -247,6 +232,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 const (
 	LogTypeError = "ERROR"
 	LogTypeInfo  = "INFO"
+	LogTypeDebug = "DEBUG"
 )
 
 func ProduceLogs(ctx context.Context, message string, logType string) error {
@@ -320,7 +306,7 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		WriteTimeout: batchTimeout,
 		Async:        true,
 		Balancer:     &kafka.Hash{},
-		Compression:  kafka.Lz4,
+		Compression:  kafka.Zstd,
 	}
 
 	if useTLS {
@@ -330,37 +316,4 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		}
 	}
 	return &kafkaWriter
-}
-
-func CreateKafkaTopic(kafkaUrl string, topicName string, compressed bool) error {
-
-	conn, err := kafka.Dial("tcp", kafkaUrl)
-	if err != nil {
-		return fmt.Errorf("failed to connect to kafka broker: %v", err)
-	}
-	defer conn.Close()
-
-	// Create the topic
-	topic := kafka.TopicConfig{
-		Topic:             topicName,
-		NumPartitions:     1,
-		ReplicationFactor: 1,
-	}
-
-	if compressed {
-		topic.ConfigEntries = []kafka.ConfigEntry{
-			{
-				ConfigName:  "compression.type",
-				ConfigValue: "gzip",
-			},
-		}
-	}
-
-	err = conn.CreateTopics(topic)
-	if err != nil {
-		return fmt.Errorf("failed to create topic: %v", err)
-	}
-
-	slog.Warn("Kafka topic created successfully", "topic", topicName)
-	return nil
 }
