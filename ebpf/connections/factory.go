@@ -180,7 +180,10 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	hostName := kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id>>32))
+	hostName := ""
+	if kafkaUtil.PodInformerInstance != nil {
+		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id>>32))
+	}
 
 	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
