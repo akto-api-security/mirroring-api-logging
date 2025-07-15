@@ -23,7 +23,6 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
-	podutils "github.com/akto-api-security/mirroring-api-logging/trafficUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/db"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
@@ -111,6 +110,11 @@ func run() {
 	// this needs to be called before InitKafka
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
+
+	stopCh, err := kafkaUtil.SetupPodInformer()
+	if err != nil {
+		slog.Error("Failed to setup pod watcher", "error", err)
+	}
 
 	connectionFactory := connections.NewFactory()
 
@@ -215,10 +219,7 @@ func run() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	stopCh, err := podutils.SetupPodInformer()
-	if err != nil {
-		slog.Error("Failed to setup pod watcher", "error", err)
-	}
+
 	slog.Info("sniffer is ready")
 	<-sig
 	if stopCh != nil {
