@@ -269,7 +269,6 @@ func ProduceStr(ctx context.Context, message string, url, reqHost string ) error
 		Value: []byte(message),
 	}
 
-	kafkaWriter.Compression = compress.Zstd
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
