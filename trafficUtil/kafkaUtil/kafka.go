@@ -287,6 +287,7 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		WriteTimeout: batchTimeout,
 		Async:        true,
 		Balancer:     &kafka.Hash{},
+		Compression:  kafka.Lz4,
 	}
 
 	if useTLS {
