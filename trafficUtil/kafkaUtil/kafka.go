@@ -173,6 +173,7 @@ func ProducePodMapping(ctx context.Context, podName string) error {
 	}
 
 	out, _:= json.Marshal(message)
+	slog.Debug("Producing pod mapping", "podName", podName, "message", string(out))
 	go ProduceLogs(ctx, string(out), LogTypeDebug)
 	return nil
 }
@@ -241,8 +242,9 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 			"logType":            logType,
 			"source":            "AKTO_K8S_EBPF",
 			"time":            fmt.Sprint(time.Now().Unix()),
-		}
-		out, _ := json.Marshal(value)
+	}
+
+	out, _ := json.Marshal(value)
 
 	topic := "akto.api.producer.logs"
 	msg := kafka.Message{
