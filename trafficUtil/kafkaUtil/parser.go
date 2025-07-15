@@ -449,6 +449,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			pid,
 			hostName,
 		)
+		utils.PrintLog(log)
 		checkDebugUrlAndPrint(url, req.Host, log)
 
 		if PodInformerInstance != nil && direction == utils.DirectionInbound {
