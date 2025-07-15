@@ -17,7 +17,6 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 
 	"github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/compress"
 	"google.golang.org/protobuf/proto"
 )
 
