@@ -12,7 +12,6 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/google/uuid"
 )
 
@@ -67,12 +66,12 @@ func (factory *Factory) forceDeleteWorker(connectionID structs.ConnID) {
 	if ch, exists := factory.processor[connectionID]; exists {
 		close(ch)
 		delete(factory.processor, connectionID)
-		slog.Debug("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		fmt.Println("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 	}
 
 	if _, exists := factory.connections[connectionID]; exists {
 		delete(factory.connections, connectionID)
-		slog.Debug("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		fmt.Println("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
 	}
 
@@ -180,18 +179,13 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	ip = net.IP(byteSlice)
 	srcIpStr := ip.String() + ":" + fmt.Sprint(tracker.srcPort)
 
-	hostName := ""
-	if kafkaUtil.PodInformerInstance != nil {
-		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id>>32))
-	}
-
 	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
-		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId)
 	}
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
 		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId)
 		}
 	}
 }
