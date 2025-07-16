@@ -12,6 +12,7 @@ const LevelOff = slog.Level(99)
 var (
 	ingestLogs   bool = false
 	processLogs  bool = false
+	fileLogs    bool = false
 	aktoLogLevel string
 	level        slog.Level    = slog.LevelWarn
 )
@@ -21,6 +22,7 @@ func SetupLogger() {
 	InitVar("INGEST_LOGS", &ingestLogs)
 	InitVar("PROCESS_LOGS", &processLogs)
 	InitVar("AKTO_LOG_LEVEL", &aktoLogLevel)
+	InitVar("AKTO_FILE_LOGS", &fileLogs)
 
 	if aktoLogLevel != "" {
 		switch strings.ToUpper(aktoLogLevel) {
@@ -73,10 +75,8 @@ const HOST_MAPPING_PATH = "/ebpf/logs/akto/"
 const LOG_ROTATE_INTERVAL = 60 * 5 // 5 minutes
 
 const (
-	OSPidLogFile         = HOST_MAPPING_PATH + "ospidlog.txt"
 	GoPidLogFile         = HOST_MAPPING_PATH + "gopidlog.txt"
 	LabelsMapLogFile     = HOST_MAPPING_PATH + "labelsmaplog.txt"
-	ResolveLabelsLogFile = HOST_MAPPING_PATH + "resolvelabels.txt"
 )
 
 func SetupFileLogger(filePath string) {
@@ -93,6 +93,10 @@ func SetupFileLogger(filePath string) {
 }
 
 func LogToSpecificFile(filePath string, message string, args ...any) {
+	if !fileLogs {
+		slog.Warn("File logging is disabled, skipping log to file", "filePath", filePath)
+		return
+	}
 	textLogger, exists := fileHandlers[filePath]
 	if !exists {
 		slog.Error("Logger not initialized for", "filePath", filePath)
@@ -117,10 +121,8 @@ func SetupAllFileLoggers() {
 	if err := os.MkdirAll(HOST_MAPPING_PATH, 0755); err != nil {
 		slog.Error("Failed to create log directory", "path", HOST_MAPPING_PATH, "error", err)
 	}
-	SetupFileLogger(OSPidLogFile)
 	SetupFileLogger(GoPidLogFile)
 	SetupFileLogger(LabelsMapLogFile)
-	SetupFileLogger(ResolveLabelsLogFile)
 }
 
 // TODO: Call this somewhere in the shutdown process

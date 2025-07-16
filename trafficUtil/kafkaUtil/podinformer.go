@@ -193,7 +193,6 @@ func (w *PodInformer) logPidHostNameMap() {
 	}
 	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
-	slog.Warn("PID to Hostname Map logged", "map", w.pidHostNameMap)
 }
 
 func (w *PodInformer) logPodLabelsMapFile() {
