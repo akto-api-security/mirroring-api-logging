@@ -24,10 +24,25 @@ fi
 
 while :
 do
-if [[ "${ENABLE_LOGS}" == "false" ]]; then
-    ./ebpf-logging >> "$LOG_FILE" 2>&1 
-else
-    ./ebpf-logging
-fi
+    # Start the mirroring module in the background
+    if [[ "${ENABLE_LOGS}" == "false" ]]; then
+        /mirroring-api-logging >> "$LOG_FILE" 2>&1 &
+    else
+        /mirroring-api-logging &
+    fi
+    mirroring_pid=$!
+
+    # Monitor the process for 1 hour
+    elapsed=0
+    while [ $elapsed -lt 600 ]; do
+        if ! kill -0 $mirroring_pid 2>/dev/null; then
+            break
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    # Kill the mirroring process after 1 hour or if it stopped
+    kill $mirroring_pid 2>/dev/null
     sleep 2
 done
