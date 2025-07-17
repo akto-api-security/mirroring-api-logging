@@ -235,7 +235,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP Response error: %s\n", err))
+			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
 			return
 		}
 
