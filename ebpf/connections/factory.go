@@ -1,7 +1,6 @@
 package connections
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -16,86 +15,19 @@ import (
 	"github.com/google/uuid"
 )
 
-var httpBytes = []byte("HTTP")
-
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
-	processor        map[structs.ConnID]chan interface{}
-	connections      map[structs.ConnID]*Tracker
-	mutex            *sync.RWMutex
-	trackersToDelete sync.Map
+	processor   map[structs.ConnID]chan interface{}
+	connections map[structs.ConnID]*Tracker
+	mutex       *sync.RWMutex
 }
 
 // NewFactory creates a new instance of the factory.
 func NewFactory() *Factory {
-	f := &Factory{
-		processor:        make(map[structs.ConnID]chan interface{}),
-		connections:      make(map[structs.ConnID]*Tracker),
-		mutex:            &sync.RWMutex{},
-		trackersToDelete: sync.Map{},
-	}
-
-	f.StartCleanupWorker()
-	return f
-}
-
-func (factory *Factory) StartCleanupWorker() {
-	go func() {
-		for {
-			time.Sleep(100 * time.Millisecond)
-
-			now := time.Now()
-			factory.trackersToDelete.Range(func(key, value interface{}) bool {
-				connID := key.(structs.ConnID)
-				markedAt := value.(time.Time)
-
-				if now.Sub(markedAt) > time.Duration(trackerDataProcessInterval)*time.Millisecond {
-					factory.ProcessAndStopWorker(connID)
-					factory.forceDeleteWorker(connID)
-					factory.trackersToDelete.Delete(connID)
-				}
-				return true
-			})
-		}
-	}()
-}
-
-func (factory *Factory) forceDeleteWorker(connectionID structs.ConnID) {
-	factory.mutex.Lock()
-	defer factory.mutex.Unlock()
-
-	if ch, exists := factory.processor[connectionID]; exists {
-		close(ch)
-		delete(factory.processor, connectionID)
-		slog.Debug("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-	}
-
-	if _, exists := factory.connections[connectionID]; exists {
-		delete(factory.connections, connectionID)
-		slog.Debug("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-		requestProcessCount++
-	}
-
-	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
-		lastMemCheck = time.Now().UnixMilli()
-		mem := utils.LogMemoryStats()
-
-		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
-		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
-		requestProcessCount = 0
-		if mem >= bufferMemThreshold {
-			trackersToDelete := make(map[structs.ConnID]struct{})
-			for k := range factory.connections {
-				trackersToDelete[k] = struct{}{}
-			}
-			for key := range trackersToDelete {
-				if ch, exists := factory.processor[key]; exists {
-					close(ch)
-					delete(factory.processor, key)
-				}
-				delete(factory.connections, key)
-			}
-		}
+	return &Factory{
+		processor:   make(map[structs.ConnID]chan interface{}),
+		connections: make(map[structs.ConnID]*Tracker),
+		mutex:       &sync.RWMutex{},
 	}
 }
 
@@ -143,8 +75,7 @@ var (
 	bufferMemThreshold = 400
 
 	// unique id of daemonset
-	uniqueDaemonsetId          = uuid.New().String()
-	trackerDataProcessInterval = 100
+	uniqueDaemonsetId = uuid.New().String()
 )
 
 func init() {
@@ -153,7 +84,6 @@ func init() {
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
-	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -185,14 +115,10 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id>>32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
-		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-	}
+	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-		}
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	}
 }
 
@@ -286,13 +212,16 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
+					factory.ProcessAndStopWorker(connID)
 					factory.DeleteWorker(connID)
 					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+					return
 				}
 
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+				factory.ProcessAndStopWorker(connID)
 				factory.DeleteWorker(connID)
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
@@ -312,7 +241,40 @@ func (factory *Factory) ProcessAndStopWorker(connectionID structs.ConnID) {
 func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	factory.mutex.Lock()
 	defer factory.mutex.Unlock()
-	factory.trackersToDelete.Store(connectionID, time.Now())
+
+	if ch, exists := factory.processor[connectionID]; exists {
+		close(ch)
+		delete(factory.processor, connectionID)
+		utils.LogProcessing("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+	}
+
+	if _, exists := factory.connections[connectionID]; exists {
+		delete(factory.connections, connectionID)
+		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		requestProcessCount++
+	}
+
+	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
+		lastMemCheck = time.Now().UnixMilli()
+		mem := utils.LogMemoryStats()
+		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
+		requestProcessCount = 0
+		if mem >= bufferMemThreshold {
+			trackersToDelete := make(map[structs.ConnID]struct{})
+			utils.LogProcessing("Deleting all trackers at mem", "mem", mem)
+			for k := range factory.connections {
+				trackersToDelete[k] = struct{}{}
+			}
+			for key := range trackersToDelete {
+				if ch, exists := factory.processor[key]; exists {
+					close(ch)
+					delete(factory.processor, key)
+				}
+				delete(factory.connections, key)
+			}
+		}
+	}
 }
 
 func (factory *Factory) getChannel(connectionID structs.ConnID) (chan interface{}, bool) {

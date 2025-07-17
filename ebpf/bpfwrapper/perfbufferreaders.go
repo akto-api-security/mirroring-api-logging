@@ -2,7 +2,6 @@ package bpfwrapper
 
 import (
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"log"
 
 	"github.com/iovisor/gobpf/bcc"
@@ -37,7 +36,7 @@ func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 
 // Start initiate a goroutine for the event loop handler, for a lost events messages and the perf map.
 func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *connections.Factory) error {
-	probeChannel.eventChannel = make(chan []byte, kafkaUtil.EventChanBuffSize)
+	probeChannel.eventChannel = make(chan []byte, 100)
 	probeChannel.lostEventsChannel = make(chan uint64)
 
 	table := bcc.NewTable(module.TableId(probeChannel.name), module)
