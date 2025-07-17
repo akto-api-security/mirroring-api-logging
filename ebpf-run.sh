@@ -26,9 +26,9 @@ while :
 do
     # Start the mirroring module in the background
     if [[ "${ENABLE_LOGS}" == "false" ]]; then
-        /mirroring-api-logging >> "$LOG_FILE" 2>&1 &
+        ./ebpf-logging >> "$LOG_FILE" 2>&1 &
     else
-        /mirroring-api-logging &
+        ./ebpf-logging &
     fi
     mirroring_pid=$!
 
