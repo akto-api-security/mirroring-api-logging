@@ -241,7 +241,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 			return
 		}
 		encoding := resp.Header["Content-Encoding"]
