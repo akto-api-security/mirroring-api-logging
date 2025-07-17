@@ -237,6 +237,7 @@ func restartProcess() {
 
 	go func() {
 		for range ticker.C {
+			slog.Info("Restarting container")
 			os.Exit(3)
 		}
 	}()
