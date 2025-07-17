@@ -91,6 +91,8 @@ func run() {
 	}
 	source = string(byteString)
 
+	go restartProcess()
+
 	replaceBpfLogsMacros()
 	replaceMaxConnectionMapSize()
 	replaceArchType()
@@ -226,8 +228,18 @@ func run() {
 		slog.Info("Stopping pod watcher")
 		close(stopCh)
 	}
-	
+
 	slog.Info("signaled to terminate")
+}
+
+func restartProcess() {
+	ticker := time.NewTicker(10 * time.Minute)
+
+	go func() {
+		for range ticker.C {
+			os.Exit(3)
+		}
+	}()
 }
 
 func captureMemoryProfile() {
