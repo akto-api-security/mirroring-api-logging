@@ -64,6 +64,10 @@ func init() {
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
+		if !utils.FileLoggingEnabled {
+			slog.Info("File logging is not enabled, skipping debug URL file watcher")
+			return
+		}
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
