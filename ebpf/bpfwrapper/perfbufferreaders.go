@@ -36,7 +36,7 @@ func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 
 // Start initiate a goroutine for the event loop handler, for a lost events messages and the perf map.
 func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *connections.Factory) error {
-	probeChannel.eventChannel = make(chan []byte, 100)
+	probeChannel.eventChannel = make(chan []byte)
 	probeChannel.lostEventsChannel = make(chan uint64)
 
 	table := bcc.NewTable(module.TableId(probeChannel.name), module)
