@@ -17,6 +17,8 @@ import (
 
 var httpBytes = []byte("HTTP")
 
+var cleanupQueue = make(chan structs.ConnID, 100000)
+
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
 	processor        map[structs.ConnID]chan interface{}
@@ -35,6 +37,7 @@ func NewFactory() *Factory {
 	}
 
 	f.StartCleanupWorker()
+	f.StartCleanupWorkerPool(4)
 	return f
 }
 
@@ -49,14 +52,30 @@ func (factory *Factory) StartCleanupWorker() {
 				markedAt := value.(time.Time)
 
 				if now.Sub(markedAt) > time.Duration(trackerDataProcessInterval)*time.Millisecond {
-					factory.ProcessAndStopWorker(connID)
-					factory.forceDeleteWorker(connID)
-					factory.trackersToDelete.Delete(connID)
+					select {
+					case cleanupQueue <- connID:
+						slog.Debug("Pushed connection to cleanup queue", "connID", connID)
+					default:
+						slog.Warn("Cleanup queue is full", "connID", connID)
+					}
 				}
 				return true
 			})
 		}
 	}()
+}
+
+func (factory *Factory) StartCleanupWorkerPool(workerCount int) {
+	for i := 0; i < workerCount; i++ {
+		go func(workerID int) {
+			for connID := range cleanupQueue {
+				slog.Debug("Running cleanup worker", "id", workerID, "connID", connID)
+				factory.ProcessAndStopWorker(connID)
+				factory.forceDeleteWorker(connID)
+				factory.trackersToDelete.Delete(connID)
+			}
+		}(i)
+	}
 }
 
 func (factory *Factory) forceDeleteWorker(connectionID structs.ConnID) {
@@ -66,12 +85,12 @@ func (factory *Factory) forceDeleteWorker(connectionID structs.ConnID) {
 	if ch, exists := factory.processor[connectionID]; exists {
 		close(ch)
 		delete(factory.processor, connectionID)
-		fmt.Println("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		slog.Debug("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 	}
 
 	if _, exists := factory.connections[connectionID]; exists {
 		delete(factory.connections, connectionID)
-		fmt.Println("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+		slog.Debug("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
 	}
 
