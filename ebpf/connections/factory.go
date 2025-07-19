@@ -56,6 +56,7 @@ func (factory *Factory) StartCleanupWorker() {
 					case cleanupQueue <- connID:
 						slog.Debug("Pushed connection to cleanup queue", "connID", connID)
 					default:
+						factory.trackersToDelete.Delete(connID)
 						slog.Warn("Cleanup queue is full", "connID", connID)
 					}
 				}
