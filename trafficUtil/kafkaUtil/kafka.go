@@ -165,18 +165,17 @@ var CLIENT_IP_HEADERS = []string{
 
 func ProducePodMapping(ctx context.Context, podName string) error {
 	message := map[string]string{
-		"podName":     podName,
+		"podName":       podName,
 		"aktoDaemonSet": os.Getenv("POD_NAME"),
-		"nodeName":    os.Getenv("NODE_NAME"),
-		"lastUpdated": fmt.Sprint(time.Now().Format(time.RFC3339)),
+		"nodeName":      os.Getenv("NODE_NAME"),
+		"lastUpdated":   fmt.Sprint(time.Now().Format(time.RFC3339)),
 	}
 
-	out, _:= json.Marshal(message)
+	out, _ := json.Marshal(message)
 	slog.Debug("Producing pod mapping", "podName", podName, "message", string(out))
 	go ProduceLogs(ctx, string(out), LogTypeDebug)
 	return nil
 }
-
 
 func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 
@@ -237,10 +236,10 @@ const (
 
 func ProduceLogs(ctx context.Context, message string, logType string) error {
 	value := map[string]string{
-			"message":            message,
-			"logType":            logType,
-			"source":            "AKTO_K8S_EBPF",
-			"time":            fmt.Sprint(time.Now().Unix()),
+		"message": message,
+		"logType": logType,
+		"source":  "AKTO_K8S_EBPF",
+		"time":    fmt.Sprint(time.Now().Unix()),
 	}
 
 	out, _ := json.Marshal(value)
@@ -260,7 +259,7 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 	return nil
 }
 
-func ProduceStr(ctx context.Context, message string, url, reqHost string ) error {
+func ProduceStr(ctx context.Context, message string, url, reqHost string) error {
 	// initialize the writer with the broker addresses, and the topic
 	topic := "akto.api.logs"
 	msg := kafka.Message{
@@ -274,7 +273,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost string ) error
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}
-	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: " + message)
+	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: "+message)
 
 	return nil
 }
@@ -306,7 +305,7 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		WriteTimeout: batchTimeout,
 		Async:        true,
 		Balancer:     &kafka.Hash{},
-		Compression:  kafka.Zstd,
+		Compression:  kafka.Lz4,
 	}
 
 	if useTLS {

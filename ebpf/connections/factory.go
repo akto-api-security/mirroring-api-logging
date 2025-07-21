@@ -224,23 +224,20 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					tracker.AddCloseEvent(*e)
 
 					time.AfterFunc(100*time.Millisecond, func() {
-						fmt.Println("adding to delay chan")
 						delayedDeleteChan <- struct{}{}
 					})
-
-					factory.DeleteWorker(connID)
-					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					return
 				}
 
 			case <-delayedDeleteChan:
-				fmt.Println("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+				utils.LogProcessing("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+				factory.ProcessAndStopWorker(connID)
 				factory.DeleteWorker(connID)
 				return
 
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+				factory.ProcessAndStopWorker(connID)
 				factory.DeleteWorker(connID)
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return

@@ -40,9 +40,7 @@ var (
 		"TRACE":   true,
 		"TRACK":   true,
 		"PATCH":   true}
-	DebugStrings     = []string{}
-	globalReader     = &bytes.Reader{}
-	globalReaderLock sync.Mutex
+	DebugStrings = []string{}
 
 	EventChanBuffSize = 100000
 )
@@ -131,7 +129,7 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
-			}else if strings.Contains(host, debugString) {
+			} else if strings.Contains(host, debugString) {
 				ctx := context.Background()
 				logMsg := fmt.Sprintf("%s : %s", message, host)
 				utils.PrintLogDebug(logMsg)
@@ -140,7 +138,6 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 			}
 		}
 	}
-	slog.Debug("EventChanBuffSize value ", EventChanBuffSize)
 }
 
 func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
@@ -463,7 +460,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				}
 			}
 		} else {
-			checkDebugUrlAndPrint(url,req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
+			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
 		}
 
 		out, _ := json.Marshal(value)
