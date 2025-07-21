@@ -37,7 +37,7 @@ func NewFactory() *Factory {
 	}
 
 	f.StartCleanupWorker()
-	f.StartCleanupWorkerPool(4)
+	f.StartCleanupWorkerPool(40000)
 	return f
 }
 
