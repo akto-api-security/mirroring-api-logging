@@ -40,7 +40,11 @@ var (
 		"TRACE":   true,
 		"TRACK":   true,
 		"PATCH":   true}
-	DebugStrings = []string{}
+	DebugStrings     = []string{}
+	globalReader     = &bytes.Reader{}
+	globalReaderLock sync.Mutex
+
+	EventChanBuffSize = 100000
 )
 
 const ONE_MINUTE = 60
@@ -48,6 +52,7 @@ const ONE_MINUTE = 60
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
+	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
@@ -61,10 +66,6 @@ func init() {
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
-		if !utils.FileLoggingEnabled {
-			slog.Info("File logging is not enabled, skipping debug URL file watcher")
-			return
-		}
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -130,7 +131,7 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
-			} else if strings.Contains(host, debugString) {
+			}else if strings.Contains(host, debugString) {
 				ctx := context.Background()
 				logMsg := fmt.Sprintf("%s : %s", message, host)
 				utils.PrintLogDebug(logMsg)
@@ -139,6 +140,7 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 			}
 		}
 	}
+	slog.Debug("EventChanBuffSize value ", EventChanBuffSize)
 }
 
 func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
@@ -461,7 +463,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				}
 			}
 		} else {
-			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
+			checkDebugUrlAndPrint(url,req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
 		}
 
 		out, _ := json.Marshal(value)
