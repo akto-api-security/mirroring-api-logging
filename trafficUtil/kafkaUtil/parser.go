@@ -41,6 +41,8 @@ var (
 		"TRACK":   true,
 		"PATCH":   true}
 	DebugStrings = []string{}
+
+	EventChanBuffSize = 100000
 )
 
 const ONE_MINUTE = 60
@@ -48,6 +50,7 @@ const ONE_MINUTE = 60
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
+	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024

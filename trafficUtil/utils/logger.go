@@ -10,11 +10,11 @@ import (
 const LevelOff = slog.Level(99)
 
 var (
-	ingestLogs   bool = false
-	processLogs  bool = false
-	aktoLogLevel string
-	level        slog.Level    = slog.LevelWarn
-	FileLoggingEnabled bool = false
+	ingestLogs         bool = false
+	processLogs        bool = false
+	aktoLogLevel       string
+	level              slog.Level = slog.LevelWarn
+	FileLoggingEnabled bool       = false
 )
 
 func SetupLogger() {
@@ -66,17 +66,18 @@ func LogProcessing(format string, args ...any) {
 }
 
 type textLogger struct {
-	handler      *os.File
+	handler       *os.File
 	lastWriteTime int64
 }
 
 var fileHandlers = make(map[string]*textLogger)
+
 const HOST_MAPPING_PATH = "/ebpf/logs/akto/"
 const LOG_ROTATE_INTERVAL = 60 * 5 // 5 minutes
 
 const (
-	GoPidLogFile         = HOST_MAPPING_PATH + "gopidlog.txt"
-	LabelsMapLogFile     = HOST_MAPPING_PATH + "labelsmaplog.txt"
+	GoPidLogFile     = HOST_MAPPING_PATH + "gopidlog.txt"
+	LabelsMapLogFile = HOST_MAPPING_PATH + "labelsmaplog.txt"
 )
 
 func SetupFileLogger(filePath string) {
@@ -86,7 +87,7 @@ func SetupFileLogger(filePath string) {
 		return
 	}
 	fileHandlers[filePath] = &textLogger{
-		handler:      file,
+		handler:       file,
 		lastWriteTime: time.Now().Unix(),
 	}
 	slog.Warn("File logger setup done", "filePath", filePath)
@@ -111,7 +112,7 @@ func LogToSpecificFile(filePath string, message string, args ...any) {
 		}
 		slog.Debug("Truncated log file due to rotation interval", "filePath", filePath)
 	}
-	textLogger.lastWriteTime = now 
+	textLogger.lastWriteTime = now
 	if _, err := textLogger.handler.WriteString(message); err != nil {
 		slog.Error("Failed to write to log file", "filePath", filePath, "error", err)
 		return

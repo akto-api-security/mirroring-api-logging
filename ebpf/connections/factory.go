@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -10,10 +11,12 @@ import (
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/google/uuid"
 )
+
+var httpBytes = []byte("HTTP")
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
@@ -75,7 +78,8 @@ var (
 	bufferMemThreshold = 400
 
 	// unique id of daemonset
-	uniqueDaemonsetId = uuid.New().String()
+	uniqueDaemonsetId          = uuid.New().String()
+	trackerDataProcessInterval = 100
 )
 
 func init() {
@@ -84,6 +88,7 @@ func init() {
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
+	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -112,13 +117,17 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 
 	hostName := ""
 	if kafkaUtil.PodInformerInstance != nil {
-		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id>>32))
+		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+	}
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
+			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		}
 	}
 }
 
@@ -197,6 +206,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 
 		utils.LogProcessing("Starting go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 		inactivityTimer := time.NewTimer(inactivityThreshold)
+		delayedDeleteChan := make(chan struct{}, 1)
 
 		for {
 			select {
@@ -212,11 +222,17 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
-					factory.ProcessAndStopWorker(connID)
-					factory.DeleteWorker(connID)
-					utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					return
+
+					time.AfterFunc(100*time.Millisecond, func() {
+						delayedDeleteChan <- struct{}{}
+					})
 				}
+
+			case <-delayedDeleteChan:
+				utils.LogProcessing("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+				factory.ProcessAndStopWorker(connID)
+				factory.DeleteWorker(connID)
+				return
 
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
