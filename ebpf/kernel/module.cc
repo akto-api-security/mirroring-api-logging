@@ -394,19 +394,43 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     bytes_exchanged = bytes_exchanged_minus_1 + 1;
 
     size_t size_to_save = 0;
-    if (bytes_exchanged_minus_1 < MAX_MSG_SIZE) {
-        bpf_probe_read(&socket_data_event->msg, bytes_exchanged, args->buf);
-        size_to_save = bytes_exchanged;
-        socket_data_event->msg[size_to_save] = '\\0';
-    } else if (bytes_exchanged_minus_1 < 0x7fffffff) {
-        bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf);
-        size_to_save = MAX_MSG_SIZE;
+    size_t bytes_remaining = bytes_exchanged;
+    size_t current_offset = 0;
+    
+    // Process data in chunks
+    while (bytes_remaining > 0) {
+        size_t chunk_size = bytes_remaining < MAX_MSG_SIZE ? bytes_remaining : MAX_MSG_SIZE;
+        
+        // Read chunk from buffer at current offset
+        bpf_probe_read(&socket_data_event->msg, chunk_size, args->buf + current_offset);
+        size_to_save = chunk_size;
+        
+        // Add null terminator for string processing
+        if (chunk_size < MAX_MSG_SIZE) {
+            socket_data_event->msg[size_to_save] = '\\0';
+        }
+        
+        // Update event counters for chunk sequencing
+        if (is_send) {
+            conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
+            socket_data_event->writeEventsCount = conn_info->writeEventsCount;
+            socket_data_event->readEventsCount = conn_info->readEventsCount;
+        } else {
+            conn_info->readEventsCount = (conn_info->readEventsCount) + 1u;
+            socket_data_event->readEventsCount = conn_info->readEventsCount;
+            socket_data_event->writeEventsCount = conn_info->writeEventsCount;
+        }
+        
+        // Set bytes_sent for this chunk
+        socket_data_event->bytes_sent = is_send ? chunk_size : -chunk_size;
+        
+        // Submit this chunk
+        socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+        
+        // Update for next chunk
+        bytes_remaining -= chunk_size;
+        current_offset += chunk_size;
     }
-
-    
-    socket_data_event->bytes_sent *= size_to_save;
-    
-    socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
 
 }
 
