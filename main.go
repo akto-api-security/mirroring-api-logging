@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
@@ -54,17 +58,77 @@ func main() {
 	client := cloudwatchlogs.NewFromConfig(cfg)
 
 	// Define the log group arn
-	logGroupArn := os.Getenv("LOG_GROUP_ARN")
+	logGroupArn := os.Getenv("LOG_GROUP_AWS_ACCOUNT_ID")
 	if logGroupArn == "" {
-		log.Fatalf("LOG_GROUP_ARN environment variable is required")
+		log.Fatalf("LOG_GROUP_AWS_ACCOUNT_ID environment variable is required")
 	}
 
 	kafkaUtil.InitKafka()
 
-	utils.DebugLog("Starting log processer for log group: %s", logGroupArn)
+	monitored := make(map[string]bool)
+	var mu sync.Mutex
 
-	// Start monitoring the log group
-	if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArn); err != nil {
-		log.Fatalf("Error monitoring log group: %v", err)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			logGroups, err := fetchAllLogGroupARNs(context.TODO(), client, awsRegion)
+			if err != nil {
+				log.Printf("Failed to fetch log groups: %v", err)
+				continue
+			}
+
+			mu.Lock()
+			for _, arn := range logGroups {
+				if !monitored[arn] {
+					monitored[arn] = true
+					go func(logGroupArn string) {
+						utils.DebugLog("Starting log processor for new log group: %s", logGroupArn)
+						if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArn); err != nil {
+							log.Printf("Error monitoring log group %s: %v", logGroupArn, err)
+						}
+					}(arn)
+				}
+			}
+			mu.Unlock()
+
+			<-ticker.C
+		}
+	}()
+
+	select {}
+}
+
+
+func fetchAllLogGroupARNs(ctx context.Context, client *cloudwatchlogs.Client, region string) ([]string, error) {
+	var logGroupARNs []string
+	var nextToken *string
+
+	for {
+		resp, err := client.DescribeLogGroups(ctx, &cloudwatchlogs.DescribeLogGroupsInput{
+			NextToken: nextToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, lg := range resp.LogGroups {
+			if lg.Arn != nil {
+				arn := strings.TrimSuffix(*lg.Arn, ":*")
+				logGroupARNs = append(logGroupARNs, arn)
+			} else if lg.LogGroupName != nil {
+				// Fallback: build ARN manually
+				logGroupARNs = append(logGroupARNs, fmt.Sprintf("arn:aws:logs:%s:%s:log-group:%s",
+					region, os.Getenv("LOG_GROUP_AWS_ACCOUNT_ID"), *lg.LogGroupName))
+			}
+		}
+
+		if resp.NextToken == nil {
+			break
+		}
+		nextToken = resp.NextToken
 	}
+
+	return logGroupARNs, nil
 }

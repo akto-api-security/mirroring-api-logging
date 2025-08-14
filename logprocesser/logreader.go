@@ -77,7 +77,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		elapsed := time.Now().Unix()*1000 - now
 		if elapsed < 300000 {
-            utils.DebugLog("MonitorLogGroup() - Sleeping for %d milliseconds", 300000-elapsed)
+            utils.DebugLog("MonitorLogGroup() - Sleeping for %d milliseconds. Log group: %s", 300000-elapsed, logGroupArn)
 			time.Sleep(time.Duration(300000-elapsed) * time.Millisecond)
 		} else {
             utils.DebugLog("MonitorLogGroup() - Resetting last processed event time")
@@ -114,7 +114,7 @@ func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
                 utils.DebugLog("FetchLogStreams() - Adding log stream: %s", *stream.LogStreamName)
                 logStreams = append(logStreams, stream)
             } else {
-                utils.DebugLog("FetchLogStreams() - Discard all older log streams beyond this stream: %s", *stream.LogStreamName)
+                utils.DebugLog("FetchLogStreams() - Discard all older log streams beyond this stream: %s in log group: %s", *stream.LogStreamName, logGroupArn)
                 return logStreams, nil
             }
         }
