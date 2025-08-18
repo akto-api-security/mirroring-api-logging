@@ -3,3 +3,4 @@ mirroring-api-logging
 **/.vscode/
 temp
 **temp
+data-*

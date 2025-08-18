@@ -63,14 +63,12 @@ func InitKafka() {
 
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
-		utils.PrintLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
+		kafka_batch_size = 100
 	}
 
 	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
 	if e != nil {
-		utils.PrintLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
+		kafka_batch_time_secs = 10
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
