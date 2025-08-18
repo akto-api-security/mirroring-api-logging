@@ -384,14 +384,14 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         break;
     }
     size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) ? MAX_MSG_SIZE : bytes_remaining;
-    
-    if (current_size > MAX_MSG_SIZE) {
-        current_size = MAX_MSG_SIZE;
-    }
 
     size_t current_size_minus_1 = current_size - 1;
     asm volatile("" : "+r"(current_size_minus_1) :);
     current_size = current_size_minus_1 + 1;
+
+    if (current_size > MAX_MSG_SIZE) {
+        current_size = MAX_MSG_SIZE;
+    }
 
     if (current_size_minus_1 < MAX_MSG_SIZE) {
       bpf_probe_read(&socket_data_event->msg, current_size, args->buf + bytes_sent);
