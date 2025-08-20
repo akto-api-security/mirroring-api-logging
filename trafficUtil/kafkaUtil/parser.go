@@ -180,8 +180,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		return
 	}
 
-	slog.Warn("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
-
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
@@ -197,13 +195,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			fmt.Sprintf("HTTP-request error: %s \n", err)
+			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			return
 		}
 		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
-			fmt.Sprintf("Got body err: %s\n", err)
+			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
 			return
 		}
 
@@ -231,13 +229,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		} else if err != nil {
-			fmt.Sprintf("HTTP-Response error: %s\n", err)
+			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
 			return
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			fmt.Sprintf("Got err reading resp body: %s\n", err)
+			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 			return
 		}
 		encoding := resp.Header["Content-Encoding"]
@@ -246,14 +244,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
 			r, err = gzip.NewReader(r)
 			if err != nil {
-				fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err)
+				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
 				return
 			}
 		}
 		if err == nil {
 			body, err = io.ReadAll(r)
 			if err != nil {
-				fmt.Sprintf("Failed to read decompressed body: %s\n", err)
+				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
 				return
 			}
 			if _, ok := r.(*gzip.Reader); ok {
