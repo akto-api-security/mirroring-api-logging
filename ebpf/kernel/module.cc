@@ -7,7 +7,7 @@
 
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
-#define CHUNK_LIMIT 4
+#define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
 
 #define ARCH_TYPE 1
@@ -413,6 +413,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
+    bpf_trace_printk("current_size: %d i:%d, bytes_exchanged: %d", current_size, i, bytes_exchanged);
     unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
     bpf_trace_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000),tgid_fd, socket_data_event->msg);
   }
