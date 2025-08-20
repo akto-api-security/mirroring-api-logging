@@ -33,7 +33,7 @@ import (
 var source string = ""
 
 func replaceBpfChunkSizeMacros() {
-	chunkSizeLimit := 4
+	chunkSizeLimit := 10
 	trafficUtils.InitVar("BPF_CHUNK_SIZE_LIMIT", &chunkSizeLimit)
 	source = strings.Replace(source, "CHUNK_SIZE_LIMIT", strconv.Itoa(chunkSizeLimit), -1)
 }
