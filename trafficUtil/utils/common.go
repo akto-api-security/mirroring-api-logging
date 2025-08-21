@@ -76,6 +76,5 @@ func InitVar(envVarName string, targetVar interface{}) {
 			slog.Warn("Unsupported type for targetVar", "type", v)
 		}
 	} else {
-		slog.Warn("Missing env value, using default value", "name", envVarName)
 	}
 }
