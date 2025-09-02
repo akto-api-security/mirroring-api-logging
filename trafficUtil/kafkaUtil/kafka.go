@@ -39,9 +39,9 @@ func init() {
 	utils.InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
 	utils.InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
 
-	InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
-	InitVar("KAFKA_USERNAME", &kafkaUsername)
-	InitVar("KAFKA_PASSWORD", &kafkaPassword)
+	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
+	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
+	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
 
 }
 
@@ -314,12 +314,14 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
+	transport := &kafka.Transport{}
+
 	if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
-		kafkaWriter.Transport = &kafka.Transport{
-			TLS: tlsConfig,
-		}
+		transport.TLS = tlsConfig
 	}
+
+	// Add SASL authentication if enabled
 	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
 		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
 		transport.SASL = plain.Mechanism{
@@ -327,5 +329,7 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 			Password: kafkaPassword,
 		}
 	}
+
+	kafkaWriter.Transport = transport
 	return &kafkaWriter
 }
