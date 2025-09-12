@@ -10,12 +10,25 @@ import (
 
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/plain"
 )
 
 var kafkaWriter *kafka.Writer
 var KafkaErrMsgCount = 0
 var KafkaErrMsgEpoch = time.Now()
 var BytesInThreshold = 500 * 1024 * 1024
+
+var isAuthImplemented = false
+var kafkaUsername = ""
+var kafkaPassword = ""
+
+func init() {
+
+	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
+	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
+	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
+
+}
 
 func InitKafka() {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
@@ -126,7 +139,7 @@ func Produce(ctx context.Context, message string) error {
 }
 
 func getKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
-	return &kafka.Writer{
+	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		Topic:        topic,
 		BatchSize:    batchSize,
@@ -136,4 +149,16 @@ func getKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		WriteTimeout: batchTimeout,
 		Async:        true,
 	}
+
+	transport := &kafka.Transport{}
+
+	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+		transport.SASL = plain.Mechanism{
+			Username: kafkaUsername,
+			Password: kafkaPassword,
+		}
+	}
+
+	kafkaWriter.Transport = transport
+	return &kafkaWriter
 }
