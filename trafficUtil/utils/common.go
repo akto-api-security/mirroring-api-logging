@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -22,7 +21,7 @@ func DebugLog(message string, args ...interface{}) {
 	// debug := os.Getenv("CONNECTOR_DEBUG")
 
 	// if debug == "true" {
-		fmt.Printf(message + " \n", args...)
+	log.Printf(message+" \n", args...)
 	// }
 }
 
