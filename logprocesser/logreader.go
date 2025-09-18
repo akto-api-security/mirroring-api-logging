@@ -29,7 +29,7 @@ func init() {
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupArn string) error {
-    utils.DebugLog("MonitorLogGroup() - Starting log processer for log group: %s", logGroupArn)
+    utils.DebugLog("MonitorLogGroup() - Starting log processor for log group: %s", logGroupArn)
     
 	for {
         now := time.Now().Unix() * 1000

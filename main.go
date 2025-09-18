@@ -11,7 +11,7 @@ import (
 
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
@@ -39,46 +39,35 @@ func main() {
 	stsSvc := sts.NewFromConfig(cfg)
 
 	roleArn := os.Getenv("CROSS_ACCOUNT_ROLE_ARN")
-	if roleArn == "" {
-		log.Fatalf("CROSS_ACCOUNT_ROLE_ARN environment variable is required")
-	}
+	roleArns := strings.Split(roleArn, ",")
+
 	sessionName := os.Getenv("SESSION_NAME")
 	if sessionName == "" {
 		sessionName = "aktologprocesser"
 	}
 
-	if err != nil {
-		log.Fatalf("unable to assume role: %v", err)
+	// Create a map of CloudWatch Logs clients per role ARN
+	clientsPerRole := make(map[string]*cloudwatchlogs.Client)
+
+	for _, roleArn := range roleArns {
+		createArnClient(roleArn, cfg, stsSvc, sessionName, clientsPerRole)
 	}
-
-	// Temporary credentials
-	creds := stscreds.NewAssumeRoleProvider(stsSvc, roleArn, func(o *stscreds.AssumeRoleOptions) {
-		o.RoleSessionName = sessionName
-	})
-
-	cfg.Credentials = aws.NewCredentialsCache(creds)
-
-	// Create CloudWatch Logs client
-	client := cloudwatchlogs.NewFromConfig(cfg)
 
 	kafkaUtil.InitKafka()
 
 	monitored := make(map[string]bool)
 	var mu sync.Mutex
 
-	awsAccountIdsFromAkto := []string{}
-
-	logGroupAccountId := os.Getenv("LOG_GROUP_AWS_ACCOUNT_ID")
-	awsAccountIdsFromAkto = parseNumericAccountIds(logGroupAccountId)
+	awsRoleArnsFromAkto := []string{}
 
 	databaseAbstractorToken := os.Getenv("DATABASE_ABSTRACTOR_TOKEN")
 	if databaseAbstractorToken != "" {
-		setAccountIds(databaseAbstractorToken, &awsAccountIdsFromAkto, &mu)
+		setRoleArns(databaseAbstractorToken, &awsRoleArnsFromAkto, &mu)
 		go func() {
 			ticker := time.NewTicker(4 * time.Minute)
 			defer ticker.Stop()
 			for {
-				setAccountIds(databaseAbstractorToken, &awsAccountIdsFromAkto, &mu)
+				setRoleArns(databaseAbstractorToken, &awsRoleArnsFromAkto, &mu)
 				<-ticker.C
 			}
 		}()
@@ -90,27 +79,43 @@ func main() {
 
 		for {
 			mu.Lock()
-			accountIds := make([]string, len(awsAccountIdsFromAkto))
-			copy(accountIds, awsAccountIdsFromAkto)
+			roleArns := make([]string, len(awsRoleArnsFromAkto))
+			copy(roleArns, awsRoleArnsFromAkto)
 			mu.Unlock()
 
-			log.Printf("Using AWS Account IDs: %v\n", accountIds)
-			logGroups, err := fetchAllLogGroupARNs(context.TODO(), client, accountIds)
-			if err != nil {
-				log.Printf("Failed to fetch log groups: %v", err)
-				continue
+			log.Printf("Using AWS Role ARNs: %v\n", roleArns)
+
+			// Fetch log groups from all configured roles
+			var roleArnToLogMap = make(map[string][]string)
+			for _, roleArn := range roleArns {
+
+				_, exists := clientsPerRole[roleArn]
+				if !exists {
+					createArnClient(roleArn, cfg, stsSvc, sessionName, clientsPerRole)
+				}
+
+				log.Printf("Fetching log groups for role: %s", roleArn)
+				logGroups, err := fetchAllLogGroupARNs(context.TODO(), clientsPerRole[roleArn])
+				if err != nil {
+					log.Printf("Failed to fetch log groups for role %s: %v", roleArn, err)
+					continue
+				}
+				roleArnToLogMap[roleArn] = logGroups
 			}
 
 			mu.Lock()
-			for _, arn := range logGroups {
-				if !monitored[arn] {
-					monitored[arn] = true
-					go func(logGroupArn string) {
-						utils.DebugLog("Starting log processor for new log group: %s", logGroupArn)
-						if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupArn); err != nil {
-							log.Printf("Error monitoring log group %s: %v", logGroupArn, err)
-						}
-					}(arn)
+			for roleArn, logGroups := range roleArnToLogMap {
+				for _, arn := range logGroups {
+					if !monitored[arn] {
+						monitored[arn] = true
+						client := clientsPerRole[roleArn]
+						go func(logGroupArn string, clientToUse *cloudwatchlogs.Client) {
+							utils.DebugLog("Starting log processor for new log group: %s using client for role %s", logGroupArn, roleArn)
+							if err := logprocesser.MonitorLogGroup(context.TODO(), clientToUse, logGroupArn); err != nil {
+								log.Printf("Error monitoring log group %s: %v", logGroupArn, err)
+							}
+						}(arn, client)
+					}
 				}
 			}
 			mu.Unlock()
@@ -122,15 +127,15 @@ func main() {
 	select {}
 }
 
-func setAccountIds(databaseAbstractorToken string, awsAccountIdsFromAkto *[]string, mu *sync.Mutex) {
+func setRoleArns(databaseAbstractorToken string, awsRoleArnsFromAkto *[]string, mu *sync.Mutex) {
 	awsAccountIds, err := fetchAwsAccountIds(databaseAbstractorToken)
 	if err != nil {
-		log.Printf("Error fetching AWS Account IDs from Akto: %v", err)
+		log.Printf("Error fetching AWS Role ARNs from Akto: %v", err)
 	} else {
-		log.Printf("Fetched AWS Account IDs from Akto: %v", awsAccountIds)
+		log.Printf("Fetched AWS Role ARNs from Akto: %v", awsAccountIds)
 		mu.Lock()
-		*awsAccountIdsFromAkto = parseNumericAccountIds(awsAccountIds)
-		log.Printf("Updated AWS Account IDs: %v\n", *awsAccountIdsFromAkto)
+		*awsRoleArnsFromAkto = parseRoleArns(awsAccountIds)
+		log.Printf("Updated AWS Role ARNs: %v\n", *awsRoleArnsFromAkto)
 		mu.Unlock()
 	}
 }
@@ -152,7 +157,7 @@ func fetchAwsAccountIds(token string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +177,7 @@ func fetchAwsAccountIds(token string) (string, error) {
 	return parsed.AwsAccountIds, nil
 }
 
-func fetchAllLogGroupARNs(ctx context.Context, client *cloudwatchlogs.Client, accountIds []string) ([]string, error) {
+func fetchAllLogGroupARNs(ctx context.Context, client *cloudwatchlogs.Client) ([]string, error) {
 	var logGroupARNs []string
 	var nextToken *string
 
@@ -198,17 +203,11 @@ func fetchAllLogGroupARNs(ctx context.Context, client *cloudwatchlogs.Client, ac
 			return nil, err
 		}
 
-		log.Printf("Filtering log groups for account IDs: %v\n", accountIds)
-
 		for _, lg := range resp.LogGroups {
 			log.Printf("Found Log Group ARN: %v\n", aws.ToString(lg.Arn))
 			if lg.Arn != nil {
-				for _, accountId := range accountIds {
-					if strings.Contains(*lg.Arn, accountId) {
-						arn := strings.TrimSuffix(*lg.Arn, ":*")
-						logGroupARNs = append(logGroupARNs, arn)
-					}
-				}
+				arn := strings.TrimSuffix(*lg.Arn, ":*")
+				logGroupARNs = append(logGroupARNs, arn)
 			} else if lg.LogGroupName != nil {
 				log.Printf("LogGroupName without ARN: %s\n", *lg.LogGroupName)
 			}
@@ -223,19 +222,11 @@ func fetchAllLogGroupARNs(ctx context.Context, client *cloudwatchlogs.Client, ac
 	return logGroupARNs, nil
 }
 
-func isNumeric(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+func isRoleArn(s string) bool {
+	return strings.HasPrefix(s, "arn:aws:iam::") && strings.Contains(s, ":role/")
 }
 
-func parseNumericAccountIds(input string) []string {
+func parseRoleArns(input string) []string {
 	result := []string{}
 	if input == "" {
 		return result
@@ -243,9 +234,32 @@ func parseNumericAccountIds(input string) []string {
 	parts := strings.Split(input, ",")
 	for _, part := range parts {
 		id := strings.TrimSpace(part)
-		if id != "" && isNumeric(id) {
+		if id != "" && isRoleArn(id) {
 			result = append(result, id)
 		}
 	}
 	return result
+}
+
+func createArnClient(roleArn string, cfg aws.Config, stsSvc *sts.Client, sessionName string, clientsPerRole map[string]*cloudwatchlogs.Client) {
+	roleArn = strings.TrimSpace(roleArn)
+	if roleArn == "" {
+		return
+	}
+
+	// Create role-specific configuration
+	roleCfg := cfg.Copy()
+
+	// Temporary credentials for this role
+	creds := stscreds.NewAssumeRoleProvider(stsSvc, roleArn, func(o *stscreds.AssumeRoleOptions) {
+		o.RoleSessionName = sessionName
+	})
+
+	roleCfg.Credentials = aws.NewCredentialsCache(creds)
+
+	// Create CloudWatch Logs client for this role
+	client := cloudwatchlogs.NewFromConfig(roleCfg)
+	clientsPerRole[roleArn] = client
+
+	log.Printf("Created CloudWatch Logs client for role: %s", roleArn)
 }
