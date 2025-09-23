@@ -171,6 +171,8 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 				continue
 			}
 
+			eventTime := *event.Timestamp
+			utils.DebugLog("getLogEvents() - Event time: %d", eventTime)
 			utils.DebugLog("getLogEvents() - Log message: %s", message)
 			utils.DebugLog("getLogEvents() - Request ID: %s", matches[1])
 
