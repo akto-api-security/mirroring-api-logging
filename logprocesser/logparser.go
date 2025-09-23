@@ -97,7 +97,7 @@ func ParseAndProduce(log LogEntry) {
 		"is_pending":      fmt.Sprint(false),
 		"source":          "MIRRORING",
 		"direction":       fmt.Sprint(1),
-		"tag":			   "{\n  \"service\": \"aws-api-gateway\"\n}",
+		"tag":             "{\n  \"service\": \"aws-api-gateway\"\n}",
 	}
 
 	utils.DebugLog("ParseAndProduce: value: %+v", value)
