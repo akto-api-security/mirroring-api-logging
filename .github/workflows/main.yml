@@ -14,8 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       Tag: 
+        description: 'Tag for the Docker image'
         required: true
-        default: 'api-gateway-logging'
+        default: 'api-gateway-logging-temp-cred'
       
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
