@@ -65,7 +65,7 @@ var filterHeaderValueMap = make(map[string]string)
 
 var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
-var threatEnabled = false
+var threatEnabled = true
 var (
 	handle *pcap.Handle
 	err    error
@@ -875,7 +875,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 		if err != nil {
 			kafkaErrMsgCount += len(messages)
 			log.Printf("kafkaErrMsgCount : %d, messagesCount %d, error: %v", kafkaErrMsgCount, len(messages), err)
-		}else{
+		} else {
 			printLog(fmt.Sprintf("Successfully sent %d messages to Kafka", len(messages)))
 		}
 	}
@@ -1087,7 +1087,7 @@ func main() {
 		threatEnabled = strings.ToLower(threatEnabledVar) == "true"
 		log.Println("threatEnabled: ", threatEnabled)
 	} else {
-		log.Println("threatEnabled: missing. defaulting to false")
+		log.Println("threatEnabled: missing. defaulting to true")
 	}
 
 	ignoreCloudMetadataCallsVar := os.Getenv("AKTO_IGNORE_CLOUD_METADATA_CALLS")
