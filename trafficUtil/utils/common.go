@@ -37,7 +37,7 @@ var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 var IgnoreEnvoyProxycalls = false
 var EnableGraph = true
-var ThreatEnabled = false
+var ThreatEnabled = true
 
 const EnvoyProxyIp = "127.0.0.6"
 
