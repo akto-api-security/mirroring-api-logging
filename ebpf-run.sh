@@ -48,8 +48,8 @@ if [[ "${ENABLE_LOGS}" == "false" ]]; then
     done &
 fi
 
-# 1. Check if MEM_LIMIT_BYTES is provided as env variable
-if [ -z "$MEM_LIMIT_BYTES" ]; then
+# 1. Check if MEM_LIMIT is provided as env variable
+if [ -z "$MEM_LIMIT" ]; then
     # Not provided, detect and read cgroup memory limits
     if [ -f /sys/fs/cgroup/memory.max ]; then
         # cgroup v2
@@ -70,13 +70,18 @@ if [ -z "$MEM_LIMIT_BYTES" ]; then
         echo "Cgroup memory limit set to 'max', defaulting to free memory"
         MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
     fi
+
+    # 3. Convert the memory limit from bytes to MB (integer division)
+    MEM_LIMIT_MB=$((MEM_LIMIT_BYTES / 1024 / 1024))
 else
-    echo "Using MEM_LIMIT_BYTES from environment variable: ${MEM_LIMIT_BYTES}"
+    # MEM_LIMIT provided as env variable, treat as MB
+    echo "Using MEM_LIMIT from environment variable: ${MEM_LIMIT} MB"
+    MEM_LIMIT_MB=$MEM_LIMIT
+    # Convert MB to bytes for calculations
+    MEM_LIMIT_BYTES=$((MEM_LIMIT * 1024 * 1024))
 fi
 
-# 3. Convert the memory limit from bytes to MB (integer division)
-MEM_LIMIT_MB=$((MEM_LIMIT_BYTES / 1024 / 1024))
-echo "Detected container memory limit: ${MEM_LIMIT_MB} MB"
+echo "Using container memory limit: ${MEM_LIMIT_MB} MB"
 
 # Start memory monitoring in the background
 while true; do
