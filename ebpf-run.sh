@@ -2,7 +2,8 @@
 
 LOG_FILE="/tmp/dump.log"
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 10 * 1024 * 1024 bytes)
-CHECK_INTERVAL=${CHECK_INTERVAL:-10}     # Check interval in seconds (configurable via env)
+CHECK_INTERVAL=${CHECK_INTERVAL:-60}
+CHECK_INTERVAL_MEM=${CHECK_INTERVAL_MEM:-10}     # Check interval in seconds (configurable via env)
 MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-80} # Kill process at this % memory usage (configurable via env)
 
 # Function to rotate the log file
@@ -47,25 +48,30 @@ if [[ "${ENABLE_LOGS}" == "false" ]]; then
     done &
 fi
 
-# 1. Detect and read cgroup memory limits
-if [ -f /sys/fs/cgroup/memory.max ]; then
-    # cgroup v2
-    MEM_LIMIT_BYTES=$(cat /sys/fs/cgroup/memory.max)
-elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-    # cgroup v1
-    MEM_LIMIT_BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
-else
-    # Fallback to free -b (bytes) if cgroup file not found
-    echo "Neither cgroup v2 nor v1 memory file found, defaulting to free -m"
-    # Convert from kB to bytes
-    MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
-fi
+# 1. Check if MEM_LIMIT_BYTES is provided as env variable
+if [ -z "$MEM_LIMIT_BYTES" ]; then
+    # Not provided, detect and read cgroup memory limits
+    if [ -f /sys/fs/cgroup/memory.max ]; then
+        # cgroup v2
+        MEM_LIMIT_BYTES=$(cat /sys/fs/cgroup/memory.max)
+    elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        # cgroup v1
+        MEM_LIMIT_BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+    else
+        # Fallback to free -b (bytes) if cgroup file not found
+        echo "Neither cgroup v2 nor v1 memory file found, defaulting to free -m"
+        # Convert from kB to bytes
+        MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
+    fi
 
-# 2. Handle edge cases: "max" means no strict limit or a very large limit
-if [ "$MEM_LIMIT_BYTES" = "max" ]; then
-    # Arbitrary fallback (1 GiB in bytes here, but adjust as needed)
-    echo "Cgroup memory limit set to 'max', defaulting to free memory"
-    MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
+    # 2. Handle edge cases: "max" means no strict limit or a very large limit
+    if [ "$MEM_LIMIT_BYTES" = "max" ]; then
+        # Arbitrary fallback (1 GiB in bytes here, but adjust as needed)
+        echo "Cgroup memory limit set to 'max', defaulting to free memory"
+        MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
+    fi
+else
+    echo "Using MEM_LIMIT_BYTES from environment variable: ${MEM_LIMIT_BYTES}"
 fi
 
 # 3. Convert the memory limit from bytes to MB (integer division)
@@ -75,7 +81,7 @@ echo "Detected container memory limit: ${MEM_LIMIT_MB} MB"
 # Start memory monitoring in the background
 while true; do
     check_memory_and_kill
-    sleep "$CHECK_INTERVAL"
+    sleep "$CHECK_INTERVAL_MEM"
 done &
 
 while :
