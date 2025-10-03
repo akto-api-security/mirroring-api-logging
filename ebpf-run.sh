@@ -83,6 +83,10 @@ fi
 
 echo "Using container memory limit: ${MEM_LIMIT_MB} MB"
 
+# Set GOMEMLIMIT for the Go process
+export GOMEMLIMIT="${MEM_LIMIT_MB}MiB"
+echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT}"
+
 # Start memory monitoring in the background
 while true; do
     check_memory_and_kill
