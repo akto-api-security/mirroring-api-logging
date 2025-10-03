@@ -2,8 +2,8 @@
 
 LOG_FILE="/tmp/dump.log"
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 10 * 1024 * 1024 bytes)
-CHECK_INTERVAL=60                        # Check interval in seconds
-MEMORY_THRESHOLD=85                      # Kill process at 85% memory usage
+CHECK_INTERVAL=${CHECK_INTERVAL:-10}     # Check interval in seconds (configurable via env)
+MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-80} # Kill process at this % memory usage (configurable via env)
 
 # Function to rotate the log file
 rotate_log() {
