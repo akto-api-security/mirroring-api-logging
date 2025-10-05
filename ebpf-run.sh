@@ -5,6 +5,7 @@ MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 1
 CHECK_INTERVAL=${CHECK_INTERVAL:-60}
 CHECK_INTERVAL_MEM=${CHECK_INTERVAL_MEM:-10}     # Check interval in seconds (configurable via env)
 MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-80} # Kill process at this % memory usage (configurable via env)
+GOMEMLIMIT_PERCENT=${GOMEMLIMIT_PERCENT:-60} # GOMEMLIMIT as % of container memory limit (configurable via env)
 
 # Function to rotate the log file
 rotate_log() {
@@ -83,10 +84,10 @@ fi
 
 echo "Using container memory limit: ${MEM_LIMIT_MB} MB"
 
-# Set GOMEMLIMIT for the Go process (60% of container limit)
-GOMEMLIMIT_MB=$((MEM_LIMIT_MB * 50 / 100))
+# Set GOMEMLIMIT for the Go process
+GOMEMLIMIT_MB=$((MEM_LIMIT_MB * GOMEMLIMIT_PERCENT / 100))
 export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
-echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (60% of ${MEM_LIMIT_MB} MB)"
+echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
 
 # Start memory monitoring in the background
 
