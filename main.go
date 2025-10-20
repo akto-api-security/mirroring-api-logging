@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -72,9 +73,19 @@ func main() {
 			}
 		}()
 	}
+	// Get ticker interval from environment variable, default to 5 minutes
+	tickerIntervalMinutes := 5
+	if intervalStr := os.Getenv("TICKER_INTERVAL_MINUTES"); intervalStr != "" {
+		if interval, err := strconv.Atoi(intervalStr); err == nil && interval > 0 {
+			tickerIntervalMinutes = interval
+		} else {
+			log.Printf("Invalid TICKER_INTERVAL_MINUTES value '%s', using default of 5 minutes", intervalStr)
+		}
+	}
+	log.Printf("Ticker interval set to %d minutes", tickerIntervalMinutes)
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(time.Duration(tickerIntervalMinutes) * time.Minute)
 		defer ticker.Stop()
 
 		for {
