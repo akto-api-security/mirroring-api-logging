@@ -3,6 +3,7 @@ package logprocesser
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,6 +24,11 @@ type LogEntry struct {
 	StatusCode      int               `json:"status_code"`
 }
 
+var metaInfoTagsRegex = regexp.MustCompile(`(\t[^\t\n\r]+){1,2}$`)
+var httpMethodRegex = regexp.MustCompile(`"httpMethod"\s*:\s*"([^"]+)"`)
+var pathRegex = regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`)
+var statusCodeRegex = regexp.MustCompile(`"statusCode"\s*:\s*(\d+)`)
+
 // extractMap extracts a JSON-like map from a log message.
 func extractMap(log string, prefix string) map[string]string {
 	utils.DebugLog("extractMap: log: , %s | prefix: %s", log, prefix)
@@ -34,6 +40,7 @@ func extractMap(log string, prefix string) map[string]string {
 
 	// Extract the raw map-like string
 	raw := strings.TrimSpace(log[start+len(prefix):])
+	raw = metaInfoTagsRegex.ReplaceAllString(raw, "")
 	raw = strings.Trim(raw, "{}") // Remove surrounding braces
 
 	// Split by comma to get key-value pairs
@@ -59,11 +66,17 @@ func extractBody(log string, prefix string) string {
 		utils.DebugLog("extractBody: index of prefix in log: , %d", start)
 		return "{}"
 	}
-	utils.DebugLog("extractBody, %s %v %s %v", log, len(strings.TrimSpace(log[start+len(prefix):])), strings.TrimSpace(log[start+len(prefix):]), start)
-	if len(strings.TrimSpace(log[start+len(prefix):])) == 0 {
+
+	log = log[start+len(prefix):]
+	//remove last two tab-separated tokens, if present.
+	log = metaInfoTagsRegex.ReplaceAllString(log, "")
+	log = strings.TrimSpace(log)
+
+	utils.DebugLog("extractBody, %s %v %s %v", log, len(log), log, start)
+	if len(log) == 0 {
 		return "{}"
 	}
-	return strings.TrimSpace(log[start+len(prefix):])
+	return log
 }
 
 // DebugPrint prints the extracted log entries in JSON format for debugging.
@@ -71,6 +84,58 @@ func DebugPrint(data map[string]*LogEntry) {
 	for _, entry := range data {
 		output, _ := json.MarshalIndent(entry, "", "  ")
 		fmt.Println(string(output))
+	}
+}
+
+// extractEndpointRequestBody extracts HTTP method and path from the "Endpoint request body after transformations" JSON
+func extractEndpointRequestBody(log string, logEntry *LogEntry) {
+	utils.DebugLog("extractEndpointRequestBody: called with log: %s", log)
+	body := extractBody(log, "Endpoint request body after transformations:")
+	if body == "" || body == "{}" {
+		return
+	}
+
+	// Use regex to extract httpMethod and path from partial JSON
+	// works for TRUNCATED marker as well.
+
+	// Extract httpMethod
+	if logEntry.HTTPMethod == "" {
+		if matches := httpMethodRegex.FindStringSubmatch(body); len(matches) > 1 {
+			logEntry.HTTPMethod = matches[1]
+			utils.DebugLog("extractEndpointRequestBody: extracted HTTPMethod: %s", logEntry.HTTPMethod)
+		}
+	}
+
+	// Extract path
+	if logEntry.ResourcePath == "" {
+
+		if matches := pathRegex.FindStringSubmatch(body); len(matches) > 1 {
+			logEntry.ResourcePath = matches[1]
+			utils.DebugLog("extractEndpointRequestBody: extracted ResourcePath: %s", logEntry.ResourcePath)
+		}
+	}
+}
+
+// extractStatusCodeFromEndpointResponse extracts status code from endpoint response body JSON
+func extractStatusCodeFromEndpointResponse(log string, logEntry *LogEntry) {
+	if logEntry.StatusCode != 0 {
+		return
+	}
+
+	body := extractBody(log, "Endpoint response body before transformations:")
+	if body == "" || body == "{}" {
+		return
+	}
+
+	// Use regex to extract statusCode from partial JSON
+	// works for TRUNCATED marker as well.
+	if matches := statusCodeRegex.FindStringSubmatch(body); len(matches) > 1 {
+		// Parse the status code string to int
+		var statusCode int
+		if _, err := fmt.Sscanf(matches[1], "%d", &statusCode); err == nil {
+			logEntry.StatusCode = statusCode
+			utils.DebugLog("extractStatusCodeFromEndpointResponse: extracted StatusCode: %d", logEntry.StatusCode)
+		}
 	}
 }
 
