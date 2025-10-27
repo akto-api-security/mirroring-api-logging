@@ -218,10 +218,15 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 
 			logEntry, exists := logEntries[requestID]
 			if !exists {
-				logEntry = LogEntry{RequestID: requestID}
+				logEntry = LogEntry{RequestID: requestID, RequestBody: "{}", ResponseBody: "{}"}
 			}
 
-			if !strings.Contains(message, "TRUNCATED") {
+			// for method, path and status code, we work around TRUNCATED data as well.
+			if strings.Contains(message, "Endpoint request body after transformations:") {
+				extractEndpointRequestBody(message, &logEntry)
+			} else if strings.Contains(message, "Endpoint response body before transformations:") {
+				extractStatusCodeFromEndpointResponse(message, &logEntry)
+			} else if !strings.Contains(message, "TRUNCATED") {
 				if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
 					matches := httpMethodRegex.FindStringSubmatch(message)
 					if len(matches) == 3 {
