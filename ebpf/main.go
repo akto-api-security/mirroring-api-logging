@@ -82,6 +82,64 @@ func isAmdArch() bool {
 	return false
 }
 
+// isCoreMode checks if CO-RE mode should be enabled based on environment variables
+func isCoreMode() bool {
+	ebpfMode := os.Getenv("EBPF_MODE")
+	aktoEbpfRuntime := os.Getenv("AKTO_EBPF_RUNTIME")
+
+	// Check if any of the environment variables indicate CO-RE mode
+	if strings.EqualFold(ebpfMode, "core") || strings.EqualFold(aktoEbpfRuntime, "core") {
+		return true
+	}
+	return false
+}
+
+// shouldDisableKheaders checks if kernel headers should be disabled
+func shouldDisableKheaders() bool {
+	disableKheaders := os.Getenv("DISABLE_KHEADERS")
+	return strings.EqualFold(disableKheaders, "true")
+}
+
+// checkBTFAvailable checks if BTF (BPF Type Format) is available on the system
+func checkBTFAvailable() bool {
+	// Check if BTF is available at the standard location
+	btfPath := "/sys/kernel/btf/vmlinux"
+	if _, err := os.Stat(btfPath); err == nil {
+		return true
+	}
+
+	// Also check for /sys/kernel/btf (directory)
+	if _, err := os.Stat("/sys/kernel/btf"); err == nil {
+		return true
+	}
+
+	return false
+}
+
+// getBCCFlags returns the appropriate C flags for BCC compilation
+func getBCCFlags() []string {
+	flags := []string{}
+
+	// Enable CO-RE mode if requested and BTF is available
+	if isCoreMode() {
+		if checkBTFAvailable() {
+			slog.Info("CO-RE mode enabled: BTF is available")
+			flags = append(flags, "-D__BPF_TRACING__")
+			// BCC will automatically use CO-RE when BTF is available and flags are set
+		} else {
+			slog.Warn("CO-RE mode requested but BTF not available, falling back to traditional mode")
+		}
+	}
+
+	// Disable kernel headers if requested
+	if shouldDisableKheaders() {
+		slog.Info("Kernel headers disabled via DISABLE_KHEADERS")
+		flags = append(flags, "-D__NO_KHEADERS__")
+	}
+
+	return flags
+}
+
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
@@ -102,9 +160,25 @@ func run() {
 	replaceMaxConnectionMapSize()
 	replaceArchType()
 
+	// Log CO-RE mode status
+	coreMode := isCoreMode()
+	btfAvailable := checkBTFAvailable()
+	disableKheaders := shouldDisableKheaders()
+
+	slog.Info("eBPF initialization",
+		"core_mode", coreMode,
+		"btf_available", btfAvailable,
+		"disable_kheaders", disableKheaders)
+
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
-	bpfModule := bcc.NewModule(source, []string{})
+	// Get appropriate flags for CO-RE mode
+	bccFlags := getBCCFlags()
+	if len(bccFlags) > 0 {
+		slog.Info("Using BCC flags for compilation", "flags", bccFlags)
+	}
+
+	bpfModule := bcc.NewModule(source, bccFlags)
 	if bpfModule == nil {
 		slog.Error("failed to create BPF module", "error", "module is nil")
 		panic("bpf module is nil")

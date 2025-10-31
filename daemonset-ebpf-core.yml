@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: akto-k8s
+  namespace: {NAMESPACE}
+  annotations:
+    container.apparmor.security.beta.kubernetes.io/mirror-api-logging: unconfined
+  labels:
+    app: akto-collector
+spec:
+  selector:
+    matchLabels:
+      app: akto-collector
+  template:
+    metadata:
+      labels:
+        app: akto-collector
+    spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+      containers:
+      - name: mirror-api-logging
+        image: aktosecurity/mirror-api-logging:k8s_ebpf
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+        env: 
+          - name: AKTO_TRAFFIC_BATCH_TIME_SECS
+            value: "10"
+          - name: AKTO_TRAFFIC_BATCH_SIZE
+            value: "100"
+          - name: AKTO_KAFKA_BROKER_MAL
+            value: "<AKTO_NLB_IP>:9092"
+          # CO-RE mode environment variables
+          - name: DISABLE_KHEADERS
+            value: "true"
+          - name: EBPF_MODE
+            value: "core"
+          - name: AKTO_EBPF_RUNTIME
+            value: "core"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            add:
+              - BPF
+              - PERFMON
+              - NET_ADMIN
+              - NET_RAW
+              - SYS_RESOURCE
+              - IPC_LOCK
+              - SYS_PTRACE
+        volumeMounts:
+          - name: bpffs
+            mountPath: /sys/fs/bpf
+          - name: btf
+            mountPath: /sys/kernel/btf
+            readOnly: true
+          - name: sysk
+            mountPath: /sys/kernel
+            readOnly: true
+          - name: proc
+            mountPath: /host/proc
+            readOnly: true
+      volumes:
+        - name: bpffs
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+        - name: sysk
+          hostPath:
+            path: /sys/kernel
+            type: Directory
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+
