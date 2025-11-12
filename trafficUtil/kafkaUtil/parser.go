@@ -125,6 +125,7 @@ func UpdateDebugStringsFromFile() {
 
 func checkDebugUrlAndPrint(url string, host string, message string) {
 	// url or host. [array string]
+	message = "mannakto" + message
 	if len(DebugStrings) > 0 {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
@@ -434,7 +435,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
 		// Shifting by 32 gives us the process id on host machine.
 		var pid = idfd >> 32
-		log := fmt.Sprintf("pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
+		log := fmt.Sprintf("direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
 			direction,
 			reqHeaderStr["host"],
 			value["path"],
@@ -444,27 +445,29 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			pid,
 			hostName,
 		)
-		utils.PrintLog(log)
-		checkDebugUrlAndPrint(url, req.Host, log)
+		slog.Warn("before resolving labels pod direction log" + log)
+		checkDebugUrlAndPrint(url, req.Host, "before resolving labels pod direction log" + log)
 
 		if PodInformerInstance != nil && direction == utils.DirectionInbound {
 
 			if hostName == "" {
-				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
-				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
+				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid) + log)
+				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName, "log", log)
 			} else {
+				slog.Warn("Resolving Pod Name to labels", "podName", hostName, "log", log)
 				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, req.Host)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
-					checkDebugUrlAndPrint(url, req.Host, "Error resolving pod labels "+hostName)
+					checkDebugUrlAndPrint(url, req.Host, "Error resolving pod labels "+hostName + "log: " + log)
 				} else {
 					value["tag"] = podLabels
-					checkDebugUrlAndPrint(url, req.Host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
+					checkDebugUrlAndPrint(url, req.Host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName + "log: " + log)
 					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
 				}
 			}
 		} else {
-			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
+			slog.Warn("Pod labels not resolved, PodInformerInstance is nil or direction is not inbound", "log", log)
+			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound" + "log: " + log)
 		}
 
 		out, _ := json.Marshal(value)
