@@ -125,7 +125,7 @@ func UpdateDebugStringsFromFile() {
 
 func checkDebugUrlAndPrint(url string, host string, message string) {
 	// url or host. [array string]
-	message = "mannakto" + message
+	message = "mannakto: " + message
 	if len(DebugStrings) > 0 {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
@@ -454,7 +454,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid) + log)
 				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName, "log", log)
 			} else {
-				slog.Warn("Resolving Pod Name to labels", "podName", hostName, "log", log)
+				checkDebugUrlAndPrint(url, req.Host, "Resolving Pod Name to labels podName: " + hostName + "log: " + log)
 				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, req.Host)
 				if err != nil {
 					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
