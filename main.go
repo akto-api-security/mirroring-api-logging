@@ -583,6 +583,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			AktoAccountId:   fmt.Sprint(1000000),
 			AktoVxlanId:     fmt.Sprint(bd.vxlanID),
 			IsPending:       isPending,
+			Source:          bd.source,
 		}
 		ctx := context.Background()
 
