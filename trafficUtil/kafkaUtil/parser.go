@@ -397,6 +397,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			AktoAccountId:   fmt.Sprint(1000000),
 			AktoVxlanId:     fmt.Sprint(vxlanID),
 			IsPending:       isPending,
+			Source:          trafficSource,
 		}
 
 		reqHeaderString, _ := json.Marshal(reqHeaderStr)
