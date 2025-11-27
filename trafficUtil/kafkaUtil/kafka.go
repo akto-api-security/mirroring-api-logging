@@ -280,7 +280,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost string) error 
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}
-	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: "+message)
+	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")
 
 	return nil
 }
