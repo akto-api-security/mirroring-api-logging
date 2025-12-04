@@ -41,6 +41,7 @@ var (
 		"TRACK":   true,
 		"PATCH":   true}
 	DebugStrings = []string{}
+	IgnoreUrls = []string{}
 
 	EventChanBuffSize = 100000
 )
@@ -60,14 +61,15 @@ func init() {
 	if len(debugStringsEnv) > 0 {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
-	slog.Info("debugStrings", "DebugStrings", DebugStrings)
 
+	ignoreUrlsEnv := ""
+	utils.InitVar("IGNORE_URLS", &ignoreUrlsEnv)
+	if len(ignoreUrlsEnv) > 0 {
+		IgnoreUrls = strings.Split(ignoreUrlsEnv, ",")
+	}
+	slog.Info("ignoreUrls", "IgnoreUrls", IgnoreUrls)
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
-		if !utils.FileLoggingEnabled {
-			slog.Info("File logging is not enabled, skipping debug URL file watcher")
-			return
-		}
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -384,6 +386,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		url := req.URL.String()
+
+		for _, ignoreUrl := range IgnoreUrls {
+			if strings.Contains(url, ignoreUrl) {
+				i++
+				continue
+			}
+		}
+
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
 
 		// build kafka payload for threat client
@@ -402,6 +412,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			AktoAccountId:   fmt.Sprint(1000000),
 			AktoVxlanId:     fmt.Sprint(vxlanID),
 			IsPending:       isPending,
+			Source:          trafficSource,
 		}
 
 		reqHeaderString, _ := json.Marshal(reqHeaderStr)

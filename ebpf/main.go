@@ -32,6 +32,12 @@ import (
 
 var source string = ""
 
+func replaceBpfChunkSizeMacros() {
+	chunkSizeLimit := 4
+	trafficUtils.InitVar("BPF_CHUNK_SIZE_LIMIT", &chunkSizeLimit)
+	source = strings.Replace(source, "CHUNK_SIZE_LIMIT", strconv.Itoa(chunkSizeLimit), -1)
+}
+
 func replaceBpfLogsMacros() {
 
 	printBpfLogsEnv := os.Getenv("PRINT_BPF_LOGS")
@@ -92,6 +98,7 @@ func run() {
 	source = string(byteString)
 
 	replaceBpfLogsMacros()
+	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceArchType()
 
@@ -226,7 +233,7 @@ func run() {
 		slog.Info("Stopping pod watcher")
 		close(stopCh)
 	}
-	
+
 	slog.Info("signaled to terminate")
 }
 

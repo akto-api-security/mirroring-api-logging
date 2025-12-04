@@ -178,6 +178,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"data", dataStr,
 			"rc", event.Attr.ReadEventsCount,
 			"wc", event.Attr.WriteEventsCount,
-			"ssl", event.Attr.Ssl)
+			"ssl", event.Attr.Ssl,
+			"bytesSent", bytesSent)
 	}
 }

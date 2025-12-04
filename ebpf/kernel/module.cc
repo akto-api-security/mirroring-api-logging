@@ -7,6 +7,7 @@
 
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
+#define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
 
 #define ARCH_TYPE 1
@@ -370,8 +371,35 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
     socket_data_event->port = conn_info->port;
     socket_data_event->ip = conn_info->ip; 
-    socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->ssl = conn_info->ssl;
+    
+    int bytes_sent = 0;
+    size_t size_to_save = 0;
+    int i =0;
+  #pragma unroll
+  for (i = 0; i < CHUNK_LIMIT; ++i) {
+    const int bytes_remaining = bytes_exchanged - bytes_sent;
+
+    if (bytes_remaining <= 0) {
+        break;
+    }
+    size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) ? MAX_MSG_SIZE : bytes_remaining;
+
+    size_t current_size_minus_1 = current_size - 1;
+    asm volatile("" : "+r"(current_size_minus_1) :);
+    current_size = current_size_minus_1 + 1;
+
+    if (current_size > MAX_MSG_SIZE) {
+        current_size = MAX_MSG_SIZE;
+    }
+
+    if (current_size_minus_1 < MAX_MSG_SIZE) {
+      bpf_probe_read(&socket_data_event->msg, current_size, args->buf + bytes_sent);
+      size_to_save = current_size;
+    } else if (current_size_minus_1 < 0x7fffffff) {
+      bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf + bytes_sent);
+      size_to_save = MAX_MSG_SIZE;
+    }
 
     if (is_send){
       conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
@@ -385,28 +413,17 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
+    bpf_trace_printk("current_size: %d i:%d, bytes_exchanged: %d", current_size, i, bytes_exchanged);
     unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
     bpf_trace_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000),tgid_fd, socket_data_event->msg);
   }
     
-    size_t bytes_exchanged_minus_1 = bytes_exchanged - 1;
-    asm volatile("" : "+r"(bytes_exchanged_minus_1) :);
-    bytes_exchanged = bytes_exchanged_minus_1 + 1;
-
-    size_t size_to_save = 0;
-    if (bytes_exchanged_minus_1 < MAX_MSG_SIZE) {
-        bpf_probe_read(&socket_data_event->msg, bytes_exchanged, args->buf);
-        size_to_save = bytes_exchanged;
-        socket_data_event->msg[size_to_save] = '\\0';
-    } else if (bytes_exchanged_minus_1 < 0x7fffffff) {
-        bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf);
-        size_to_save = MAX_MSG_SIZE;
-    }
-
-    
+    socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
-    
     socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+
+    bytes_sent += current_size;
+  }
 
 }
 

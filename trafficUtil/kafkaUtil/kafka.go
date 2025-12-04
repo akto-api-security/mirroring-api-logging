@@ -17,6 +17,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/plain"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,11 +30,19 @@ var useTLS = false
 var InsecureSkipVerify = true
 var tlsCACertPath = "./ca.crt"
 
+var isAuthImplemented = false
+var kafkaUsername = ""
+var kafkaPassword = ""
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
 	utils.InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
 	utils.InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
+
+	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
+	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
+	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
 
 }
 
@@ -63,14 +72,12 @@ func InitKafka() {
 
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
-		utils.PrintLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
+		kafka_batch_size = 100
 	}
 
 	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
 	if e != nil {
-		utils.PrintLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
+		kafka_batch_time_secs = 10
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
@@ -273,7 +280,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost string) error 
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}
-	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: "+message)
+	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")
 
 	return nil
 }
@@ -308,11 +315,22 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
+	transport := &kafka.Transport{}
+
 	if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
-		kafkaWriter.Transport = &kafka.Transport{
-			TLS: tlsConfig,
+		transport.TLS = tlsConfig
+	}
+
+	// Add SASL authentication if enabled
+	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
+		transport.SASL = plain.Mechanism{
+			Username: kafkaUsername,
+			Password: kafkaPassword,
 		}
 	}
+
+	kafkaWriter.Transport = transport
 	return &kafkaWriter
 }
