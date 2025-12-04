@@ -387,11 +387,16 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		url := req.URL.String()
 
+		skipUrl := false
 		for _, ignoreUrl := range IgnoreUrls {
 			if strings.Contains(url, ignoreUrl) {
-				i++
-				continue
+				skipUrl = true
+				break
 			}
+		}
+		if skipUrl {
+			i++
+			continue
 		}
 
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
