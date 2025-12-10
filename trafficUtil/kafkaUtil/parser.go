@@ -60,6 +60,7 @@ func init() {
 	if len(debugStringsEnv) > 0 {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
+	slog.Info("debugStrings", "DebugStrings", DebugStrings)
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
