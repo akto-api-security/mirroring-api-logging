@@ -442,8 +442,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			hostName,
 		)
 		checkDebugUrlAndPrint(url, req.Host, log)
-
-		if PodInformerInstance != nil && direction == utils.DirectionInbound {
+		processName := PodInformerInstance.GetProcessNameByProcessId(int32(pid))
+		if PodInformerInstance != nil && direction == utils.DirectionInbound && !strings.Contains(processName, "envoy") {
 
 			if hostName == "" {
 				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
