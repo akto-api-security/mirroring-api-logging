@@ -41,7 +41,6 @@ var (
 		"TRACK":   true,
 		"PATCH":   true}
 	DebugStrings = []string{}
-	IgnoreUrls = []string{}
 
 	EventChanBuffSize = 100000
 )
@@ -62,12 +61,6 @@ func init() {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 
-	ignoreUrlsEnv := ""
-	utils.InitVar("IGNORE_URLS", &ignoreUrlsEnv)
-	if len(ignoreUrlsEnv) > 0 {
-		IgnoreUrls = strings.Split(ignoreUrlsEnv, ",")
-	}
-	slog.Info("ignoreUrls", "IgnoreUrls", IgnoreUrls)
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -386,18 +379,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		url := req.URL.String()
-
-		skipUrl := false
-		for _, ignoreUrl := range IgnoreUrls {
-			if strings.Contains(url, ignoreUrl) {
-				skipUrl = true
-				break
-			}
-		}
-		if skipUrl {
-			i++
-			continue
-		}
 
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
 
