@@ -169,12 +169,16 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
-func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
-	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) {
+type ParseResult struct {
+	Value           map[string]string
+	Payload         *trafficpb.HttpResponseParam
+	Host            string
+	ResponseContent string
+	DebugID         string
+}
 
-	if checkAndUpdateBandwidthProcessed(0) {
-		return
-	}
+func Parse(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
+	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) []ParseResult {
 
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
@@ -192,13 +196,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			break
 		} else if err != nil {
 			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return
+			return nil
 		}
 		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
+			return nil
 		}
 
 		requests = append(requests, *req)
@@ -210,7 +214,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		slog.Debug("ParseAndProduce", "count", i)
 	}
 	if len(requests) == 0 {
-		return
+		return nil
 	}
 
 	reader = bufio.NewReader(bytes.NewReader(sentBuffer))
@@ -226,13 +230,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			break
 		} else if err != nil {
 			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
-			return
+			return nil
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
-			return
+			return nil
 		}
 		encoding := resp.Header["Content-Encoding"]
 		var r io.Reader
@@ -241,14 +245,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			r, err = gzip.NewReader(r)
 			if err != nil {
 				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return
+				return nil
 			}
 		}
 		if err == nil {
 			body, err = io.ReadAll(r)
 			if err != nil {
 				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
-				return
+				return nil
 			}
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()
@@ -270,7 +274,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			slog.Debug("Len req-res mismatch", "lenRequests", len(requests), "lenResponses", len(responses), "lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", isComplete)
 		}
 		if isComplete {
-			return
+			return nil
 		}
 		correctLen := len(requests)
 		if len(responses) < len(requests) {
@@ -280,6 +284,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		responses = responses[:correctLen]
 		requests = requests[:correctLen]
 	}
+
+	var results []ParseResult
 
 	i = 0
 	for {
@@ -463,7 +469,34 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
 		}
 
-		out, _ := json.Marshal(value)
+		results = append(results, ParseResult{
+			Value:           value,
+			Payload:         payload,
+			Host:            req.Host,
+			ResponseContent: responsesContent[i],
+			DebugID:         id,
+		})
+
+		i++
+	}
+
+	return results
+}
+
+func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
+	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) {
+
+	if checkAndUpdateBandwidthProcessed(0) {
+		return
+	}
+
+	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+
+	results := Parse(receiveBuffer, sentBuffer, sourceIp, destIp, vxlanID, isPending,
+		trafficSource, isComplete, direction, idfd, fd, daemonsetIdentifier, hostName)
+
+	for _, result := range results {
+		out, _ := json.Marshal(result.Value)
 		ctx := context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
@@ -474,7 +507,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			return
 		}
 
-		hostString := reqHeaderStr["host"]
+		hostString := result.Host
 		if utils.CheckIfIpHost(hostString) {
 			hostString = "ip-host"
 		}
@@ -482,7 +515,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
 
 		if shouldPrint {
-			if strings.Contains(responsesContent[i], id) {
+			if strings.Contains(result.ResponseContent, result.DebugID) {
 				goodRequests++
 			} else {
 				slog.Debug("req-resp.String()", "out", string(out))
@@ -494,16 +527,15 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
+		url := result.Value["path"]
 		if apiProcessor.CloudProcessorInstance != nil {
-			apiProcessor.CloudProcessorInstance.Produce(value)
+			apiProcessor.CloudProcessorInstance.Produce(result.Value)
 
 		} else {
 			// Produce to kafka
 			// TODO : remove and use protobuf instead
-			go ProduceStr(ctx, string(out), url, req.Host)
-			go Produce(ctx, payload)
+			go ProduceStr(ctx, string(out), url, result.Host)
+			go Produce(ctx, result.Payload)
 		}
-
-		i++
 	}
 }
