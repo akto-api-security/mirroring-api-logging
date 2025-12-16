@@ -34,7 +34,7 @@ var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
 
-var kafkaErrorThreshold = 100
+var kafkaErrorThreshold = 500
 
 func init() {
 
