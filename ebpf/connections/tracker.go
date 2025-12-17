@@ -30,6 +30,7 @@ type Tracker struct {
 	srcPort uint16
 
 	foundHTTP bool
+	protocol  string // "http1", "http2", or "unknown"
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -40,6 +41,7 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		mutex:     sync.RWMutex{},
 		ssl:       false,
 		foundHTTP: false,
+		protocol:  protocolUnknown,
 	}
 }
 
@@ -54,9 +56,14 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
+func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent, protocol string) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
+
+	if conn.protocol == protocolUnknown && protocol != protocolUnknown {
+		conn.protocol = protocol
+		metaUtils.LogIngest("Protocol detected", "fd", conn.connID.Fd, "id", conn.connID.Id, "protocol", protocol)
+	}
 
 	if !conn.ssl && event.Attr.Ssl {
 		for k := range conn.sentBuf {
@@ -85,6 +92,12 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	}
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+}
+
+func (conn *Tracker) GetProtocol() string {
+	conn.mutex.RLock()
+	defer conn.mutex.RUnlock()
+	return conn.protocol
 }
 
 func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {

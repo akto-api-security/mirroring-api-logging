@@ -19,6 +19,8 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/hpack"
 )
 
 var (
@@ -46,6 +48,10 @@ var (
 )
 
 const ONE_MINUTE = 60
+
+const (
+	protocolhttp2 = "http2"
+)
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
@@ -170,15 +176,21 @@ func IsValidMethod(method string) bool {
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
-	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) {
+	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string, protocol string) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
+		return
+	}
+	// Route to HTTP/2 parser if protocol is detected as HTTP/2
+	if protocol == protocolhttp2 {
+		slog.Debug("Routing to HTTP/2 parser", "sourceIp", sourceIp, "destIp", destIp, "protocol", protocol)
+		ParseHTTP2AndProduce(receiveBuffer, sentBuffer, sourceIp, destIp, vxlanID, isPending, trafficSource, isComplete, direction, idfd, fd, daemonsetIdentifier, hostName)
 		return
 	}
 
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
-		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer), "protocol", protocol)
 	}
 
 	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
@@ -505,5 +517,314 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		}
 
 		i++
+	}
+}
+
+type http2Stream struct {
+	streamID         uint32
+	requestHeaders   map[string]string
+	requestBody      []byte
+	responseHeaders  map[string]string
+	responseBody     []byte
+	method           string
+	path             string
+	statusCode       int
+	status           string
+	requestComplete  bool
+	responseComplete bool
+}
+
+func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
+	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) {
+
+	if checkAndUpdateBandwidthProcessed(0) {
+		return
+	}
+
+	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+	if shouldPrint {
+		slog.Debug("ParseHTTP2AndProduce", "receiveBufferLen", len(receiveBuffer), "sentBufferLen", len(sentBuffer))
+	}
+
+	http2Preface := []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+	if len(receiveBuffer) >= len(http2Preface) && bytes.Equal(receiveBuffer[:len(http2Preface)], http2Preface) {
+		receiveBuffer = receiveBuffer[len(http2Preface):]
+		slog.Debug("Skipped HTTP/2 connection preface")
+	}
+	if len(sentBuffer) >= len(http2Preface) && bytes.Equal(sentBuffer[:len(http2Preface)], sentBuffer) {
+		sentBuffer = sentBuffer[len(http2Preface):]
+	}
+
+	streams := make(map[uint32]*http2Stream)
+
+	parseHTTP2Frames(receiveBuffer, streams, true, shouldPrint)
+	parseHTTP2Frames(sentBuffer, streams, false, shouldPrint)
+
+	// Process complete request/response pairs
+	for streamID, stream := range streams {
+		if !stream.requestComplete || !stream.responseComplete {
+			if shouldPrint {
+				slog.Debug("Incomplete stream", "streamID", streamID, "requestComplete", stream.requestComplete, "responseComplete", stream.responseComplete)
+			}
+			// Skip incomplete streams unless connection is complete
+			if !isComplete {
+				continue
+			}
+		}
+
+		reqHeader := make(map[string]*trafficpb.StringList)
+		for name, value := range stream.requestHeaders {
+			reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
+				Values: []string{value},
+			}
+		}
+
+		ip := GetSourceIp(reqHeader, sourceIp)
+
+		if stream.method != "" {
+			reqHeader[":method"] = &trafficpb.StringList{Values: []string{stream.method}}
+		}
+		if stream.path != "" {
+			reqHeader[":path"] = &trafficpb.StringList{Values: []string{stream.path}}
+		}
+
+		host := stream.requestHeaders[":authority"]
+		if host == "" {
+			host = stream.requestHeaders["host"]
+		}
+		if host != "" {
+			reqHeader["host"] = &trafficpb.StringList{Values: []string{host}}
+		}
+
+		respHeader := make(map[string]*trafficpb.StringList)
+		for name, value := range stream.responseHeaders {
+			respHeader[strings.ToLower(name)] = &trafficpb.StringList{
+				Values: []string{value},
+			}
+		}
+
+		reqHeaderStr := make(map[string]string)
+		for name, value := range stream.requestHeaders {
+			reqHeaderStr[name] = value
+		}
+		if host != "" {
+			reqHeaderStr["host"] = host
+		}
+
+		passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaderStr)
+		if !passes {
+			continue
+		}
+
+		if utils.IgnoreIpTraffic && utils.CheckIfIp(host) {
+			continue
+		}
+
+		if utils.IgnoreCloudMetadataCalls && host == "169.254.169.254" {
+			continue
+		}
+
+		if utils.IgnoreEnvoyProxycalls && sourceIp == utils.EnvoyProxyIp && direction == utils.DirectionOutbound {
+			slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", sourceIp, "path", stream.path, "host", host)
+			continue
+		}
+
+		var skipPacket = utils.FilterPacket(reqHeaderStr)
+		if skipPacket {
+			continue
+		}
+
+		url := stream.path
+		checkDebugUrlAndPrint(url, host, "HTTP/2 URL,host found in ParseHTTP2AndProduce")
+
+		payload := &trafficpb.HttpResponseParam{
+			Method:          stream.method,
+			Path:            stream.path,
+			RequestHeaders:  reqHeader,
+			ResponseHeaders: respHeader,
+			RequestPayload:  string(stream.requestBody),
+			ResponsePayload: string(stream.responseBody),
+			Ip:              ip,
+			Time:            int32(time.Now().Unix()),
+			StatusCode:      int32(stream.statusCode),
+			Type:            "HTTP/2.0",
+			Status:          stream.status,
+			AktoAccountId:   fmt.Sprint(1000000),
+			AktoVxlanId:     fmt.Sprint(vxlanID),
+			IsPending:       isPending,
+			Source:          trafficSource,
+		}
+
+		respHeaderStr := make(map[string]string)
+		for name, value := range stream.responseHeaders {
+			respHeaderStr[name] = value
+		}
+
+		reqHeaderString, _ := json.Marshal(reqHeaderStr)
+		respHeaderString, _ := json.Marshal(respHeaderStr)
+
+		value := map[string]string{
+			"path":            stream.path,
+			"requestHeaders":  string(reqHeaderString),
+			"responseHeaders": string(respHeaderString),
+			"method":          stream.method,
+			"requestPayload":  string(stream.requestBody),
+			"responsePayload": string(stream.responseBody),
+			"ip":              sourceIp,
+			"destIp":          destIp,
+			"time":            fmt.Sprint(time.Now().Unix()),
+			"statusCode":      fmt.Sprint(stream.statusCode),
+			"type":            "HTTP/2.0",
+			"status":          stream.status,
+			"akto_account_id": fmt.Sprint(1000000),
+			"akto_vxlan_id":   fmt.Sprint(vxlanID),
+			"is_pending":      fmt.Sprint(isPending),
+			"source":          trafficSource,
+			"direction":       fmt.Sprint(direction),
+			"process_id":      fmt.Sprint(idfd >> 32),
+			"socket_id":       fmt.Sprint(fd),
+			"daemonset_id":    fmt.Sprint(daemonsetIdentifier),
+			"enable_graph":    fmt.Sprint(utils.EnableGraph),
+		}
+
+		var pid = idfd >> 32
+		log := fmt.Sprintf("HTTP/2 pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v, streamId=%v",
+			direction, host, stream.path, sourceIp, destIp, fd, pid, hostName, streamID)
+		checkDebugUrlAndPrint(url, host, log)
+
+		if PodInformerInstance != nil && direction == utils.DirectionInbound {
+			if hostName == "" {
+				checkDebugUrlAndPrint(url, host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
+				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
+			} else {
+				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, host)
+				if err != nil {
+					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
+					checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+hostName)
+				} else {
+					value["tag"] = podLabels
+					checkDebugUrlAndPrint(url, host, "Pod labels found in ParseHTTP2AndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
+					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
+				}
+			}
+		} else {
+			checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
+		}
+
+		out, _ := json.Marshal(value)
+		ctx := context.Background()
+
+		outgoingBytes := len(out)
+		if checkAndUpdateBandwidthProcessed(outgoingBytes) {
+			return
+		}
+
+		hostString := host
+		if utils.CheckIfIpHost(hostString) {
+			hostString = "ip-host"
+		}
+		oc := utils.GenerateOutgoingCounter(vxlanID, sourceIp, hostString)
+		trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
+
+		if apiProcessor.CloudProcessorInstance != nil {
+			apiProcessor.CloudProcessorInstance.Produce(value)
+		} else {
+			go ProduceStr(ctx, string(out), url, host)
+			go Produce(ctx, payload)
+		}
+	}
+}
+
+func parseHTTP2Frames(buffer []byte, streams map[uint32]*http2Stream, isRequest bool, shouldPrint bool) {
+	framer := http2.NewFramer(nil, bytes.NewReader(buffer))
+	framer.SetMaxReadFrameSize(1 << 20) // 1MB max frame size
+
+	decoder := hpack.NewDecoder(4096, nil)
+
+	for {
+		frame, err := framer.ReadFrame()
+		if err != nil {
+			if err != io.EOF {
+				if shouldPrint {
+					slog.Debug("Error reading HTTP/2 frame", "error", err, "isRequest", isRequest)
+				}
+			}
+			break
+		}
+
+		streamID := frame.Header().StreamID
+
+		// Skip stream 0 (connection-level frames like SETTINGS, WINDOW_UPDATE, PING)
+		if streamID == 0 {
+			continue
+		}
+
+		// Get or create stream
+		stream, exists := streams[streamID]
+		if !exists {
+			stream = &http2Stream{
+				streamID:        streamID,
+				requestHeaders:  make(map[string]string),
+				responseHeaders: make(map[string]string),
+			}
+			streams[streamID] = stream
+		}
+
+		switch f := frame.(type) {
+		case *http2.HeadersFrame:
+			headerBlock := f.HeaderBlockFragment()
+			headers, err := decoder.DecodeFull(headerBlock)
+			if err != nil {
+				slog.Error("Failed to decode HPACK headers", "error", err, "streamID", streamID)
+				continue
+			}
+
+			if isRequest {
+				for _, hf := range headers {
+					stream.requestHeaders[hf.Name] = hf.Value
+					// Extract pseudo-headers
+					if hf.Name == ":method" {
+						stream.method = hf.Value
+					} else if hf.Name == ":path" {
+						stream.path = hf.Value
+					}
+				}
+				if f.StreamEnded() {
+					stream.requestComplete = true
+				}
+			} else {
+				for _, hf := range headers {
+					stream.responseHeaders[hf.Name] = hf.Value
+					// Extract status code
+					if hf.Name == ":status" {
+						stream.status = hf.Value
+						fmt.Sscanf(hf.Value, "%d", &stream.statusCode)
+					}
+				}
+				if f.StreamEnded() {
+					stream.responseComplete = true
+				}
+			}
+
+		case *http2.DataFrame:
+			data := f.Data()
+			if isRequest {
+				stream.requestBody = append(stream.requestBody, data...)
+				if f.StreamEnded() {
+					stream.requestComplete = true
+				}
+			} else {
+				stream.responseBody = append(stream.responseBody, data...)
+				if f.StreamEnded() {
+					stream.responseComplete = true
+				}
+			}
+
+		case *http2.RSTStreamFrame:
+			// Stream was reset
+			if shouldPrint {
+				slog.Debug("Stream reset", "streamID", streamID, "errorCode", f.ErrCode)
+			}
+		}
 	}
 }

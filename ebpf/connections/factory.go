@@ -82,6 +82,12 @@ var (
 	trackerDataProcessInterval = 100
 )
 
+const (
+	protocolUnknown = "unknown"
+	protocolhttp1   = "http1"
+	protocolhttp2   = "http2"
+)
+
 func init() {
 	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
 	utils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
@@ -120,13 +126,15 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
+	protocol := tracker.GetProtocol()
+
 	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
-		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 	}
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
 		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 		}
 	}
 }
@@ -215,7 +223,12 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				switch e := event.(type) {
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					tracker.AddDataEvent(*e)
+
+					protocol := tracker.GetProtocol()
+					if protocol == protocolUnknown {
+						protocol = detectProtocol(e.Msg[:])
+					}
+					tracker.AddDataEvent(*e, protocol)
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddOpenEvent(*e)
@@ -328,4 +341,57 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 	} else {
 		utils.LogProcessing("No worker found for", "connectionId", connectionID)
 	}
+}
+
+func detectProtocol(data []byte) string {
+	if len(data) < 16 {
+		return protocolUnknown
+	}
+
+	http2Preface := []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+	if len(data) >= len(http2Preface) && bytes.Equal(data[:len(http2Preface)], http2Preface) {
+		return protocolhttp2
+	}
+
+	// Frame format: 3 bytes length + 1 byte type + 1 byte flags + 4 bytes stream ID
+	if len(data) >= 9 {
+		frameType := data[3]
+
+		if frameType <= 9 {
+
+			frameLen := int(data[0])<<16 | int(data[1])<<8 | int(data[2])
+			if frameLen > 0 && frameLen <= 16384 { // Max frame size is typically 16KB
+				// Additional heuristic: check if it's not starting with HTTP/1 methods
+				if !bytes.HasPrefix(data, []byte("GET ")) &&
+					!bytes.HasPrefix(data, []byte("POST ")) &&
+					!bytes.HasPrefix(data, []byte("PUT ")) &&
+					!bytes.HasPrefix(data, []byte("DELETE ")) &&
+					!bytes.HasPrefix(data, []byte("PATCH ")) &&
+					!bytes.HasPrefix(data, []byte("HEAD ")) &&
+					!bytes.HasPrefix(data, []byte("OPTIONS ")) &&
+					!bytes.HasPrefix(data, []byte("CONNECT ")) &&
+					!bytes.HasPrefix(data, []byte("TRACE ")) &&
+					!bytes.HasPrefix(data, httpBytes) {
+					return protocolhttp2
+				}
+			}
+		}
+	}
+
+	// HTTP/1.x detection - starts with HTTP method or "HTTP/"
+	if bytes.HasPrefix(data, []byte("GET ")) ||
+		bytes.HasPrefix(data, []byte("POST ")) ||
+		bytes.HasPrefix(data, []byte("PUT ")) ||
+		bytes.HasPrefix(data, []byte("DELETE ")) ||
+		bytes.HasPrefix(data, []byte("PATCH ")) ||
+		bytes.HasPrefix(data, []byte("HEAD ")) ||
+		bytes.HasPrefix(data, []byte("OPTIONS ")) ||
+		bytes.HasPrefix(data, []byte("CONNECT ")) ||
+		bytes.HasPrefix(data, []byte("TRACE ")) ||
+		bytes.HasPrefix(data, []byte("HTTP/1.")) ||
+		bytes.HasPrefix(data, []byte("HTTP/0.")) {
+		return protocolhttp1
+	}
+
+	return protocolUnknown
 }
