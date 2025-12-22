@@ -56,13 +56,35 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent, protocol string) {
+func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if conn.protocol == protocolUnknown && protocol != protocolUnknown {
-		conn.protocol = protocol
-		metaUtils.LogIngest("Protocol detected", "fd", conn.connID.Fd, "id", conn.connID.Id, "protocol", protocol)
+	// Update protocol from eBPF if it has changed from UNKN
+	protocolBytes := event.Attr.Protocol[:]
+	nullIndex := -1
+	for i, b := range protocolBytes {
+		if b == 0 {
+			nullIndex = i
+			break
+		}
+	}
+	if nullIndex > 0 {
+		protocolStr := string(protocolBytes[:nullIndex])
+		if protocolStr != protocolUnknown && conn.protocol != protocolStr {
+			oldProtocol := conn.protocol
+			switch protocolStr {
+			case protocolhttp1:
+				conn.protocol = protocolhttp1
+			case protocolhttp2:
+				conn.protocol = protocolhttp2
+			default:
+				conn.protocol = protocolUnknown
+			}
+			if oldProtocol != conn.protocol {
+				metaUtils.LogProcessing("Protocol updated from data event", "fd", conn.connID.Fd, "id", conn.connID.Id, "old", oldProtocol, "new", conn.protocol)
+			}
+		}
 	}
 
 	if !conn.ssl && event.Attr.Ssl {
@@ -112,27 +134,7 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	conn.lastAccessTimestamp = now
 	conn.srcIp = event.SrcIp
 	conn.srcPort = event.SrcPort
-
-	protocolBytes := event.Protocol[:]
-	nullIndex := -1
-	for i, b := range protocolBytes {
-		if b == 0 {
-			nullIndex = i
-			break
-		}
-	}
-	if nullIndex > 0 {
-		protocolStr := string(protocolBytes[:nullIndex])
-		switch protocolStr {
-		case protocolhttp1:
-			conn.protocol = protocolhttp1
-		case protocolhttp2:
-			conn.protocol = protocolhttp2
-		default:
-			conn.protocol = protocolUnknown
-		}
-		metaUtils.LogIngest("Protocol set from eBPF", "fd", conn.connID.Fd, "id", conn.connID.Id, "protocol", conn.protocol, "raw", protocolStr)
-	}
+	// Protocol will be set from SocketDataEvent, not from SocketOpenEvent
 }
 
 func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
