@@ -46,6 +46,7 @@ type SocketOpenEvent struct {
 	SrcPort        uint16
 	Padding        [2]byte
 	Socket_open_ns uint64
+	Protocol       [8]byte
 }
 
 type SocketCloseEvent struct {

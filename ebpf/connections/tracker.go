@@ -112,6 +112,27 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	conn.lastAccessTimestamp = now
 	conn.srcIp = event.SrcIp
 	conn.srcPort = event.SrcPort
+
+	protocolBytes := event.Protocol[:]
+	nullIndex := -1
+	for i, b := range protocolBytes {
+		if b == 0 {
+			nullIndex = i
+			break
+		}
+	}
+	if nullIndex > 0 {
+		protocolStr := string(protocolBytes[:nullIndex])
+		switch protocolStr {
+		case protocolhttp1:
+			conn.protocol = protocolhttp1
+		case protocolhttp2:
+			conn.protocol = protocolhttp2
+		default:
+			conn.protocol = protocolUnknown
+		}
+		metaUtils.LogIngest("Protocol set from eBPF", "fd", conn.connID.Fd, "id", conn.connID.Id, "protocol", conn.protocol, "raw", protocolStr)
+	}
 }
 
 func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {

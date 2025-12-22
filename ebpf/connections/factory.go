@@ -83,9 +83,9 @@ var (
 )
 
 const (
-	protocolUnknown = "unknown"
-	protocolhttp1   = "http1"
-	protocolhttp2   = "http2"
+	protocolUnknown = "UNKN"
+	protocolhttp1   = "HTTP1"
+	protocolhttp2   = "HTTP2"
 )
 
 func init() {
