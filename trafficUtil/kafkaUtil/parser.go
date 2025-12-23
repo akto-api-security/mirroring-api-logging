@@ -50,7 +50,7 @@ var (
 const ONE_MINUTE = 60
 
 const (
-	protocolhttp2 = "http2"
+	protocolhttp2 = "HTTP2"
 )
 
 func init() {
