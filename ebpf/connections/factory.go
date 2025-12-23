@@ -73,7 +73,6 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 var (
 	disableEgress        = false
 	maxActiveConnections = 4096
-	inactivityThreshold  = 3 * time.Second
 	// Value in MB
 	bufferMemThreshold = 400
 
@@ -85,7 +84,6 @@ var (
 func init() {
 	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
 	utils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
-	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
@@ -205,7 +203,6 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
 		utils.LogProcessing("Starting go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-		inactivityTimer := time.NewTimer(inactivityThreshold)
 		delayedDeleteChan := make(chan struct{}, 1)
 
 		for {
@@ -232,14 +229,6 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				utils.LogProcessing("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				factory.ProcessAndStopWorker(connID)
 				factory.DeleteWorker(connID)
-				return
-
-			case <-inactivityTimer.C:
-				// Eat the go routine after inactive threshold, process the tracker and stop the worker
-				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-				factory.ProcessAndStopWorker(connID)
-				factory.DeleteWorker(connID)
-				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
 			}
 		}
