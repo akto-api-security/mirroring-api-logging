@@ -308,22 +308,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		id := ""
 
-		// build req headers for threat client
-		reqHeader := make(map[string]*trafficpb.StringList)
-		for name, values := range req.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
-					Values: []string{value},
-				}
-			}
-		}
-		ip := GetSourceIp(reqHeader, sourceIp)
-
-		reqHeader["host"] = &trafficpb.StringList{
-			Values: []string{req.Host},
-		}
-
+		// build req headers for threat client (no longer needed, keeping for x-debug-token detection)
 		reqHeaderStr := make(map[string]string)
 		for name, values := range req.Header {
 			// Loop over all values for the name.
@@ -338,166 +323,48 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		reqHeaderStr["host"] = req.Host
 
-		passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaderStr)
-		//printLog("Req header: " + mapToString(reqHeaderStr))
-		//printLog(fmt.Sprintf("passes %t", passes))
-
-		if !passes {
+		// Apply common filters
+		if !applyFiltersAndChecks(reqHeaderStr, req.Host, sourceIp, direction) {
 			i++
 			continue
 		}
 
-		if utils.IgnoreIpTraffic && utils.CheckIfIp(req.Host) {
-			i++
-			continue
-		}
-
-		if utils.IgnoreCloudMetadataCalls && req.Host == "169.254.169.254" {
-			i++
-			continue
-		}
-
-		if utils.IgnoreEnvoyProxycalls && sourceIp == utils.EnvoyProxyIp && direction == utils.DirectionOutbound {
-			slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", sourceIp, "url", req.URL.String(), "host", req.Host)
-			i++
-			continue
-		}
-
-		var skipPacket = utils.FilterPacket(reqHeaderStr)
-
-		if skipPacket {
-			i++
-			continue
-		}
-
-		// build resp headers for threat client
-		respHeader := make(map[string]*trafficpb.StringList)
-		for name, values := range resp.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
-					Values: []string{value},
-				}
-			}
-		}
-
-		// TODO: remove and use protobuf instead
+		// Build response headers map
 		respHeaderStr := make(map[string]string)
 		for name, values := range resp.Header {
-			// Loop over all values for the name.
 			for _, value := range values {
 				respHeaderStr[name] = value
 			}
 		}
 
-		url := req.URL.String()
-		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
-
-		// build kafka payload for threat client
-		payload := &trafficpb.HttpResponseParam{
-			Method:          req.Method,
-			Path:            req.URL.String(),
-			RequestHeaders:  reqHeader,
-			ResponseHeaders: respHeader,
-			RequestPayload:  requestsContent[i],
-			ResponsePayload: responsesContent[i],
-			Ip:              ip,
-			Time:            int32(time.Now().Unix()),
-			StatusCode:      int32(resp.StatusCode),
-			Type:            string(req.Proto),
-			Status:          resp.Status,
-			AktoAccountId:   fmt.Sprint(1000000),
-			AktoVxlanId:     fmt.Sprint(vxlanID),
-			IsPending:       isPending,
-			Source:          trafficSource,
+		// Use common production logic
+		params := trafficParams{
+			method:          req.Method,
+			path:            req.URL.String(),
+			requestHeaders:  reqHeaderStr,
+			responseHeaders: respHeaderStr,
+			requestPayload:  requestsContent[i],
+			responsePayload: responsesContent[i],
+			statusCode:      resp.StatusCode,
+			status:          resp.Status,
+			protocolType:    string(req.Proto),
+			sourceIp:        sourceIp,
+			destIp:          destIp,
+			vxlanID:         vxlanID,
+			isPending:       isPending,
+			trafficSource:   trafficSource,
+			direction:       direction,
+			idfd:            idfd,
+			fd:              fd,
+			daemonsetID:     daemonsetIdentifier,
+			hostName:        hostName,
 		}
-
-		reqHeaderString, _ := json.Marshal(reqHeaderStr)
-		respHeaderString, _ := json.Marshal(respHeaderStr)
-
-		// TODO: remove and use protobuf instead
-		value := map[string]string{
-			"path":            req.URL.String(),
-			"requestHeaders":  string(reqHeaderString),
-			"responseHeaders": string(respHeaderString),
-			"method":          req.Method,
-			"requestPayload":  requestsContent[i],
-			"responsePayload": responsesContent[i],
-			"ip":              sourceIp,
-			"destIp":          destIp,
-			"time":            fmt.Sprint(time.Now().Unix()),
-			"statusCode":      fmt.Sprint(resp.StatusCode),
-			"type":            string(req.Proto),
-			"status":          resp.Status,
-			"akto_account_id": fmt.Sprint(1000000),
-			"akto_vxlan_id":   fmt.Sprint(vxlanID),
-			"is_pending":      fmt.Sprint(isPending),
-			"source":          trafficSource,
-			"direction":       fmt.Sprint(direction),
-			"process_id":      fmt.Sprint(idfd >> 32),
-			"socket_id":       fmt.Sprint(fd),
-			"daemonset_id":    fmt.Sprint(daemonsetIdentifier),
-			"enable_graph":    fmt.Sprint(utils.EnableGraph),
-		}
-
-		// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
-		// Shifting by 32 gives us the process id on host machine.
-		var pid = idfd >> 32
-		log := fmt.Sprintf("pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
-			direction,
-			reqHeaderStr["host"],
-			value["path"],
-			sourceIp,
-			destIp,
-			value["socket_id"],
-			pid,
-			hostName,
-		)
-		checkDebugUrlAndPrint(url, req.Host, log)
-
-		if PodInformerInstance != nil && direction == utils.DirectionInbound {
-
-			if hostName == "" {
-				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
-				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
-			} else {
-				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, req.Host)
-				if err != nil {
-					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
-					checkDebugUrlAndPrint(url, req.Host, "Error resolving pod labels "+hostName)
-				} else {
-					value["tag"] = podLabels
-					checkDebugUrlAndPrint(url, req.Host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
-					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
-				}
-			}
-		} else {
-			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
-		}
-
-		out, _ := json.Marshal(value)
-		ctx := context.Background()
-
-		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
-		// this number is the closest (slightly higher) to the actual connection transfer bytes.
-		outgoingBytes := len(out)
-
-		if checkAndUpdateBandwidthProcessed(outgoingBytes) {
-			return
-		}
-
-		hostString := reqHeaderStr["host"]
-		if utils.CheckIfIpHost(hostString) {
-			hostString = "ip-host"
-		}
-		oc := utils.GenerateOutgoingCounter(vxlanID, sourceIp, hostString)
-		trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
 
 		if shouldPrint {
 			if strings.Contains(responsesContent[i], id) {
 				goodRequests++
 			} else {
-				slog.Debug("req-resp.String()", "out", string(out))
+				slog.Debug("req-resp mismatch", "path", req.URL.String())
 				badRequests++
 			}
 
@@ -506,15 +373,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			}
 		}
 
-		if apiProcessor.CloudProcessorInstance != nil {
-			apiProcessor.CloudProcessorInstance.Produce(value)
-
-		} else {
-			// Produce to kafka
-			// TODO : remove and use protobuf instead
-			go ProduceStr(ctx, string(out), url, req.Host)
-			go Produce(ctx, payload)
-		}
+		produceTrafficData(params)
 
 		i++
 	}
@@ -532,6 +391,176 @@ type http2Stream struct {
 	status           string
 	requestComplete  bool
 	responseComplete bool
+}
+
+type trafficParams struct {
+	method          string
+	path            string
+	requestHeaders  map[string]string
+	responseHeaders map[string]string
+	requestPayload  string
+	responsePayload string
+	statusCode      int
+	status          string
+	protocolType    string
+	sourceIp        string
+	destIp          string
+	vxlanID         int
+	isPending       bool
+	trafficSource   string
+	direction       int
+	idfd            uint64
+	fd              uint32
+	daemonsetID     string
+	hostName        string
+}
+
+// applyFiltersAndChecks performs common filtering logic for both HTTP/1 and HTTP/2
+func applyFiltersAndChecks(reqHeaderStr map[string]string, host string, sourceIp string, direction int) bool {
+	passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaderStr)
+	if !passes {
+		return false
+	}
+
+	if utils.IgnoreIpTraffic && utils.CheckIfIp(host) {
+		return false
+	}
+
+	if utils.IgnoreCloudMetadataCalls && host == "169.254.169.254" {
+		return false
+	}
+
+	if utils.IgnoreEnvoyProxycalls && sourceIp == utils.EnvoyProxyIp && direction == utils.DirectionOutbound {
+		slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", sourceIp, "host", host)
+		return false
+	}
+
+	return !utils.FilterPacket(reqHeaderStr)
+}
+
+func produceTrafficData(params trafficParams) {
+
+	reqHeader := make(map[string]*trafficpb.StringList)
+	for name, value := range params.requestHeaders {
+		reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
+			Values: []string{value},
+		}
+	}
+
+	// Add HTTP/2 pseudo-headers if present
+	if params.method != "" {
+		reqHeader[":method"] = &trafficpb.StringList{Values: []string{params.method}}
+	}
+	if params.path != "" {
+		reqHeader[":path"] = &trafficpb.StringList{Values: []string{params.path}}
+	}
+
+	ip := GetSourceIp(reqHeader, params.sourceIp)
+
+	respHeader := make(map[string]*trafficpb.StringList)
+	for name, value := range params.responseHeaders {
+		respHeader[strings.ToLower(name)] = &trafficpb.StringList{
+			Values: []string{value},
+		}
+	}
+
+	host := params.requestHeaders["host"]
+	url := params.path
+	checkDebugUrlAndPrint(url, host, fmt.Sprintf("%s URL,host found", params.protocolType))
+
+	payload := &trafficpb.HttpResponseParam{
+		Method:          params.method,
+		Path:            params.path,
+		RequestHeaders:  reqHeader,
+		ResponseHeaders: respHeader,
+		RequestPayload:  params.requestPayload,
+		ResponsePayload: params.responsePayload,
+		Ip:              ip,
+		Time:            int32(time.Now().Unix()),
+		StatusCode:      int32(params.statusCode),
+		Type:            params.protocolType,
+		Status:          params.status,
+		AktoAccountId:   fmt.Sprint(1000000),
+		AktoVxlanId:     fmt.Sprint(params.vxlanID),
+		IsPending:       params.isPending,
+		Source:          params.trafficSource,
+	}
+
+	// Build JSON value map
+	reqHeaderString, _ := json.Marshal(params.requestHeaders)
+	respHeaderString, _ := json.Marshal(params.responseHeaders)
+
+	// TODO: remove and use protobuf instead
+	value := map[string]string{
+		"path":            params.path,
+		"requestHeaders":  string(reqHeaderString),
+		"responseHeaders": string(respHeaderString),
+		"method":          params.method,
+		"requestPayload":  params.requestPayload,
+		"responsePayload": params.responsePayload,
+		"ip":              params.sourceIp,
+		"destIp":          params.destIp,
+		"time":            fmt.Sprint(time.Now().Unix()),
+		"statusCode":      fmt.Sprint(params.statusCode),
+		"type":            params.protocolType,
+		"status":          params.status,
+		"akto_account_id": fmt.Sprint(1000000),
+		"akto_vxlan_id":   fmt.Sprint(params.vxlanID),
+		"is_pending":      fmt.Sprint(params.isPending),
+		"source":          params.trafficSource,
+		"direction":       fmt.Sprint(params.direction),
+		"process_id":      fmt.Sprint(params.idfd >> 32),
+		"socket_id":       fmt.Sprint(params.fd),
+		"daemonset_id":    params.daemonsetID,
+		"enable_graph":    fmt.Sprint(utils.EnableGraph),
+	}
+
+	var pid = params.idfd >> 32
+	log := fmt.Sprintf("%s pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
+		params.protocolType, params.direction, host, params.path, params.sourceIp, params.destIp, params.fd, pid, params.hostName)
+	checkDebugUrlAndPrint(url, host, log)
+
+	// Resolve pod labels if applicable
+	if PodInformerInstance != nil && params.direction == utils.DirectionInbound {
+		if params.hostName == "" {
+			checkDebugUrlAndPrint(url, host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
+			slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", params.hostName)
+		} else {
+			podLabels, err := PodInformerInstance.ResolvePodLabels(params.hostName, url, host)
+			if err != nil {
+				slog.Error("Failed to resolve pod labels", "hostName", params.hostName, "error", err)
+				checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+params.hostName)
+			} else {
+				value["tag"] = podLabels
+				checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels found in %s, podLabels found %v for hostName %s", params.protocolType, podLabels, params.hostName))
+				slog.Debug("Pod labels", "podName", params.hostName, "labels", podLabels)
+			}
+		}
+	} else {
+		checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: %d", params.direction))
+	}
+
+	out, _ := json.Marshal(value)
+	ctx := context.Background()
+
+	outgoingBytes := len(out)
+	if checkAndUpdateBandwidthProcessed(outgoingBytes) {
+		return
+	}
+
+	hostString := host
+	if utils.CheckIfIpHost(hostString) {
+		hostString = "ip-host"
+	}
+	oc := utils.GenerateOutgoingCounter(params.vxlanID, params.sourceIp, hostString)
+	trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
+
+	if apiProcessor.CloudProcessorInstance != nil {
+		apiProcessor.CloudProcessorInstance.Produce(value)
+	} else {
+		go ProduceStr(ctx, string(out), url, host)
+		go Produce(ctx, payload)
+	}
 }
 
 func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
@@ -572,35 +601,10 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 			}
 		}
 
-		reqHeader := make(map[string]*trafficpb.StringList)
-		for name, value := range stream.requestHeaders {
-			reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
-				Values: []string{value},
-			}
-		}
-
-		ip := GetSourceIp(reqHeader, sourceIp)
-
-		if stream.method != "" {
-			reqHeader[":method"] = &trafficpb.StringList{Values: []string{stream.method}}
-		}
-		if stream.path != "" {
-			reqHeader[":path"] = &trafficpb.StringList{Values: []string{stream.path}}
-		}
-
+		// Extract host for filtering
 		host := stream.requestHeaders[":authority"]
 		if host == "" {
 			host = stream.requestHeaders["host"]
-		}
-		if host != "" {
-			reqHeader["host"] = &trafficpb.StringList{Values: []string{host}}
-		}
-
-		respHeader := make(map[string]*trafficpb.StringList)
-		for name, value := range stream.responseHeaders {
-			respHeader[strings.ToLower(name)] = &trafficpb.StringList{
-				Values: []string{value},
-			}
 		}
 
 		reqHeaderStr := make(map[string]string)
@@ -611,48 +615,9 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 			reqHeaderStr["host"] = host
 		}
 
-		passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaderStr)
-		if !passes {
+		// Apply common filters
+		if !applyFiltersAndChecks(reqHeaderStr, host, sourceIp, direction) {
 			continue
-		}
-
-		if utils.IgnoreIpTraffic && utils.CheckIfIp(host) {
-			continue
-		}
-
-		if utils.IgnoreCloudMetadataCalls && host == "169.254.169.254" {
-			continue
-		}
-
-		if utils.IgnoreEnvoyProxycalls && sourceIp == utils.EnvoyProxyIp && direction == utils.DirectionOutbound {
-			slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", sourceIp, "path", stream.path, "host", host)
-			continue
-		}
-
-		var skipPacket = utils.FilterPacket(reqHeaderStr)
-		if skipPacket {
-			continue
-		}
-
-		url := stream.path
-		checkDebugUrlAndPrint(url, host, "HTTP/2 URL,host found in ParseHTTP2AndProduce")
-
-		payload := &trafficpb.HttpResponseParam{
-			Method:          stream.method,
-			Path:            stream.path,
-			RequestHeaders:  reqHeader,
-			ResponseHeaders: respHeader,
-			RequestPayload:  string(stream.requestBody),
-			ResponsePayload: string(stream.responseBody),
-			Ip:              ip,
-			Time:            int32(time.Now().Unix()),
-			StatusCode:      int32(stream.statusCode),
-			Type:            "HTTP/2.0",
-			Status:          stream.status,
-			AktoAccountId:   fmt.Sprint(1000000),
-			AktoVxlanId:     fmt.Sprint(vxlanID),
-			IsPending:       isPending,
-			Source:          trafficSource,
 		}
 
 		respHeaderStr := make(map[string]string)
@@ -660,78 +625,30 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 			respHeaderStr[name] = value
 		}
 
-		reqHeaderString, _ := json.Marshal(reqHeaderStr)
-		respHeaderString, _ := json.Marshal(respHeaderStr)
-
-		value := map[string]string{
-			"path":            stream.path,
-			"requestHeaders":  string(reqHeaderString),
-			"responseHeaders": string(respHeaderString),
-			"method":          stream.method,
-			"requestPayload":  string(stream.requestBody),
-			"responsePayload": string(stream.responseBody),
-			"ip":              sourceIp,
-			"destIp":          destIp,
-			"time":            fmt.Sprint(time.Now().Unix()),
-			"statusCode":      fmt.Sprint(stream.statusCode),
-			"type":            "HTTP/2.0",
-			"status":          stream.status,
-			"akto_account_id": fmt.Sprint(1000000),
-			"akto_vxlan_id":   fmt.Sprint(vxlanID),
-			"is_pending":      fmt.Sprint(isPending),
-			"source":          trafficSource,
-			"direction":       fmt.Sprint(direction),
-			"process_id":      fmt.Sprint(idfd >> 32),
-			"socket_id":       fmt.Sprint(fd),
-			"daemonset_id":    fmt.Sprint(daemonsetIdentifier),
-			"enable_graph":    fmt.Sprint(utils.EnableGraph),
+		// Use common production logic
+		params := trafficParams{
+			method:          stream.method,
+			path:            stream.path,
+			requestHeaders:  reqHeaderStr,
+			responseHeaders: respHeaderStr,
+			requestPayload:  string(stream.requestBody),
+			responsePayload: string(stream.responseBody),
+			statusCode:      stream.statusCode,
+			status:          stream.status,
+			protocolType:    "HTTP/2.0",
+			sourceIp:        sourceIp,
+			destIp:          destIp,
+			vxlanID:         vxlanID,
+			isPending:       isPending,
+			trafficSource:   trafficSource,
+			direction:       direction,
+			idfd:            idfd,
+			fd:              fd,
+			daemonsetID:     daemonsetIdentifier,
+			hostName:        hostName,
 		}
 
-		var pid = idfd >> 32
-		log := fmt.Sprintf("HTTP/2 pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v, streamId=%v",
-			direction, host, stream.path, sourceIp, destIp, fd, pid, hostName, streamID)
-		checkDebugUrlAndPrint(url, host, log)
-
-		if PodInformerInstance != nil && direction == utils.DirectionInbound {
-			if hostName == "" {
-				checkDebugUrlAndPrint(url, host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
-				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
-			} else {
-				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, host)
-				if err != nil {
-					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
-					checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+hostName)
-				} else {
-					value["tag"] = podLabels
-					checkDebugUrlAndPrint(url, host, "Pod labels found in ParseHTTP2AndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
-					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
-				}
-			}
-		} else {
-			checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
-		}
-
-		out, _ := json.Marshal(value)
-		ctx := context.Background()
-
-		outgoingBytes := len(out)
-		if checkAndUpdateBandwidthProcessed(outgoingBytes) {
-			return
-		}
-
-		hostString := host
-		if utils.CheckIfIpHost(hostString) {
-			hostString = "ip-host"
-		}
-		oc := utils.GenerateOutgoingCounter(vxlanID, sourceIp, hostString)
-		trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
-
-		if apiProcessor.CloudProcessorInstance != nil {
-			apiProcessor.CloudProcessorInstance.Produce(value)
-		} else {
-			go ProduceStr(ctx, string(out), url, host)
-			go Produce(ctx, payload)
-		}
+		produceTrafficData(params)
 	}
 }
 

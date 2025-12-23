@@ -338,11 +338,14 @@ static __inline void detect_protocol_from_data(struct conn_info_t *conn_info, co
         return;
     }
 
+    // HTTP/2 connection preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
     if (buf[0] == 'P' && buf[1] == 'R' && buf[2] == 'I' && buf[3] == ' ' && buf[4] == '*') {
         __builtin_memcpy(conn_info->protocol, "HTTP2", 6);
         return;
     }
 
+    // HTTP/1.x request methods (verbs): GET, POST, PUT, DELETE, HEAD, PATCH
+    // GET /path HTTP/1.1
     if ((buf[0] == 'G' && buf[1] == 'E' && buf[2] == 'T' && buf[3] == ' ') ||
         (buf[0] == 'P' && buf[1] == 'O' && buf[2] == 'S' && buf[3] == 'T') ||
         (buf[0] == 'P' && buf[1] == 'U' && buf[2] == 'T' && buf[3] == ' ') ||
@@ -353,6 +356,7 @@ static __inline void detect_protocol_from_data(struct conn_info_t *conn_info, co
         return;
     }
 
+    // HTTP/1.x response: "HTTP/1.0 200 OK" or "HTTP/1.1 200 OK"
     if (buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' && buf[3] == 'P' && buf[4] == '/') {
         __builtin_memcpy(conn_info->protocol, "HTTP1", 6);
         return;
