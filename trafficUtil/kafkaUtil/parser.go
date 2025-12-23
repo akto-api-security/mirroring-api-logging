@@ -595,10 +595,8 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 			if shouldPrint {
 				slog.Debug("Incomplete stream", "streamID", streamID, "requestComplete", stream.requestComplete, "responseComplete", stream.responseComplete)
 			}
-			// Skip incomplete streams unless connection is complete
-			if !isComplete {
-				continue
-			}
+			// Skip incomplete streams
+			continue
 		}
 
 		// Extract host for filtering
