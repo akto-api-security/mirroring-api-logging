@@ -18,6 +18,7 @@ type SocketDataEventAttr struct {
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
 	Ssl              bool
+	Protocol         [8]byte
 }
 
 /*
@@ -46,6 +47,7 @@ type SocketOpenEvent struct {
 	SrcPort        uint16
 	Padding        [2]byte
 	Socket_open_ns uint64
+	Protocol       [8]byte
 }
 
 type SocketCloseEvent struct {

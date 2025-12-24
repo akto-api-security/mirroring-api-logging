@@ -82,6 +82,12 @@ var (
 	trackerDataProcessInterval = 100
 )
 
+const (
+	protocolUnknown = "UNKN"
+	protocolhttp1   = "HTTP1"
+	protocolhttp2   = "HTTP2"
+)
+
 func init() {
 	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
 	utils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
@@ -120,13 +126,15 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
-		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+	protocol := tracker.protocol
+
+	if (len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes))) || protocol == protocolhttp2 {
+		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 	}
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		if (len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes))) || protocol == protocolhttp2 {
+			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 		}
 	}
 }
