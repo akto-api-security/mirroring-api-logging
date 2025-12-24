@@ -34,6 +34,8 @@ var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
 
+var kafkaErrorThreshold = 500
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -44,6 +46,7 @@ func init() {
 	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
 	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
 
+	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
 }
 
 func InitKafka() {
@@ -112,6 +115,11 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
 			slog.Error("kafka error message", "err", err, "count", KafkaErrMsgCount, "messagesCount", len(messages))
+
+			if KafkaErrMsgCount > kafkaErrorThreshold {
+				slog.Error("kafka error count exceeded threshold, restarting module", "count", KafkaErrMsgCount, "threshold", kafkaErrorThreshold)
+				os.Exit(1)
+			}
 		} else {
 			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
