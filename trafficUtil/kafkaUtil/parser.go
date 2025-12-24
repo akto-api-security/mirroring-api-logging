@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -391,6 +392,9 @@ type http2Stream struct {
 	status           string
 	requestComplete  bool
 	responseComplete bool
+	isGRPC           bool
+	grpcStatus       string
+	grpcMessage      string
 }
 
 type trafficParams struct {
@@ -623,6 +627,11 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 			respHeaderStr[name] = value
 		}
 
+		protocolType := "HTTP/2.0"
+		if stream.isGRPC {
+			protocolType = "gRPC"
+		}
+
 		// Use common production logic
 		params := trafficParams{
 			method:          stream.method,
@@ -633,7 +642,7 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 			responsePayload: string(stream.responseBody),
 			statusCode:      stream.statusCode,
 			status:          stream.status,
-			protocolType:    "HTTP/2.0",
+			protocolType:    protocolType,
 			sourceIp:        sourceIp,
 			destIp:          destIp,
 			vxlanID:         vxlanID,
@@ -697,10 +706,14 @@ func parseHTTP2Frames(buffer []byte, streams map[uint32]*http2Stream, isRequest 
 			if isRequest {
 				for _, hf := range headers {
 					stream.requestHeaders[hf.Name] = hf.Value
+					if hf.Name == "content-type" && strings.HasPrefix(hf.Value, "application/grpc") {
+						stream.isGRPC = true
+					}
 					// Extract pseudo-headers
-					if hf.Name == ":method" {
+					switch hf.Name {
+					case ":method":
 						stream.method = hf.Value
-					} else if hf.Name == ":path" {
+					case ":path":
 						stream.path = hf.Value
 					}
 				}
@@ -711,9 +724,14 @@ func parseHTTP2Frames(buffer []byte, streams map[uint32]*http2Stream, isRequest 
 				for _, hf := range headers {
 					stream.responseHeaders[hf.Name] = hf.Value
 					// Extract status code
-					if hf.Name == ":status" {
+					switch hf.Name {
+					case ":status":
 						stream.status = hf.Value
 						fmt.Sscanf(hf.Value, "%d", &stream.statusCode)
+					case "grpc-status":
+						stream.grpcStatus = hf.Value
+					case "grpc-message":
+						stream.grpcMessage = hf.Value
 					}
 				}
 				if f.StreamEnded() {
@@ -724,12 +742,22 @@ func parseHTTP2Frames(buffer []byte, streams map[uint32]*http2Stream, isRequest 
 		case *http2.DataFrame:
 			data := f.Data()
 			if isRequest {
-				stream.requestBody = append(stream.requestBody, data...)
+				if stream.isGRPC {
+					parsedData := parseGRPCFrames(data)
+					stream.requestBody = append(stream.requestBody, parsedData...)
+				} else {
+					stream.requestBody = append(stream.requestBody, data...)
+				}
 				if f.StreamEnded() {
 					stream.requestComplete = true
 				}
 			} else {
-				stream.responseBody = append(stream.responseBody, data...)
+				if stream.isGRPC {
+					parsedData := parseGRPCFrames(data)
+					stream.responseBody = append(stream.responseBody, parsedData...)
+				} else {
+					stream.responseBody = append(stream.responseBody, data...)
+				}
 				if f.StreamEnded() {
 					stream.responseComplete = true
 				}
@@ -742,4 +770,36 @@ func parseHTTP2Frames(buffer []byte, streams map[uint32]*http2Stream, isRequest 
 			}
 		}
 	}
+}
+
+func parseGRPCFrames(data []byte) []byte {
+	var finalData []byte
+	offset := 0
+
+	for offset < len(data) {
+		// Need atleast 5 bytes for gRPC
+		if offset+5 > len(data) {
+			break
+		}
+		compressed := data[offset]
+		messageLength := binary.BigEndian.Uint32(data[offset+1 : offset+5])
+
+		if offset+5+int(messageLength) > len(data) {
+			break
+		}
+
+		message := data[offset+5 : offset+5+int(messageLength)]
+
+		if compressed == 1 {
+			// Message is compressed
+			// TODO, if required we can get the compression algo and uncompress it.
+			slog.Debug("gRPC message is compressed", "length", messageLength)
+		}
+
+		finalData = append(finalData, message...)
+
+		offset += (5 + int(messageLength))
+	}
+
+	return finalData
 }
