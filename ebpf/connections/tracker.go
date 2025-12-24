@@ -72,7 +72,6 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	if nullIndex > 0 {
 		protocolStr := string(protocolBytes[:nullIndex])
 		if protocolStr != protocolUnknown && conn.protocol != protocolStr {
-			oldProtocol := conn.protocol
 			switch protocolStr {
 			case protocolhttp1:
 				conn.protocol = protocolhttp1
@@ -80,9 +79,6 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 				conn.protocol = protocolhttp2
 			default:
 				conn.protocol = protocolUnknown
-			}
-			if oldProtocol != conn.protocol {
-				metaUtils.LogProcessing("Protocol updated from data event", "fd", conn.connID.Fd, "id", conn.connID.Id, "old", oldProtocol, "new", conn.protocol)
 			}
 		}
 	}
@@ -116,12 +112,6 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }
 
-func (conn *Tracker) GetProtocol() string {
-	conn.mutex.RLock()
-	defer conn.mutex.RUnlock()
-	return conn.protocol
-}
-
 func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
@@ -134,7 +124,6 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	conn.lastAccessTimestamp = now
 	conn.srcIp = event.SrcIp
 	conn.srcPort = event.SrcPort
-	// Protocol will be set from SocketDataEvent, not from SocketOpenEvent
 }
 
 func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
