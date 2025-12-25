@@ -384,7 +384,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 		req.Body.Close()
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
-			return nil
+			body = []byte{}
 		}
 
 		requests = append(requests, *req)
@@ -416,7 +416,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
-			return nil
+			body = []byte{}
 		}
 
 		// Handle gzip/deflate decompression
@@ -427,14 +427,14 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 			r, err = gzip.NewReader(r)
 			if err != nil {
 				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return nil
+				body = []byte{}
 			}
 		}
 		if err == nil {
 			body, err = io.ReadAll(r)
 			if err != nil {
 				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
-				return nil
+				body = []byte{}
 			}
 			if _, ok := r.(*gzip.Reader); ok {
 				r.(*gzip.Reader).Close()

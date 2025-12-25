@@ -124,7 +124,7 @@ func (w *PodInformer) GetPodNameByProcessId(pid int32) string {
 	if hostName, ok := w.pidHostNameMap[pid]; ok {
 		return hostName
 	}
-	slog.Warn("Hostname not found for", "processId", pid)
+	slog.Debug("Hostname not found for", "processId", pid)
 	return ""
 }
 
