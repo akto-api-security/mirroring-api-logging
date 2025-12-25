@@ -21,6 +21,201 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
+// TrafficContext holds metadata about the captured traffic.
+// This consolidates the many parameters previously passed to ParseAndProduce.
+type TrafficContext struct {
+	SourceIP            string
+	DestIP              string
+	VxlanID             int
+	IsPending           bool
+	TrafficSource       string
+	IsComplete          bool
+	Direction           int
+	ProcessID           uint32 // Extracted from idfd >> 32
+	SocketFD            uint32
+	DaemonsetIdentifier string
+	HostName            string
+}
+
+// ParsedTraffic holds the parsed HTTP requests and responses with their bodies.
+type ParsedTraffic struct {
+	Requests       []http.Request
+	RequestBodies  []string
+	Responses      []http.Response
+	ResponseBodies []string
+}
+
+// HeaderSet holds HTTP headers in both protobuf and string map formats.
+type HeaderSet struct {
+	Protobuf  map[string]*trafficpb.StringList
+	StringMap map[string]string
+}
+
+// ConvertedHeaders holds converted headers for both request and response.
+type ConvertedHeaders struct {
+	Request  HeaderSet
+	Response HeaderSet
+	DebugID  string // x-debug-token value if present
+}
+
+// PayloadInput contains the data needed to build traffic payloads.
+type PayloadInput struct {
+	Request      *http.Request
+	Response     *http.Response
+	Headers      ConvertedHeaders
+	RequestBody  string
+	ResponseBody string
+	SourceIP     string // IP after GetSourceIp processing
+	Context      TrafficContext
+}
+
+// buildProtobufPayload creates the protobuf payload for the threat client.
+func buildProtobufPayload(input PayloadInput) *trafficpb.HttpResponseParam {
+	return &trafficpb.HttpResponseParam{
+		Method:          input.Request.Method,
+		Path:            input.Request.URL.String(),
+		RequestHeaders:  input.Headers.Request.Protobuf,
+		ResponseHeaders: input.Headers.Response.Protobuf,
+		RequestPayload:  input.RequestBody,
+		ResponsePayload: input.ResponseBody,
+		Ip:              input.SourceIP,
+		Time:            int32(time.Now().Unix()),
+		StatusCode:      int32(input.Response.StatusCode),
+		Type:            string(input.Request.Proto),
+		Status:          input.Response.Status,
+		AktoAccountId:   fmt.Sprint(1000000),
+		AktoVxlanId:     fmt.Sprint(input.Context.VxlanID),
+		IsPending:       input.Context.IsPending,
+		Source:          input.Context.TrafficSource,
+	}
+}
+
+// buildJSONPayload creates the JSON map payload (legacy format, TODO: remove).
+func buildJSONPayload(input PayloadInput) map[string]string {
+	reqHeaderString, _ := json.Marshal(input.Headers.Request.StringMap)
+	respHeaderString, _ := json.Marshal(input.Headers.Response.StringMap)
+
+	return map[string]string{
+		"path":            input.Request.URL.String(),
+		"requestHeaders":  string(reqHeaderString),
+		"responseHeaders": string(respHeaderString),
+		"method":          input.Request.Method,
+		"requestPayload":  input.RequestBody,
+		"responsePayload": input.ResponseBody,
+		"ip":              input.Context.SourceIP,
+		"destIp":          input.Context.DestIP,
+		"time":            fmt.Sprint(time.Now().Unix()),
+		"statusCode":      fmt.Sprint(input.Response.StatusCode),
+		"type":            string(input.Request.Proto),
+		"status":          input.Response.Status,
+		"akto_account_id": fmt.Sprint(1000000),
+		"akto_vxlan_id":   fmt.Sprint(input.Context.VxlanID),
+		"is_pending":      fmt.Sprint(input.Context.IsPending),
+		"source":          input.Context.TrafficSource,
+		"direction":       fmt.Sprint(input.Context.Direction),
+		"process_id":      fmt.Sprint(input.Context.ProcessID),
+		"socket_id":       fmt.Sprint(input.Context.SocketFD),
+		"daemonset_id":    fmt.Sprint(input.Context.DaemonsetIdentifier),
+		"enable_graph":    fmt.Sprint(utils.EnableGraph),
+	}
+}
+
+// resolvePodLabels resolves pod labels for inbound traffic and adds them to the value map.
+func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host string) {
+	if PodInformerInstance == nil || ctx.Direction != utils.DirectionInbound {
+		checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(ctx.Direction))
+		return
+	}
+
+	if ctx.HostName == "" {
+		checkDebugUrlAndPrint(url, host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(ctx.ProcessID))
+		slog.Debug("Failed to resolve pod name, hostName is empty for ", "processId", ctx.ProcessID, "hostName", ctx.HostName)
+		return
+	}
+
+	podLabels, err := PodInformerInstance.ResolvePodLabels(ctx.HostName, url, host)
+	if err != nil {
+		slog.Error("Failed to resolve pod labels", "hostName", ctx.HostName, "error", err)
+		checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+ctx.HostName)
+		return
+	}
+
+	value["tag"] = podLabels
+	checkDebugUrlAndPrint(url, host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+ctx.HostName)
+	slog.Debug("Pod labels", "podName", ctx.HostName, "labels", podLabels)
+}
+
+// convertHeaders converts HTTP headers to both protobuf and string map formats in a single pass.
+func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) ConvertedHeaders {
+	result := ConvertedHeaders{
+		Request: HeaderSet{
+			Protobuf:  make(map[string]*trafficpb.StringList),
+			StringMap: make(map[string]string),
+		},
+		Response: HeaderSet{
+			Protobuf:  make(map[string]*trafficpb.StringList),
+			StringMap: make(map[string]string),
+		},
+	}
+
+	// Convert request headers
+	for name, values := range req.Header {
+		for _, value := range values {
+			result.Request.Protobuf[strings.ToLower(name)] = &trafficpb.StringList{
+				Values: []string{value},
+			}
+			if shouldPrint && strings.EqualFold(name, "x-debug-token") {
+				result.DebugID = value
+			}
+			result.Request.StringMap[name] = value
+		}
+	}
+	result.Request.Protobuf["host"] = &trafficpb.StringList{Values: []string{req.Host}}
+	result.Request.StringMap["host"] = req.Host
+
+	// Convert response headers
+	for name, values := range resp.Header {
+		for _, value := range values {
+			result.Response.Protobuf[strings.ToLower(name)] = &trafficpb.StringList{
+				Values: []string{value},
+			}
+			result.Response.StringMap[name] = value
+		}
+	}
+
+	return result
+}
+
+// shouldProcessRequest checks all filter conditions and returns true if the request should be processed.
+func shouldProcessRequest(req *http.Request, reqHeaders map[string]string, ctx TrafficContext) bool {
+	if !IsValidMethod(req.Method) {
+		return false
+	}
+
+	if !utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaders) {
+		return false
+	}
+
+	if utils.IgnoreIpTraffic && utils.CheckIfIp(req.Host) {
+		return false
+	}
+
+	if utils.IgnoreCloudMetadataCalls && req.Host == "169.254.169.254" {
+		return false
+	}
+
+	if utils.IgnoreEnvoyProxycalls && ctx.SourceIP == utils.EnvoyProxyIp && ctx.Direction == utils.DirectionOutbound {
+		slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", ctx.SourceIP, "url", req.URL.String(), "host", req.Host)
+		return false
+	}
+
+	if utils.FilterPacket(reqHeaders) {
+		return false
+	}
+
+	return true
+}
+
 var (
 	goodRequests               = 0
 	badRequests                = 0
@@ -169,8 +364,100 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
-func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, destIp string, vxlanID int, isPending bool,
-	trafficSource string, isComplete bool, direction int, idfd uint64, fd uint32, daemonsetIdentifier string, hostName string) {
+// parseHTTPTraffic parses HTTP requests and responses from raw byte buffers.
+// Returns nil if parsing fails (errors are logged).
+func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTraffic {
+	// Parse requests
+	reader := bufio.NewReader(bytes.NewReader(reqBuffer))
+	requests := []http.Request{}
+	requestBodies := []string{}
+
+	for {
+		req, err := http.ReadRequest(reader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
+			return nil
+		}
+		body, err := io.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+			return nil
+		}
+
+		requests = append(requests, *req)
+		requestBodies = append(requestBodies, string(body))
+	}
+
+	if shouldPrint {
+		slog.Debug("parseHTTPTraffic", "requestCount", len(requests))
+	}
+
+	if len(requests) == 0 {
+		return nil
+	}
+
+	// Parse responses
+	reader = bufio.NewReader(bytes.NewReader(respBuffer))
+	responses := []http.Response{}
+	responseBodies := []string{}
+
+	for {
+		resp, err := http.ReadResponse(reader, nil)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
+			return nil
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
+			return nil
+		}
+
+		// Handle gzip/deflate decompression
+		encoding := resp.Header["Content-Encoding"]
+		var r io.Reader
+		r = bytes.NewBuffer(body)
+		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
+			r, err = gzip.NewReader(r)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
+				return nil
+			}
+		}
+		if err == nil {
+			body, err = io.ReadAll(r)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
+				return nil
+			}
+			if _, ok := r.(*gzip.Reader); ok {
+				r.(*gzip.Reader).Close()
+			}
+		}
+
+		responses = append(responses, *resp)
+		responseBodies = append(responseBodies, string(body))
+	}
+
+	if shouldPrint {
+		slog.Debug("parseHTTPTraffic", "responseCount", len(responses))
+	}
+
+	return &ParsedTraffic{
+		Requests:       requests,
+		RequestBodies:  requestBodies,
+		Responses:      responses,
+		ResponseBodies: responseBodies,
+	}
+}
+
+func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
@@ -181,95 +468,21 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
 
-	reader := bufio.NewReader(bytes.NewReader(receiveBuffer))
-	i := 0
-	requests := []http.Request{}
-	requestsContent := []string{}
-
-	for {
-		req, err := http.ReadRequest(reader)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return
-		}
-		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
-			return
-		}
-
-		requests = append(requests, *req)
-		requestsContent = append(requestsContent, string(body))
-		i++
-	}
-
-	if shouldPrint {
-		slog.Debug("ParseAndProduce", "count", i)
-	}
-	if len(requests) == 0 {
+	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
+	if parsed == nil {
 		return
 	}
 
-	reader = bufio.NewReader(bytes.NewReader(sentBuffer))
-	i = 0
+	requests := parsed.Requests
+	requestsContent := parsed.RequestBodies
+	responses := parsed.Responses
+	responsesContent := parsed.ResponseBodies
 
-	responses := []http.Response{}
-	responsesContent := []string{}
-
-	for {
-
-		resp, err := http.ReadResponse(reader, nil)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
-			return
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
-			return
-		}
-		encoding := resp.Header["Content-Encoding"]
-		var r io.Reader
-		r = bytes.NewBuffer(body)
-		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
-			r, err = gzip.NewReader(r)
-			if err != nil {
-				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				return
-			}
-		}
-		if err == nil {
-			body, err = io.ReadAll(r)
-			if err != nil {
-				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
-				return
-			}
-			if _, ok := r.(*gzip.Reader); ok {
-				r.(*gzip.Reader).Close()
-			}
-		}
-
-		responses = append(responses, *resp)
-		responsesContent = append(responsesContent, string(body))
-
-		i++
-	}
-
-	if shouldPrint {
-
-		slog.Debug("ParseAndProduce", "count", i)
-	}
 	if len(requests) != len(responses) {
 		if shouldPrint {
-			slog.Debug("Len req-res mismatch", "lenRequests", len(requests), "lenResponses", len(responses), "lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", isComplete)
+			slog.Debug("Len req-res mismatch", "lenRequests", len(requests), "lenResponses", len(responses), "lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", ctx.IsComplete)
 		}
-		if isComplete {
+		if ctx.IsComplete {
 			return
 		}
 		correctLen := len(requests)
@@ -279,192 +492,60 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 
 		responses = responses[:correctLen]
 		requests = requests[:correctLen]
+		responsesContent = responsesContent[:correctLen]
+		requestsContent = requestsContent[:correctLen]
 	}
 
-	i = 0
-	for {
-		if len(requests) < i+1 {
-			break
-		}
+	bgCtx := context.Background()
 
+	for i := 0; i < len(requests); i++ {
 		req := &requests[i]
 		resp := &responses[i]
-
-		if !IsValidMethod(req.Method) {
-			continue
-		}
-
-		id := ""
-
-		// build req headers for threat client
-		reqHeader := make(map[string]*trafficpb.StringList)
-		for name, values := range req.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				reqHeader[strings.ToLower(name)] = &trafficpb.StringList{
-					Values: []string{value},
-				}
-			}
-		}
-		ip := GetSourceIp(reqHeader, sourceIp)
-
-		reqHeader["host"] = &trafficpb.StringList{
-			Values: []string{req.Host},
-		}
-
-		reqHeaderStr := make(map[string]string)
-		for name, values := range req.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				if shouldPrint &&
-					strings.EqualFold(name, "x-debug-token") {
-					id = value
-				}
-				reqHeaderStr[name] = value
-			}
-		}
-
-		reqHeaderStr["host"] = req.Host
-
-		passes := utils.PassesFilter(trafficMetrics.FilterHeaderValueMap, reqHeaderStr)
-		//printLog("Req header: " + mapToString(reqHeaderStr))
-		//printLog(fmt.Sprintf("passes %t", passes))
-
-		if !passes {
-			i++
-			continue
-		}
-
-		if utils.IgnoreIpTraffic && utils.CheckIfIp(req.Host) {
-			i++
-			continue
-		}
-
-		if utils.IgnoreCloudMetadataCalls && req.Host == "169.254.169.254" {
-			i++
-			continue
-		}
-
-		if utils.IgnoreEnvoyProxycalls && sourceIp == utils.EnvoyProxyIp && direction == utils.DirectionOutbound {
-			slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", sourceIp, "url", req.URL.String(), "host", req.Host)
-			i++
-			continue
-		}
-
-		var skipPacket = utils.FilterPacket(reqHeaderStr)
-
-		if skipPacket {
-			i++
-			continue
-		}
-
-		// build resp headers for threat client
-		respHeader := make(map[string]*trafficpb.StringList)
-		for name, values := range resp.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				respHeader[strings.ToLower(name)] = &trafficpb.StringList{
-					Values: []string{value},
-				}
-			}
-		}
-
-		// TODO: remove and use protobuf instead
-		respHeaderStr := make(map[string]string)
-		for name, values := range resp.Header {
-			// Loop over all values for the name.
-			for _, value := range values {
-				respHeaderStr[name] = value
-			}
-		}
-
+		
 		url := req.URL.String()
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
+		
+		// Convert headers in a single pass (both protobuf and string map formats)
+		headers := convertHeaders(req, resp, shouldPrint)
 
-		// build kafka payload for threat client
-		payload := &trafficpb.HttpResponseParam{
-			Method:          req.Method,
-			Path:            req.URL.String(),
-			RequestHeaders:  reqHeader,
-			ResponseHeaders: respHeader,
-			RequestPayload:  requestsContent[i],
-			ResponsePayload: responsesContent[i],
-			Ip:              ip,
-			Time:            int32(time.Now().Unix()),
-			StatusCode:      int32(resp.StatusCode),
-			Type:            string(req.Proto),
-			Status:          resp.Status,
-			AktoAccountId:   fmt.Sprint(1000000),
-			AktoVxlanId:     fmt.Sprint(vxlanID),
-			IsPending:       isPending,
-			Source:          trafficSource,
+		// Check all filter conditions
+		if !shouldProcessRequest(req, headers.Request.StringMap, ctx) {
+			continue
 		}
 
-		reqHeaderString, _ := json.Marshal(reqHeaderStr)
-		respHeaderString, _ := json.Marshal(respHeaderStr)
+		// Get source IP from headers
+		ip := GetSourceIp(headers.Request.Protobuf, ctx.SourceIP)
 
-		// TODO: remove and use protobuf instead
-		value := map[string]string{
-			"path":            req.URL.String(),
-			"requestHeaders":  string(reqHeaderString),
-			"responseHeaders": string(respHeaderString),
-			"method":          req.Method,
-			"requestPayload":  requestsContent[i],
-			"responsePayload": responsesContent[i],
-			"ip":              sourceIp,
-			"destIp":          destIp,
-			"time":            fmt.Sprint(time.Now().Unix()),
-			"statusCode":      fmt.Sprint(resp.StatusCode),
-			"type":            string(req.Proto),
-			"status":          resp.Status,
-			"akto_account_id": fmt.Sprint(1000000),
-			"akto_vxlan_id":   fmt.Sprint(vxlanID),
-			"is_pending":      fmt.Sprint(isPending),
-			"source":          trafficSource,
-			"direction":       fmt.Sprint(direction),
-			"process_id":      fmt.Sprint(idfd >> 32),
-			"socket_id":       fmt.Sprint(fd),
-			"daemonset_id":    fmt.Sprint(daemonsetIdentifier),
-			"enable_graph":    fmt.Sprint(utils.EnableGraph),
+		// Build payloads
+		input := PayloadInput{
+			Request:      req,
+			Response:     resp,
+			Headers:      headers,
+			RequestBody:  requestsContent[i],
+			ResponseBody: responsesContent[i],
+			SourceIP:     ip,
+			Context:      ctx,
 		}
+		payload := buildProtobufPayload(input)
+		value := buildJSONPayload(input)
 
-		// Process id was captured from the eBPF program using bpf_get_current_pid_tgid()
-		// Shifting by 32 gives us the process id on host machine.
-		var pid = idfd >> 32
+		// Debug logging
 		log := fmt.Sprintf("pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
-			direction,
-			reqHeaderStr["host"],
+			ctx.Direction,
+			headers.Request.StringMap["host"],
 			value["path"],
-			sourceIp,
-			destIp,
+			ctx.SourceIP,
+			ctx.DestIP,
 			value["socket_id"],
-			pid,
-			hostName,
+			ctx.ProcessID,
+			ctx.HostName,
 		)
 		checkDebugUrlAndPrint(url, req.Host, log)
 
-		if PodInformerInstance != nil && direction == utils.DirectionInbound {
-
-			if hostName == "" {
-				checkDebugUrlAndPrint(url, req.Host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(pid))
-				slog.Error("Failed to resolve pod name, hostName is empty for ", "processId", pid, "hostName", hostName)
-			} else {
-				podLabels, err := PodInformerInstance.ResolvePodLabels(hostName, url, req.Host)
-				if err != nil {
-					slog.Error("Failed to resolve pod labels", "hostName", hostName, "error", err)
-					checkDebugUrlAndPrint(url, req.Host, "Error resolving pod labels "+hostName)
-				} else {
-					value["tag"] = podLabels
-					checkDebugUrlAndPrint(url, req.Host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+hostName)
-					slog.Debug("Pod labels", "podName", hostName, "labels", podLabels)
-				}
-			}
-		} else {
-			checkDebugUrlAndPrint(url, req.Host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(direction))
-		}
+		// Resolve pod labels for inbound traffic
+		resolvePodLabels(value, ctx, url, req.Host)
 
 		out, _ := json.Marshal(value)
-		ctx := context.Background()
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		// this number is the closest (slightly higher) to the actual connection transfer bytes.
@@ -474,25 +555,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 			return
 		}
 
-		hostString := reqHeaderStr["host"]
-		if utils.CheckIfIpHost(hostString) {
-			hostString = "ip-host"
-		}
-		oc := utils.GenerateOutgoingCounter(vxlanID, sourceIp, hostString)
-		trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
-
-		if shouldPrint {
-			if strings.Contains(responsesContent[i], id) {
-				goodRequests++
-			} else {
-				slog.Debug("req-resp.String()", "out", string(out))
-				badRequests++
-			}
-
-			if goodRequests%100 == 0 || badRequests%100 == 0 {
-				slog.Debug("Good requests", "count", goodRequests, "badRequests", badRequests)
-			}
-		}
+		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
 
 		if apiProcessor.CloudProcessorInstance != nil {
 			apiProcessor.CloudProcessorInstance.Produce(value)
@@ -500,10 +563,30 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp string, d
 		} else {
 			// Produce to kafka
 			// TODO : remove and use protobuf instead
-			go ProduceStr(ctx, string(out), url, req.Host)
-			go Produce(ctx, payload)
+			go ProduceStr(bgCtx, string(out), url, req.Host)
+			go Produce(bgCtx, payload)
+		}
+	}
+}
+
+func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int, shouldPrint bool, responsesContent []string, i int, out []byte) {
+	hostString := headers.Request.StringMap["host"]
+	if utils.CheckIfIpHost(hostString) {
+		hostString = "ip-host"
+	}
+	oc := utils.GenerateOutgoingCounter(ctx.VxlanID, ctx.SourceIP, hostString)
+	trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
+
+	if shouldPrint {
+		if strings.Contains(responsesContent[i], headers.DebugID) {
+			goodRequests++
+		} else {
+			slog.Debug("req-resp.String()", "out", string(out))
+			badRequests++
 		}
 
-		i++
+		if goodRequests%100 == 0 || badRequests%100 == 0 {
+			slog.Debug("Good requests", "count", goodRequests, "badRequests", badRequests)
+		}
 	}
 }
