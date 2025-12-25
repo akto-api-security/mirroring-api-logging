@@ -73,7 +73,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 var (
 	disableEgress        = false
 	maxActiveConnections = 4096
-	inactivityThreshold  = 3 * time.Second
+	inactivityThreshold  = 7 * time.Second
 	// Value in MB
 	bufferMemThreshold = 400
 
@@ -201,6 +201,25 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 	}
 }
 
+// resetTimer stops, drains, and resets the timer to the given duration.
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+}
+
+// Worker lifecycle:
+//   ACTIVE:
+//     - socket data/open -> reset inactivity timer on each event
+//     - socket close     -> schedule delayed termination
+//     - inactivity timer -> terminate immediately
+//
+//   TERMINATION is final and happens exactly once.
+//  either due to inactivityThreshold or due to socker close event
 func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
@@ -216,9 +235,11 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddDataEvent(*e)
+					resetTimer(inactivityTimer, inactivityThreshold)
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddOpenEvent(*e)
+					resetTimer(inactivityTimer, inactivityThreshold)
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
