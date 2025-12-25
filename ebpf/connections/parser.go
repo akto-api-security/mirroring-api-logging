@@ -5,5 +5,19 @@ import (
 )
 
 func tryReadFromBD(ip string, destIp string, receiveBuffer []byte, sentBuffer []byte, isComplete bool, direction int, id uint64, fd uint32, daemonsetIdentifier, hostName string, protocol string) {
-	kafkaUtil.ParseAndProduce(receiveBuffer, sentBuffer, ip, destIp, 0, false, "MIRRORING", isComplete, direction, id, fd, daemonsetIdentifier, hostName, protocol)
+	ctx := kafkaUtil.TrafficContext{
+		SourceIP:            ip,
+		DestIP:              destIp,
+		VxlanID:             0,
+		IsPending:           false,
+		TrafficSource:       "MIRRORING",
+		IsComplete:          isComplete,
+		Direction:           direction,
+		ProcessID:           uint32(id >> 32),
+		SocketFD:            fd,
+		DaemonsetIdentifier: daemonsetIdentifier,
+		HostName:            hostName,
+		Protocol:            protocol,
+	}
+	kafkaUtil.ParseAndProduce(receiveBuffer, sentBuffer, ctx)
 }
