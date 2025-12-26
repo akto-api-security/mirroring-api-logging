@@ -37,7 +37,7 @@ var kafkaUsername = ""
 var kafkaPassword = ""
 
 var kafkaErrorThreshold = 500
-var kafkaReconnectIntervalMinutes = 5
+var kafkaReconnectIntervalMinutes = -1
 
 func init() {
 
