@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -22,6 +23,7 @@ import (
 )
 
 var kafkaWriter *kafka.Writer
+var kafkaWriterMutex sync.RWMutex
 var KafkaErrMsgCount = 0
 var KafkaErrMsgEpoch = time.Now()
 var BytesInThreshold = 500 * 1024 * 1024
@@ -35,6 +37,7 @@ var kafkaUsername = ""
 var kafkaPassword = ""
 
 var kafkaErrorThreshold = 500
+var kafkaReconnectIntervalMinutes = -1
 
 func init() {
 
@@ -47,6 +50,7 @@ func init() {
 	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
 
 	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
+	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
 }
 
 func InitKafka() {
@@ -85,7 +89,10 @@ func InitKafka() {
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
 	for {
+		kafkaWriterMutex.Lock()
 		kafkaWriter = getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		kafkaWriterMutex.Unlock()
+
 		utils.LogMemoryStats()
 		utils.PrintLog("logging kafka stats before pushing message")
 		LogKafkaStats()
@@ -100,11 +107,19 @@ func InitKafka() {
 		LogKafkaStats()
 		if err != nil {
 			slog.Error("error establishing connection with kafka, sending message failed, retrying in 2 seconds", "error", err)
+			kafkaWriterMutex.Lock()
 			kafkaWriter.Close()
+			kafkaWriterMutex.Unlock()
 			time.Sleep(time.Second * 2)
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
+			kafkaWriterMutex.Lock()
 			kafkaWriter.Completion = kafkaCompletion()
+			kafkaWriterMutex.Unlock()
+
+			// Start periodic reconnection routine
+			go periodicKafkaReconnect(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
 			break
 		}
 	}
@@ -126,11 +141,62 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 	}
 }
 
-func Close() {
-	kafkaWriter.Close()
+func periodicKafkaReconnect(kafka_url string, kafka_batch_size int, kafka_batch_time_secs_duration time.Duration) {
+	if kafkaReconnectIntervalMinutes <= 0 {
+		slog.Info("Kafka reconnection disabled", "interval", kafkaReconnectIntervalMinutes)
+		return
+	}
+
+	ticker := time.NewTicker(time.Duration(kafkaReconnectIntervalMinutes) * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		slog.Info("Starting periodic Kafka reconnection", "interval_minutes", kafkaReconnectIntervalMinutes)
+
+		// Create new writer
+		newWriter := getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration)
+		newWriter.Completion = kafkaCompletion()
+
+		// Test the new connection
+		ctx := context.Background()
+		value := map[string]string{
+			"testConnectionString": "periodicReconnect",
+		}
+		out, _ := json.Marshal(value)
+		testMsg := kafka.Message{
+			Topic: "akto.api.logs",
+			Value: out,
+		}
+
+		err := newWriter.WriteMessages(ctx, testMsg)
+		if err != nil {
+			slog.Error("Failed to test new Kafka connection during periodic reconnect, keeping old connection", "error", err)
+			newWriter.Close()
+			continue
+		}
+
+		// Replace old writer with new one
+		kafkaWriterMutex.Lock()
+		oldWriter := kafkaWriter
+		kafkaWriter = newWriter
+		kafkaWriterMutex.Unlock()
+
+		// Close old writer
+		if oldWriter != nil {
+			slog.Info("Closing old Kafka writer")
+			oldWriter.Close()
+		}
+
+		slog.Info("Kafka reconnection completed successfully")
+	}
 }
 
 func LogKafkaStats() {
+	kafkaWriterMutex.RLock()
+	defer kafkaWriterMutex.RUnlock()
+	if kafkaWriter == nil {
+		return
+	}
 	stats := kafkaWriter.Stats()
 	slog.Debug("Kafka Stats",
 		"dials", stats.Dials,
@@ -215,7 +281,11 @@ func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 		Value: protoBytes,
 	}
 
-	err = kafkaWriter.WriteMessages(ctx, msg)
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err = writer.WriteMessages(ctx, msg)
 	if err != nil {
 		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
 		return err
@@ -265,7 +335,11 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 		Value: []byte(string(out)),
 	}
 
-	err := kafkaWriter.WriteMessages(ctx, msg)
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err := writer.WriteMessages(ctx, msg)
 
 	if err != nil {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
@@ -282,7 +356,11 @@ func ProduceStr(ctx context.Context, message string, url, reqHost string) error 
 		Value: []byte(message),
 	}
 
-	err := kafkaWriter.WriteMessages(ctx, msg)
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err := writer.WriteMessages(ctx, msg)
 
 	if err != nil {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
