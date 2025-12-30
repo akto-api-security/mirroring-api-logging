@@ -17,6 +17,7 @@ import (
 )
 
 var httpBytes = []byte("HTTP")
+var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
@@ -97,6 +98,14 @@ func init() {
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 }
 
+func hasHTTPResponse(buffer []byte) bool {
+	return len(buffer) >= len(httpBytes) && bytes.Equal(buffer[:len(httpBytes)], httpBytes)
+}
+
+func hasHTTP2Preface(buffer []byte) bool {
+	return len(buffer) >= len(http2Preface) && bytes.Equal(buffer[:len(http2Preface)], http2Preface)
+}
+
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
@@ -128,14 +137,12 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 
 	protocol := tracker.protocol
 
-	if (len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes))) || protocol == protocolhttp2 {
+	if hasHTTPResponse(sentBuffer) || hasHTTP2Preface(receiveBuffer) {
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 	}
-	if !disableEgress {
-		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if (len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes))) || protocol == protocolhttp2 {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
-		}
+
+	if !disableEgress && (hasHTTPResponse(receiveBuffer) || hasHTTP2Preface(sentBuffer)) {
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 	}
 }
 
