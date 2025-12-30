@@ -447,7 +447,6 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     // Detect protocol from first packet payload
     detect_protocol_from_data(conn_info, socket_data_event->msg, size_to_save);
 
-    // Hooks
     if (is_send){
       conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
     } else {
@@ -493,6 +492,7 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
       }
 }
 
+// Hooks
 int syscall__probe_entry_accept(struct pt_regs* ctx, int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
     u64 id = bpf_get_current_pid_tgid();
 
