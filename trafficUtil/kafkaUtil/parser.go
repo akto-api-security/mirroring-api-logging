@@ -478,7 +478,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	// Parse based on protocol
 	var parsed *ParsedTraffic
 	if ctx.Protocol == protocolhttp2 {
-		slog.Debug("Using HTTP/2 parser", "sourceIp", ctx.SourceIP, "destIp", ctx.DestIP)
+		// slog.Debug("Using HTTP/2 parser", "sourceIp", ctx.SourceIP, "destIp", ctx.DestIP)
 		parsed = parseHTTP2Traffic(receiveBuffer, sentBuffer, ctx, shouldPrint)
 	} else {
 		parsed = parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
@@ -605,26 +605,7 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 	}
 }
 
-type http2Stream struct {
-	streamID         uint32
-	requestHeaders   map[string]string
-	requestBody      []byte
-	responseHeaders  map[string]string
-	responseBody     []byte
-	method           string
-	path             string
-	statusCode       int
-	status           string
-	requestComplete  bool
-	responseComplete bool
-	isGRPC           bool
-	grpcStatus       string
-	grpcMessage      string
-}
-
-// parseHTTP2Traffic parses HTTP/2 frames and returns ParsedTraffic structure
 func parseHTTP2Traffic(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext, shouldPrint bool) *ParsedTraffic {
-	// Strip HTTP/2 connection preface
 	http2Preface := []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 	if len(receiveBuffer) >= len(http2Preface) && bytes.Equal(receiveBuffer[:len(http2Preface)], http2Preface) {
 		receiveBuffer = receiveBuffer[len(http2Preface):]
@@ -639,7 +620,6 @@ func parseHTTP2Traffic(receiveBuffer []byte, sentBuffer []byte, ctx TrafficConte
 		}
 	}
 
-	// Parse HTTP/2 frames
 	opts := http2parser.NewParseOptions(
 		http2parser.WithBase64Encoding(true),
 		http2parser.WithWaitForEndStream(true),
@@ -673,7 +653,6 @@ func parseHTTP2Traffic(receiveBuffer []byte, sentBuffer []byte, ctx TrafficConte
 			continue
 		}
 
-		// Build http.Request from HTTP/2 stream
 		req, err := convertHTTP2ToRequest(stream)
 		if err != nil {
 			if shouldPrint {
@@ -682,7 +661,6 @@ func parseHTTP2Traffic(receiveBuffer []byte, sentBuffer []byte, ctx TrafficConte
 			continue
 		}
 
-		// Build http.Response from HTTP/2 stream
 		resp := convertHTTP2ToResponse(stream)
 
 		parsed.Requests = append(parsed.Requests, *req)
@@ -698,7 +676,6 @@ func parseHTTP2Traffic(receiveBuffer []byte, sentBuffer []byte, ctx TrafficConte
 	return parsed
 }
 
-// convertHTTP2ToRequest converts HTTP/2 stream to http.Request
 func convertHTTP2ToRequest(stream *http2parser.HTTP2Stream) (*http.Request, error) {
 	method := stream.Method
 	if method == "" {
@@ -710,7 +687,6 @@ func convertHTTP2ToRequest(stream *http2parser.HTTP2Stream) (*http.Request, erro
 		path = "/"
 	}
 
-	// Build URL from pseudo-headers
 	scheme := stream.RequestHeaders[":scheme"]
 	if scheme == "" {
 		scheme = "https"
@@ -727,7 +703,6 @@ func convertHTTP2ToRequest(stream *http2parser.HTTP2Stream) (*http.Request, erro
 		return nil, fmt.Errorf("failed to parse URL %s: %w", urlStr, err)
 	}
 
-	// Build HTTP headers (skip pseudo-headers)
 	header := make(http.Header)
 	for name, value := range stream.RequestHeaders {
 		if !strings.HasPrefix(name, ":") {
@@ -738,7 +713,6 @@ func convertHTTP2ToRequest(stream *http2parser.HTTP2Stream) (*http.Request, erro
 		header.Set("Host", authority)
 	}
 
-	// Determine protocol
 	proto := "HTTP/2.0"
 	if stream.IsGRPC {
 		proto = "gRPC"
@@ -753,9 +727,7 @@ func convertHTTP2ToRequest(stream *http2parser.HTTP2Stream) (*http.Request, erro
 	}, nil
 }
 
-// convertHTTP2ToResponse converts HTTP/2 stream to http.Response
 func convertHTTP2ToResponse(stream *http2parser.HTTP2Stream) *http.Response {
-	// Build HTTP headers (skip pseudo-headers)
 	header := make(http.Header)
 	for name, value := range stream.ResponseHeaders {
 		if !strings.HasPrefix(name, ":") {
