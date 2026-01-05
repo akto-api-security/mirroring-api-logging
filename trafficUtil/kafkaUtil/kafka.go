@@ -17,6 +17,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"google.golang.org/protobuf/proto"
@@ -38,6 +39,8 @@ var kafkaPassword = ""
 
 var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
+var heartbeatIntervalSeconds = 60
+var uniqueDaemonsetId = uuid.New().String()
 
 func init() {
 
@@ -51,6 +54,7 @@ func init() {
 
 	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
+	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
 }
 
 func InitKafka() {
@@ -120,6 +124,10 @@ func InitKafka() {
 			// Start periodic reconnection routine
 			go periodicKafkaReconnect(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
+
+			// Start heartbeat routine
+			go sendKafkaHeartbeat()
+			slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
 			break
 		}
 	}
@@ -188,6 +196,51 @@ func periodicKafkaReconnect(kafka_url string, kafka_batch_size int, kafka_batch_
 		}
 
 		slog.Info("Kafka reconnection completed successfully")
+	}
+}
+
+func sendKafkaHeartbeat() {
+	if heartbeatIntervalSeconds <= 0 {
+		slog.Info("Kafka heartbeat disabled", "interval", heartbeatIntervalSeconds)
+		return
+	}
+
+	ticker := time.NewTicker(time.Duration(heartbeatIntervalSeconds) * time.Second)
+	defer ticker.Stop()
+
+	daemonPodName := os.Getenv("POD_NAME")
+	nodeName := os.Getenv("NODE_NAME")
+	slog.Info("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
+
+	for range ticker.C {
+		ctx := context.Background()
+
+		// Count tracked pods
+		podCount := 0
+		if PodInformerInstance != nil {
+			PodInformerInstance.podNameLabelsMap.Range(func(key, value interface{}) bool {
+				podCount++
+				return true
+			})
+		}
+
+		// Send single heartbeat for this daemon
+		heartbeatMessage := map[string]string{
+			"type":           "heartbeat",
+			"daemonId":       uniqueDaemonsetId,
+			"daemonPodName":  daemonPodName,
+			"nodeName":       nodeName,
+			"timestamp":      fmt.Sprint(time.Now().Unix()),
+			"trackedPods":    fmt.Sprint(podCount),
+			"PROCESS_LOGS":   os.Getenv("PROCESS_LOGS"),
+			"AKTO_LOG_LEVEL": os.Getenv("AKTO_LOG_LEVEL"),
+		}
+
+		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "trackedPods", podCount)
+		err := ProduceHeartbeat(ctx, heartbeatMessage)
+		if err != nil {
+			slog.Error("Failed to send heartbeat to Kafka", "error", err)
+		}
 	}
 }
 
@@ -318,6 +371,31 @@ const (
 	LogTypeInfo  = "INFO"
 	LogTypeDebug = "DEBUG"
 )
+
+func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) error {
+	out, err := json.Marshal(heartbeatData)
+	if err != nil {
+		return err
+	}
+
+	topic := "akto.daemonset.producer.heartbeats"
+	msg := kafka.Message{
+		Topic: topic,
+		Value: []byte(string(out)),
+	}
+
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err = writer.WriteMessages(ctx, msg)
+
+	if err != nil {
+		slog.Error("ERROR while writing heartbeat messages", "topic", topic, "error", err)
+		return err
+	}
+	return nil
+}
 
 func ProduceLogs(ctx context.Context, message string, logType string) error {
 	value := map[string]string{
