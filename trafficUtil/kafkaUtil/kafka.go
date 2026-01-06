@@ -234,6 +234,7 @@ func sendKafkaHeartbeat() {
 			"trackedPods":    fmt.Sprint(podCount),
 			"PROCESS_LOGS":   os.Getenv("PROCESS_LOGS"),
 			"AKTO_LOG_LEVEL": os.Getenv("AKTO_LOG_LEVEL"),
+			"moduleType":     "EBPF",
 		}
 
 		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "trackedPods", podCount)
