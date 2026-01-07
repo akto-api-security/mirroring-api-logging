@@ -42,7 +42,7 @@ var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
 var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()
-var moduleType = "AKTO_TRAFFIC_COLLECTOR"
+var moduleType = "TRAFFIC_COLLECTOR"
 
 func init() {
 
