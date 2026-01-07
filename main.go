@@ -397,7 +397,7 @@ func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
 	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
 	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
 
-	kafkaUtil.InitKafka()
+	kafkaUtil.InitKafka(kafkaUtil.ModuleTypeK8S)
 
 	if handle, err := pcap.OpenOffline(filepath); err != nil {
 		slog.Error("failed to open pcap offline", "error", err)
@@ -414,7 +414,7 @@ func main() {
 	trafficMetrics.StartMetricsTicker()
 
 	interfaceName := "any"
-	kafkaUtil.InitKafka()
+	kafkaUtil.InitKafka(kafkaUtil.ModuleTypeK8S)
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			slog.Error("failed to open pcap live interface", "error", err)
@@ -428,7 +428,7 @@ func main() {
 			trafficMetrics.InitTrafficMaps()
 			time.Sleep(10 * time.Second)
 			slog.Debug("woke up from sleep")
-			kafkaUtil.InitKafka()
+			kafkaUtil.InitKafka(kafkaUtil.ModuleTypeK8S)
 		}
 	}
 

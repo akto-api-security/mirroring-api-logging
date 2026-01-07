@@ -23,6 +23,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const (
+	ModuleTypeK8S  = "K8S"
+	ModuleTypeEBPF = "EBPF"
+)
+
 var kafkaWriter *kafka.Writer
 var kafkaWriterMutex sync.RWMutex
 var KafkaErrMsgCount = 0
@@ -41,6 +46,7 @@ var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
 var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()
+var moduleType = ""
 
 func init() {
 
@@ -57,7 +63,8 @@ func init() {
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
 }
 
-func InitKafka() {
+func InitKafka(module string) {
+	moduleType = module
 	if apiProcessor.CloudTrafficProcessorModeEnabled {
 		return
 	}
@@ -208,36 +215,30 @@ func sendKafkaHeartbeat() {
 	ticker := time.NewTicker(time.Duration(heartbeatIntervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	daemonPodName := os.Getenv("POD_NAME")
+	podName := os.Getenv("POD_NAME")
 	nodeName := os.Getenv("NODE_NAME")
+
+	daemonPodName := fmt.Sprintf("akto-traffic-collector-agent:%s:%s", nodeName, podName)
+
 	slog.Info("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
 
 	for range ticker.C {
 		ctx := context.Background()
 
-		// Count tracked pods
-		podCount := 0
-		if PodInformerInstance != nil {
-			PodInformerInstance.podNameLabelsMap.Range(func(key, value interface{}) bool {
-				podCount++
-				return true
-			})
-		}
-
 		// Send single heartbeat for this daemon
 		heartbeatMessage := map[string]string{
-			"type":           "heartbeat",
-			"daemonId":       uniqueDaemonsetId,
-			"daemonPodName":  daemonPodName,
-			"nodeName":       nodeName,
-			"timestamp":      fmt.Sprint(time.Now().Unix()),
-			"trackedPods":    fmt.Sprint(podCount),
-			"PROCESS_LOGS":   os.Getenv("PROCESS_LOGS"),
-			"AKTO_LOG_LEVEL": os.Getenv("AKTO_LOG_LEVEL"),
-			"moduleType":     "EBPF",
+			"type":          "heartbeat",
+			"daemonId":      uniqueDaemonsetId,
+			"daemonPodName": daemonPodName,
+			"podName":       podName,
+			"nodeName":      nodeName,
+			"timestamp":     fmt.Sprint(time.Now().Unix()),
+			// "PROCESS_LOGS":   os.Getenv("PROCESS_LOGS"),
+			// "AKTO_LOG_LEVEL": os.Getenv("AKTO_LOG_LEVEL"),
+			"moduleType": moduleType,
 		}
 
-		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "trackedPods", podCount)
+		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName)
 		err := ProduceHeartbeat(ctx, heartbeatMessage)
 		if err != nil {
 			slog.Error("Failed to send heartbeat to Kafka", "error", err)
