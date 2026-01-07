@@ -116,7 +116,7 @@ func run() {
 
 	// this needs to be called before InitKafka
 	apiProcessor.InitCloudTrafficProcessor()
-	kafkaUtil.InitKafka(kafkaUtil.ModuleTypeEBPF)
+	kafkaUtil.InitKafka()
 
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {

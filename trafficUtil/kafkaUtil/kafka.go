@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -21,11 +22,6 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"google.golang.org/protobuf/proto"
-)
-
-const (
-	ModuleTypeK8S  = "K8S"
-	ModuleTypeEBPF = "EBPF"
 )
 
 var kafkaWriter *kafka.Writer
@@ -46,7 +42,7 @@ var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
 var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()
-var moduleType = ""
+var moduleType = "AKTO_TRAFFIC_COLLECTOR"
 
 func init() {
 
@@ -63,8 +59,7 @@ func init() {
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
 }
 
-func InitKafka(module string) {
-	moduleType = module
+func InitKafka() {
 	if apiProcessor.CloudTrafficProcessorModeEnabled {
 		return
 	}
@@ -212,17 +207,20 @@ func sendKafkaHeartbeat() {
 		return
 	}
 
-	ticker := time.NewTicker(time.Duration(heartbeatIntervalSeconds) * time.Second)
-	defer ticker.Stop()
-
 	podName := os.Getenv("POD_NAME")
 	nodeName := os.Getenv("NODE_NAME")
 
-	daemonPodName := fmt.Sprintf("akto-traffic-collector-agent:%s:%s", nodeName, podName)
+	daemonPodName := fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
 
 	slog.Info("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
 
-	for range ticker.C {
+	for {
+		jitter := time.Duration(1+rand.Intn(5)) * time.Second
+		sleepDuration := time.Duration(heartbeatIntervalSeconds)*time.Second + jitter
+
+		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
+		time.Sleep(sleepDuration)
+
 		ctx := context.Background()
 
 		// Send single heartbeat for this daemon
