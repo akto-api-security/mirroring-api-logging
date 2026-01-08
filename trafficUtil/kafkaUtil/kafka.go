@@ -228,8 +228,6 @@ func sendKafkaHeartbeat() {
 			"type":          "heartbeat",
 			"daemonId":      uniqueDaemonsetId,
 			"daemonPodName": daemonPodName,
-			"podName":       podName,
-			"nodeName":      nodeName,
 			"timestamp":     fmt.Sprint(time.Now().Unix()),
 			// "PROCESS_LOGS":   os.Getenv("PROCESS_LOGS"),
 			// "AKTO_LOG_LEVEL": os.Getenv("AKTO_LOG_LEVEL"),
