@@ -210,6 +210,14 @@ func sendKafkaHeartbeat() {
 	podName := os.Getenv("POD_NAME")
 	nodeName := os.Getenv("NODE_NAME")
 	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
+	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
+
+	if imageVersion != "" && strings.Contains(imageVersion, ":") {
+		parts := strings.Split(imageVersion, ":")
+		imageVersion = parts[len(parts)-1]
+	} else if imageVersion == "" {
+		imageVersion = "k8s-ebpf"
+	}
 
 	daemonPodName := fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
 
@@ -234,6 +242,7 @@ func sendKafkaHeartbeat() {
 			"daemonPodName": daemonPodName,
 			"timestamp":     fmt.Sprint(time.Now().Unix()),
 			"moduleType":    moduleType,
+			"imageVersion":  imageVersion,
 		}
 
 		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName)

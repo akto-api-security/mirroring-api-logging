@@ -70,6 +70,10 @@ spec:
             # value:
           - name: CAPTURE_SSL
             value: "true"
+          - name: AKTO_IMAGE_VERSION
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.containers[0].image
         securityContext:
           capabilities:
             add:
