@@ -209,10 +209,16 @@ func sendKafkaHeartbeat() {
 
 	podName := os.Getenv("POD_NAME")
 	nodeName := os.Getenv("NODE_NAME")
+	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
 
 	daemonPodName := fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
 
-	slog.Info("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
+	if aktoAgentName != "" {
+		daemonPodName = fmt.Sprintf("akto-tc:%s", aktoAgentName)
+	}
+
+	slog.Debug("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
+	ctx := context.Background()
 
 	for {
 		jitter := time.Duration(1+rand.Intn(5)) * time.Second
@@ -221,17 +227,13 @@ func sendKafkaHeartbeat() {
 		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
 		time.Sleep(sleepDuration)
 
-		ctx := context.Background()
-
 		// Send single heartbeat for this daemon
 		heartbeatMessage := map[string]string{
 			"type":          "heartbeat",
 			"daemonId":      uniqueDaemonsetId,
 			"daemonPodName": daemonPodName,
 			"timestamp":     fmt.Sprint(time.Now().Unix()),
-			// "PROCESS_LOGS":   os.Getenv("PROCESS_LOGS"),
-			// "AKTO_LOG_LEVEL": os.Getenv("AKTO_LOG_LEVEL"),
-			"moduleType": moduleType,
+			"moduleType":    moduleType,
 		}
 
 		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName)
