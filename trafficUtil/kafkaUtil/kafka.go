@@ -258,7 +258,7 @@ func sendKafkaHeartbeat() {
 			"imageVersion":  imageVersion,
 		}
 
-		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName)
+		slog.Info("Sending Kafka heartbeat", "daemonPod", daemonPodName, "imageVersion", imageVersion)
 		err := ProduceHeartbeat(ctx, heartbeatMessage)
 		if err != nil {
 			slog.Error("Failed to send heartbeat to Kafka", "error", err)
