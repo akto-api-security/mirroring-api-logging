@@ -201,26 +201,42 @@ func periodicKafkaReconnect(kafka_url string, kafka_batch_size int, kafka_batch_
 	}
 }
 
+func getDaemonPodName() string {
+	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
+	podName := os.Getenv("POD_NAME")
+	nodeName := os.Getenv("NODE_NAME")
+
+	if aktoAgentName != "" {
+		return fmt.Sprintf("akto-tc:%s", aktoAgentName)
+	}
+
+	if podName != "" && nodeName != "" {
+		return fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
+	}
+
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		hostname = fmt.Sprintf("daemon-%s", uniqueDaemonsetId[:8])
+	}
+	return fmt.Sprintf("akto-tc:%s", hostname)
+}
+
+func getImageVersion() string {
+	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
+	if imageVersion == "" {
+		imageVersion = "aktosecurity/mirror-api-logging:k8s-ebpf"
+	}
+	return imageVersion
+}
+
 func sendKafkaHeartbeat() {
 	if heartbeatIntervalSeconds <= 0 {
 		slog.Info("Kafka heartbeat disabled", "interval", heartbeatIntervalSeconds)
 		return
 	}
 
-	podName := os.Getenv("POD_NAME")
-	nodeName := os.Getenv("NODE_NAME")
-	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
-	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
-
-	if imageVersion == "" {
-		imageVersion = "aktosecurity/mirror-api-logging:k8s-ebpf"
-	}
-
-	daemonPodName := fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
-
-	if aktoAgentName != "" {
-		daemonPodName = fmt.Sprintf("akto-tc:%s", aktoAgentName)
-	}
+	daemonPodName := getDaemonPodName()
+	imageVersion := getImageVersion()
 
 	slog.Debug("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
 	ctx := context.Background()
