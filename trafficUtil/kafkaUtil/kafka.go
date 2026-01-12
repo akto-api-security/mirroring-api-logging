@@ -212,11 +212,8 @@ func sendKafkaHeartbeat() {
 	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
 	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
 
-	if imageVersion != "" && strings.Contains(imageVersion, ":") {
-		parts := strings.Split(imageVersion, ":")
-		imageVersion = parts[len(parts)-1]
-	} else if imageVersion == "" {
-		imageVersion = "k8s-ebpf"
+	if imageVersion == "" {
+		imageVersion = "aktosecurity/mirror-api-logging:k8s-ebpf"
 	}
 
 	daemonPodName := fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
