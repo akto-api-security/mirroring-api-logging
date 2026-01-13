@@ -83,54 +83,72 @@ func isAmdArch() bool {
 }
 
 func mainNew() {
-    // Start env update goroutine
-    go envUpdateGoroutine()
+	// Start env update goroutine
+	go envUpdateGoroutine()
 
-    // Run the main eBPF program
-    run()
+	// Run the main eBPF program
+	run()
+}
+
+func nextLogLevel(current string) string {
+	levels := []string{"DEBUG", "INFO", "WARN", "ERROR"}
+
+	for i, lvl := range levels {
+		if lvl == current {
+			return levels[(i+1)%len(levels)]
+		}
+	}
+	return "INFO"
 }
 
 func envUpdateGoroutine() {
-    // TODO: Setup Kafka consumer
-    
-    for msg := range kafkaMessages {
-        // Only handle specific message type
-        if msg.Type != "ENV_UPDATE" {
-            continue
-        }
-        
-        // Apply new env vars from the message
-        for key, value := range msg.EnvVars {
-            os.Setenv(key, value)
-        }
-        
-        // Restart to pick up new env
-        restartSelf()
-    }
+	restartIntervalMinutes := 30
+	trafficUtils.InitVar("RESTART_INTERVAL_MINUTES", &restartIntervalMinutes)
+
+	ticker := time.NewTicker(time.Duration(restartIntervalMinutes) * time.Second)
+	defer ticker.Stop()
+
+	slog.Info("🧪 Config watcher started", "interval_minutes", restartIntervalMinutes)
+
+	for range ticker.C {
+		current := os.Getenv("AKTO_LOG_LEVEL")
+		next := nextLogLevel(current)
+
+		slog.Info(
+			"📝 Configuration changed, restarting process...",
+			"old_AKTO_LOG_LEVEL", current,
+			"new_AKTO_LOG_LEVEL", next,
+		)
+
+		os.Setenv("AKTO_LOG_LEVEL", next)
+		restartSelf()
+	}
 }
 
 func restartSelf() {
-    exe, err := os.Executable()
-    if err != nil {
-        slog.Printf("Failed to get executable path: %v", err)
-        return
-    }
-    
-    slog.Println("Restarting with new environment...")
-    
-    err = syscall.Exec(exe, os.Args, os.Environ())
-    if err != nil {
-        slog.Printf("Failed to restart: %v", err)
-    }
+	exe, err := os.Executable()
+	if err != nil {
+		slog.Error("Failed to get executable path", "error", err)
+		return
+	}
+
+	slog.Info("🔄 Restarting process with new environment...")
+
+	// Replace current process with fresh instance using updated environment
+	err = syscall.Exec(exe, os.Args, os.Environ())
+	if err != nil {
+		slog.Error("Failed to restart process", "error", err)
+	}
+	// Never reaches here if Exec succeeds
 }
-
-
 
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
-	run()
+
+	// Use mainNew() which starts config watcher and runs eBPF
+	mainNew()
 }
 
 func run() {
