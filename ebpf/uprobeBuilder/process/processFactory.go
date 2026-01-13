@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"sync"
@@ -51,7 +52,7 @@ func init() {
 	utils.InitVar("PROBE_ALL_PID", &probeAllPid)
 }
 
-func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Module) {
+func (processFactory *ProcessFactory) AddNewProcessesToProbe(ctx context.Context, bpfModule *bcc.Module) {
 
 	pidList, err := process.Pids()
 	if err != nil {
@@ -82,6 +83,14 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 	}
 	slog.Debug("Attempt for processes", "count", len(pidSet))
 	for pid := range pidSet {
+		// Check if context is cancelled before processing each PID
+		select {
+		case <-ctx.Done():
+			slog.Info("Context cancelled, stopping uprobe attachment early", "processed_pids", len(processFactory.processMap))
+			return
+		default:
+		}
+
 		time.Sleep(200 * time.Millisecond)
 		_, ok := processFactory.unattachedProcess[pid]
 		if ok {

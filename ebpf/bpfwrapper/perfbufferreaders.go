@@ -60,6 +60,19 @@ func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *c
 	return nil
 }
 
+// Stop stops the perf buffer polling and closes channels
+func (probeChannel *ProbeChannel) Stop() {
+	if probeChannel.perfMap != nil {
+		probeChannel.perfMap.Stop()
+	}
+	if probeChannel.eventChannel != nil {
+		close(probeChannel.eventChannel)
+	}
+	if probeChannel.lostEventsChannel != nil {
+		close(probeChannel.lostEventsChannel)
+	}
+}
+
 // LaunchPerfBufferConsumers launches all probe channels.
 func LaunchPerfBufferConsumers(module *bcc.Module, connectionFactory *connections.Factory, probeList []*ProbeChannel) error {
 	for _, probeChannel := range probeList {
@@ -69,4 +82,11 @@ func LaunchPerfBufferConsumers(module *bcc.Module, connectionFactory *connection
 	}
 
 	return nil
+}
+
+// StopPerfBufferConsumers stops all probe channels
+func StopPerfBufferConsumers(probeList []*ProbeChannel) {
+	for _, probeChannel := range probeList {
+		probeChannel.Stop()
+	}
 }

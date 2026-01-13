@@ -215,7 +215,6 @@ func run(ctx context.Context) {
 	connectionFactory := connections.NewFactory()
 
 	trafficMetrics.InitTrafficMaps()
-	trafficMetrics.StartMetricsTicker()
 
 	callbacks := make([]*bpfwrapper.ProbeChannel, 0)
 
@@ -250,6 +249,13 @@ func run(ctx context.Context) {
 		panic(err)
 	}
 
+	// Ensure perf buffers are stopped when context is cancelled
+	defer func() {
+		slog.Info("Stopping perf buffer consumers")
+		bpfwrapper.StopPerfBufferConsumers(callbacks)
+		slog.Info("Perf buffer consumers stopped")
+	}()
+
 	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
 		fmt.Errorf("Error in attaching kprobes %v", err)
 	}
@@ -267,6 +273,9 @@ func run(ctx context.Context) {
 
 	// WaitGroup to track goroutines
 	var wg sync.WaitGroup
+
+	// Start metrics ticker with context and waitgroup
+	trafficMetrics.StartMetricsTicker(ctx, &wg)
 
 	if captureSsl == "true" || captureAll == "true" {
 		wg.Add(1)
@@ -292,7 +301,7 @@ func run(ctx context.Context) {
 						mu_2.Unlock()
 
 						slog.Info("Starting to attach to processes")
-						processFactory.AddNewProcessesToProbe(bpfModule)
+						processFactory.AddNewProcessesToProbe(ctx, bpfModule)
 						slog.Debug("Ended attaching to processes")
 						mu_2.Lock()
 						isRunning_2 = false
