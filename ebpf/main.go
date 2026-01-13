@@ -82,6 +82,50 @@ func isAmdArch() bool {
 	return false
 }
 
+func mainNew() {
+    // Start env update goroutine
+    go envUpdateGoroutine()
+
+    // Run the main eBPF program
+    run()
+}
+
+func envUpdateGoroutine() {
+    // TODO: Setup Kafka consumer
+    
+    for msg := range kafkaMessages {
+        // Only handle specific message type
+        if msg.Type != "ENV_UPDATE" {
+            continue
+        }
+        
+        // Apply new env vars from the message
+        for key, value := range msg.EnvVars {
+            os.Setenv(key, value)
+        }
+        
+        // Restart to pick up new env
+        restartSelf()
+    }
+}
+
+func restartSelf() {
+    exe, err := os.Executable()
+    if err != nil {
+        slog.Printf("Failed to get executable path: %v", err)
+        return
+    }
+    
+    slog.Println("Restarting with new environment...")
+    
+    err = syscall.Exec(exe, os.Args, os.Environ())
+    if err != nil {
+        slog.Printf("Failed to restart: %v", err)
+    }
+}
+
+
+
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
