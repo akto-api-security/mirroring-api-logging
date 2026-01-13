@@ -1,6 +1,7 @@
 package trafficMetrics
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"sync"
@@ -59,14 +60,25 @@ func tickerCode() {
 	slog.Debug("Finished ticker")
 }
 
-func StartMetricsTicker() {
+func StartMetricsTicker(ctx context.Context, wg *sync.WaitGroup) {
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
 
 	tickerCode() // to run this immediately
+
+	wg.Add(1)
 	go func() {
-		for range ticker.C {
-			tickerCode()
+		defer wg.Done()
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Debug("Context cancelled, stopping metrics ticker")
+				return
+			case <-ticker.C:
+				tickerCode()
+			}
 		}
 	}()
 }
