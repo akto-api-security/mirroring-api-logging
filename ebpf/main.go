@@ -82,49 +82,8 @@ func isAmdArch() bool {
 	return false
 }
 
-func mainNew() {
-	// Start env update goroutine
-	go envUpdateGoroutine()
-
-	// Run the main eBPF program
-	run()
-}
-
-func nextLogLevel(current string) string {
-	levels := []string{"DEBUG", "INFO", "WARN", "ERROR"}
-
-	for i, lvl := range levels {
-		if lvl == current {
-			return levels[(i+1)%len(levels)]
-		}
-	}
-	return "INFO"
-}
-
-func envUpdateGoroutine() {
-	restartIntervalMinutes := 30
-	trafficUtils.InitVar("RESTART_INTERVAL_MINUTES", &restartIntervalMinutes)
-
-	ticker := time.NewTicker(time.Duration(restartIntervalMinutes) * time.Second)
-	defer ticker.Stop()
-
-	slog.Info("🧪 Config watcher started", "interval_minutes", restartIntervalMinutes)
-
-	for range ticker.C {
-		current := os.Getenv("AKTO_LOG_LEVEL")
-		next := nextLogLevel(current)
-
-		slog.Info(
-			"📝 Configuration changed, restarting process...",
-			"old_AKTO_LOG_LEVEL", current,
-			"new_AKTO_LOG_LEVEL", next,
-		)
-
-		os.Setenv("AKTO_LOG_LEVEL", next)
-		restartSelf()
-	}
-}
-
+// restartSelf replaces the current process with a fresh instance
+// This is called when config updates require a restart
 func restartSelf() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -132,7 +91,7 @@ func restartSelf() {
 		return
 	}
 
-	slog.Info("🔄 Restarting process with new environment...")
+	slog.Info("Restarting process with new environment...")
 
 	// Replace current process with fresh instance using updated environment
 	err = syscall.Exec(exe, os.Args, os.Environ())
@@ -147,8 +106,8 @@ func main() {
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
 
-	// Use mainNew() which starts config watcher and runs eBPF
-	mainNew()
+	// Run the main eBPF program
+	run()
 }
 
 func run() {
@@ -179,6 +138,9 @@ func run() {
 	// this needs to be called before InitKafka
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
+
+	// Start Kafka consumer for config updates
+	kafkaUtil.StartConfigConsumer(restartSelf)
 
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
