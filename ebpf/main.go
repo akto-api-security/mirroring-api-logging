@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -86,10 +87,92 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
-	run()
+
+	// Set up signal handling once at the top level
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+
+	// Create restart control channel (buffered to prevent blocking)
+	restartChan := make(chan struct{}, 1)
+
+	// Context for test config changer
+	testCtx, testCancel := context.WithCancel(context.Background())
+	defer testCancel()
+
+	// Start test config changer (changes log level every 2 minutes)
+	go testConfigChanger(testCtx, restartChan)
+
+	// Main loop that restarts run() on configuration changes
+	for {
+		// Create a cancellable context for this run
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Start run with context
+		runDone := make(chan struct{})
+		go func() {
+			run(ctx)
+			close(runDone)
+		}()
+
+		// Wait for either restart signal, run completion, or OS signal
+		select {
+		case <-restartChan:
+			slog.Info("🔄 Received restart signal - stopping run() gracefully")
+			cancel() // Cancel the context to stop run()
+			<-runDone // Wait for run() to finish cleanup
+			slog.Info("✅ Run stopped gracefully, restarting with new configuration")
+			// Loop continues and restarts run() with new config
+		case <-runDone:
+			// run() completed (unlikely since it should run forever)
+			cancel()
+			slog.Info("run() completed unexpectedly")
+			return
+		case sig := <-sigChan:
+			// OS signal received - shutdown gracefully
+			slog.Info("Received OS signal, shutting down", "signal", sig)
+			cancel()
+			<-runDone
+			slog.Info("Shutdown complete")
+			return
+		}
+	}
 }
 
-func run() {
+func testConfigChanger(ctx context.Context, restartChan chan struct{}) {
+	logLevels := []string{"DEBUG", "INFO", "WARN", "ERROR"}
+	currentIndex := 0
+
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+
+	slog.Info("🧪 Test config changer started - will change AKTO_LOG_LEVEL every 2 minutes")
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("Test config changer stopped")
+			return
+		case <-ticker.C:
+			currentIndex = (currentIndex + 1) % len(logLevels)
+			newLogLevel := logLevels[currentIndex]
+
+			slog.Info("📝 Changing configuration", "AKTO_LOG_LEVEL", newLogLevel)
+			os.Setenv("AKTO_LOG_LEVEL", newLogLevel)
+
+			// Trigger restart (non-blocking send)
+			slog.Info("🚀 Triggering restart to apply new log level")
+			select {
+			case restartChan <- struct{}{}:
+				// Sent successfully
+			default:
+				// Channel full, restart already pending
+				slog.Warn("Restart already pending, skipping this trigger")
+			}
+		}
+	}
+}
+
+func run(ctx context.Context) {
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
 		slog.Error("failed to read kernel module", "error", err)
@@ -122,6 +205,12 @@ func run() {
 	if err != nil {
 		slog.Error("Failed to setup pod watcher", "error", err)
 	}
+	defer func() {
+		if stopCh != nil {
+			slog.Info("Stopping pod watcher")
+			close(stopCh)
+		}
+	}()
 
 	connectionFactory := connections.NewFactory()
 
@@ -176,32 +265,42 @@ func run() {
 
 	ssl.InitMaps(bpfModule)
 
-	if captureSsl == "true" || captureAll == "true" {
-		go func() {
-			slog.Debug("Starting to attach to processes in ticker start")
-			ticker := time.NewTicker(pollInterval) // Create a ticker to trigger every minute
-			defer ticker.Stop()
-			for range ticker.C {
-				slog.Debug("Starting to attach to processes in ticker")
-				if !isRunning_2 {
-					mu_2.Lock()
-					if isRunning_2 {
-						mu_2.Unlock()
-						return
-					}
-					isRunning_2 = true
-					mu_2.Unlock()
+	// WaitGroup to track goroutines
+	var wg sync.WaitGroup
 
-					slog.Info("Starting to attach to processes")
-					processFactory.AddNewProcessesToProbe(bpfModule)
-					slog.Debug("Ended attaching to processes")
-					mu_2.Lock()
-					isRunning_2 = false
-					mu_2.Unlock()
+	if captureSsl == "true" || captureAll == "true" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slog.Debug("Starting to attach to processes in ticker start")
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					slog.Debug("Context cancelled, stopping uprobe attachment goroutine")
+					return
+				case <-ticker.C:
+					slog.Debug("Starting to attach to processes in ticker")
+					if !isRunning_2 {
+						mu_2.Lock()
+						if isRunning_2 {
+							mu_2.Unlock()
+							continue
+						}
+						isRunning_2 = true
+						mu_2.Unlock()
+
+						slog.Info("Starting to attach to processes")
+						processFactory.AddNewProcessesToProbe(bpfModule)
+						slog.Debug("Ended attaching to processes")
+						mu_2.Lock()
+						isRunning_2 = false
+						mu_2.Unlock()
+					}
+					slog.Debug("Ended attaching to processes in ticker")
 				}
-				slog.Debug("Ended attaching to processes in ticker")
 			}
-			slog.Debug("Ended attaching to processes in ticker end")
 		}()
 	}
 
@@ -209,32 +308,33 @@ func run() {
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
 	if doProfiling {
-		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
-		defer ticker.Stop()
-
-		for range ticker.C {
-			captureMemoryProfile() // Capture memory profile every time the ticker ticks
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					slog.Debug("Context cancelled, stopping memory profiling goroutine")
+					return
+				case <-ticker.C:
+					captureMemoryProfile()
+				}
+			}
+		}()
 	}
-
-	//ticker := time.NewTicker(15 * time.Second)
-	//defer ticker.Stop()
-	//
-	//for range ticker.C {
-	//	go captureCpuProfile()
-	//}
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 
 	slog.Info("sniffer is ready")
-	<-sig
-	if stopCh != nil {
-		slog.Info("Stopping pod watcher")
-		close(stopCh)
-	}
 
-	slog.Info("signaled to terminate")
+	// Wait for context cancellation (signal handling is done in main())
+	<-ctx.Done()
+	slog.Info("Context cancelled, stopping run()")
+
+	// Wait for all goroutines to finish
+	slog.Info("Waiting for background goroutines to finish...")
+	wg.Wait()
+	slog.Info("All background goroutines finished")
 }
 
 func captureMemoryProfile() {
