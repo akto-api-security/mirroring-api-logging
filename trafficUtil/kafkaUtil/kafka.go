@@ -450,9 +450,9 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 
 // buildCollectionDetailsHeader creates the collection_details Kafka header
 // Format: "host|method|url"
-// Returns nil if method is empty (skip header for non-HTTP messages)
+// Returns nil if any parameter is empty (skip header for incomplete messages)
 func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
-	if method == "" {
+	if host == "" || method == "" || url == "" {
 		return nil
 	}
 
