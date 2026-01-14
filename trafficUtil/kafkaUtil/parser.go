@@ -561,9 +561,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			apiProcessor.CloudProcessorInstance.Produce(value)
 
 		} else {
-			// Produce to kafka
-			// TODO : remove and use protobuf instead
-			go ProduceStr(bgCtx, string(out), url, req.Host)
+			// Produce to kafka with collection_details header
+			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
 			go Produce(bgCtx, payload)
 		}
 	}
