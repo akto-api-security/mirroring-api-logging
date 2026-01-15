@@ -82,8 +82,6 @@ func isAmdArch() bool {
 	return false
 }
 
-// restartSelf replaces the current process with a fresh instance
-// This is called when config updates require a restart
 func restartSelf() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -93,12 +91,10 @@ func restartSelf() {
 
 	slog.Info("Restarting process with new environment...")
 
-	// Replace current process with fresh instance using updated environment
 	err = syscall.Exec(exe, os.Args, os.Environ())
 	if err != nil {
 		slog.Error("Failed to restart process", "error", err)
 	}
-	// Never reaches here if Exec succeeds
 }
 
 func main() {
@@ -106,7 +102,6 @@ func main() {
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
 
-	// Run the main eBPF program
 	run()
 }
 
@@ -139,7 +134,6 @@ func run() {
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
 
-	// Start Kafka consumer for config updates
 	kafkaUtil.StartConfigConsumer(restartSelf)
 
 	stopCh, err := kafkaUtil.SetupPodInformer()
