@@ -82,8 +82,6 @@ func isAmdArch() bool {
 	return false
 }
 
-// restartSelf moved to trafficUtil/kafkaUtil/ebpf_telemetry.go
-
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
