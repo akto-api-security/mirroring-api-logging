@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -229,195 +228,7 @@ func getImageVersion() string {
 	return imageVersion
 }
 
-func getEnvData() map[string]string {
-	return map[string]string{
-		"AKTO_KAFKA_BROKER_MAL":         os.Getenv("AKTO_KAFKA_BROKER_MAL"),
-		"AKTO_KAFKA_BROKER_URL":         os.Getenv("AKTO_KAFKA_BROKER_URL"),
-		"AKTO_TRAFFIC_BATCH_SIZE":       os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"),
-		"AKTO_TRAFFIC_BATCH_TIME_SECS":  os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"),
-		"AKTO_LOG_LEVEL":                os.Getenv("AKTO_LOG_LEVEL"),
-		"DEBUG_URLS":                    os.Getenv("DEBUG_URLS"),
-		"AKTO_K8_METADATA_CAPTURE":      os.Getenv("AKTO_K8_METADATA_CAPTURE"),
-		"AKTO_THREAT_ENABLED":           os.Getenv("AKTO_THREAT_ENABLED"),
-		"AKTO_IGNORE_ENVOY_PROXY_CALLS": os.Getenv("AKTO_IGNORE_ENVOY_PROXY_CALLS"),
-		"AKTO_IGNORE_IP_TRAFFIC":        os.Getenv("AKTO_IGNORE_IP_TRAFFIC"),
-	}
-}
-
-type ConfigUpdateMessage struct {
-	DaemonIds       []string          `json:"daemonIds"`
-	Env             map[string]string `json:"env"`
-	RestartRequired bool              `json:"restartRequired"`
-	Timestamp       int64             `json:"timestamp"`
-}
-
-func processConfigUpdate(configUpdate ConfigUpdateMessage, restartCallback func()) {
-	isForThisDaemon := false
-	for _, daemonId := range configUpdate.DaemonIds {
-		if daemonId == uniqueDaemonsetId || daemonId == "ALL" {
-			isForThisDaemon = true
-			break
-		}
-	}
-
-	if !isForThisDaemon {
-		slog.Debug("Config update not for this daemon, ignoring",
-			"targetDaemonIds", configUpdate.DaemonIds,
-			"thisDaemonId", uniqueDaemonsetId)
-		return
-	}
-
-	slog.Info("Processing config update",
-		"restartRequired", configUpdate.RestartRequired,
-		"envCount", len(configUpdate.Env))
-
-	if len(configUpdate.Env) > 0 {
-		for key, value := range configUpdate.Env {
-			oldValue := os.Getenv(key)
-			if oldValue != value {
-				slog.Info("Updating environment variable",
-					"key", key,
-					"oldValue", oldValue,
-					"newValue", value)
-				os.Setenv(key, value)
-			}
-		}
-	}
-
-	// Restart if required
-	if configUpdate.RestartRequired && restartCallback != nil {
-		slog.Info("Restart required, triggering restart callback...")
-		time.Sleep(1 * time.Second)
-		restartCallback()
-	} else {
-		slog.Info("Config applied successfully without restart")
-	}
-}
-
-func StartConfigConsumer(restartCallback func()) {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
-	}
-
-	if kafka_url == "" {
-		slog.Warn("Kafka URL not configured, config consumer disabled")
-		return
-	}
-
-	topic := "akto.config.updates"
-	groupID := fmt.Sprintf("ebpf-config-consumer-%s", uniqueDaemonsetId)
-
-	slog.Info("Starting config consumer", "topic", topic, "groupID", groupID, "daemonId", uniqueDaemonsetId)
-
-	readerConfig := kafka.ReaderConfig{
-		Brokers:        []string{kafka_url},
-		Topic:          topic,
-		GroupID:        groupID,
-		MinBytes:       1,
-		MaxBytes:       10e6,
-		CommitInterval: time.Second,
-		StartOffset:    kafka.LastOffset,
-	}
-
-	if useTLS {
-		tlsConfig, err := NewTLSConfig(tlsCACertPath)
-		if err != nil {
-			slog.Error("Failed to create TLS config for consumer", "error", err)
-			return
-		}
-		readerConfig.Dialer = &kafka.Dialer{
-			TLS: tlsConfig,
-		}
-	}
-
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		mechanism := plain.Mechanism{
-			Username: kafkaUsername,
-			Password: kafkaPassword,
-		}
-		readerConfig.Dialer = &kafka.Dialer{
-			SASLMechanism: mechanism,
-		}
-	}
-
-	reader := kafka.NewReader(readerConfig)
-
-	go func() {
-		defer reader.Close()
-
-		ctx := context.Background()
-		for {
-			msg, err := reader.ReadMessage(ctx)
-			if err != nil {
-				slog.Error("Error reading config update message", "error", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			slog.Debug("Received config update message", "value", string(msg.Value))
-
-			var configUpdate ConfigUpdateMessage
-			err = json.Unmarshal(msg.Value, &configUpdate)
-			if err != nil {
-				slog.Error("Failed to parse config update message", "error", err)
-				continue
-			}
-
-			processConfigUpdate(configUpdate, restartCallback)
-		}
-	}()
-
-	slog.Info("Config consumer started successfully")
-}
-
-func sendKafkaHeartbeat() {
-	if heartbeatIntervalSeconds <= 0 {
-		slog.Info("Kafka heartbeat disabled", "interval", heartbeatIntervalSeconds)
-		return
-	}
-
-	daemonPodName := getDaemonPodName()
-	imageVersion := getImageVersion()
-
-	slog.Debug("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
-	ctx := context.Background()
-
-	for {
-		jitter := time.Duration(1+rand.Intn(5)) * time.Second
-		sleepDuration := time.Duration(heartbeatIntervalSeconds)*time.Second + jitter
-
-		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
-		time.Sleep(sleepDuration)
-
-		additionalData := map[string]interface{}{
-			"env": getEnvData(),
-		}
-
-		additionalDataJSON, err := json.Marshal(additionalData)
-		if err != nil {
-			slog.Error("Failed to marshal additionalData", "error", err)
-			additionalDataJSON = []byte("{}")
-		}
-
-		// Send single heartbeat for this daemon
-		heartbeatMessage := map[string]string{
-			"type":           "heartbeat",
-			"daemonId":       uniqueDaemonsetId,
-			"daemonPodName":  daemonPodName,
-			"timestamp":      fmt.Sprint(time.Now().Unix()),
-			"moduleType":     moduleType,
-			"imageVersion":   imageVersion,
-			"additionalData": string(additionalDataJSON),
-		}
-
-		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "imageVersion", imageVersion, "heartbeatMessage", heartbeatMessage)
-		err = ProduceHeartbeat(ctx, heartbeatMessage)
-		if err != nil {
-			slog.Error("Failed to send heartbeat to Kafka", "error", err)
-		}
-	}
-}
+// Heartbeat and config consumer functions moved to ebpf_telemetry.go
 
 func LogKafkaStats() {
 	kafkaWriterMutex.RLock()
@@ -640,8 +451,32 @@ func NewTLSConfig(caPath string) (*tls.Config, error) {
 	}, nil
 }
 
-func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
+func getKafkaDialer() *kafka.Dialer {
+	dialer := &kafka.Dialer{}
 
+	// Add TLS config if enabled
+	if useTLS {
+		tlsConfig, err := NewTLSConfig(tlsCACertPath)
+		if err != nil {
+			slog.Error("Failed to create TLS config", "error", err)
+		} else {
+			dialer.TLS = tlsConfig
+		}
+	}
+
+	// Add SASL auth if enabled
+	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
+		dialer.SASLMechanism = plain.Mechanism{
+			Username: kafkaUsername,
+			Password: kafkaPassword,
+		}
+	}
+
+	return dialer
+}
+
+func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
@@ -654,20 +489,10 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
-	transport := &kafka.Transport{}
-
-	if useTLS {
-		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
-		transport.TLS = tlsConfig
-	}
-
-	// Add SASL authentication if enabled
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
-		transport.SASL = plain.Mechanism{
-			Username: kafkaUsername,
-			Password: kafkaPassword,
-		}
+	dialer := getKafkaDialer()
+	transport := &kafka.Transport{
+		TLS:  dialer.TLS,
+		SASL: dialer.SASLMechanism,
 	}
 
 	kafkaWriter.Transport = transport

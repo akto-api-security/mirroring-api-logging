@@ -82,20 +82,7 @@ func isAmdArch() bool {
 	return false
 }
 
-func restartSelf() {
-	exe, err := os.Executable()
-	if err != nil {
-		slog.Error("Failed to get executable path", "error", err)
-		return
-	}
-
-	slog.Info("Restarting process with new environment...")
-
-	err = syscall.Exec(exe, os.Args, os.Environ())
-	if err != nil {
-		slog.Error("Failed to restart process", "error", err)
-	}
-}
+// restartSelf moved to trafficUtil/kafkaUtil/ebpf_telemetry.go
 
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
@@ -134,7 +121,7 @@ func run() {
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
 
-	kafkaUtil.StartConfigConsumer(restartSelf)
+	kafkaUtil.StartConfigConsumer()
 
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
