@@ -73,13 +73,15 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 var (
 	disableEgress        = false
 	maxActiveConnections = 4096
-	inactivityThreshold  = 3 * time.Second
+	inactivityThreshold  = 7 * time.Second
 	// Value in MB
 	bufferMemThreshold = 400
 
 	// unique id of daemonset
 	uniqueDaemonsetId          = uuid.New().String()
 	trackerDataProcessInterval = 100
+
+	socketDataEventBytesThreshold = 10 * 1024 * 1024
 )
 
 func init() {
@@ -89,6 +91,7 @@ func init() {
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
+	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -201,6 +204,25 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 	}
 }
 
+// resetTimer stops, drains, and resets the timer to the given duration.
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+}
+
+// Worker lifecycle:
+//   ACTIVE:
+//     - socket data/open -> reset inactivity timer on each event
+//     - socket close     -> schedule delayed termination
+//     - inactivity timer -> terminate immediately
+//
+//   TERMINATION is final and happens exactly once.
+//  either due to inactivityThreshold or due to socker close event
 func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
@@ -216,9 +238,17 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddDataEvent(*e)
+					if tracker.GetSentBytes() + tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
+						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+						factory.StopProcessing(connID)
+						return
+					}else{
+						resetTimer(inactivityTimer, inactivityThreshold)
+					}
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddOpenEvent(*e)
+					resetTimer(inactivityTimer, inactivityThreshold)
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddCloseEvent(*e)
@@ -230,20 +260,23 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 
 			case <-delayedDeleteChan:
 				utils.LogProcessing("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-				factory.ProcessAndStopWorker(connID)
-				factory.DeleteWorker(connID)
+				factory.StopProcessing(connID)
 				return
 
 			case <-inactivityTimer.C:
 				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-				factory.ProcessAndStopWorker(connID)
-				factory.DeleteWorker(connID)
+				factory.StopProcessing(connID)
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 				return
 			}
 		}
 	}(connectionID, tracker, ch)
+}
+
+func (factory *Factory) StopProcessing(connID structs.ConnID){
+	factory.ProcessAndStopWorker(connID)
+	factory.DeleteWorker(connID)
 }
 
 func (factory *Factory) ProcessAndStopWorker(connectionID structs.ConnID) {
