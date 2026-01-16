@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -229,42 +228,7 @@ func getImageVersion() string {
 	return imageVersion
 }
 
-func sendKafkaHeartbeat() {
-	if heartbeatIntervalSeconds <= 0 {
-		slog.Info("Kafka heartbeat disabled", "interval", heartbeatIntervalSeconds)
-		return
-	}
-
-	daemonPodName := getDaemonPodName()
-	imageVersion := getImageVersion()
-
-	slog.Debug("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
-	ctx := context.Background()
-
-	for {
-		jitter := time.Duration(1+rand.Intn(5)) * time.Second
-		sleepDuration := time.Duration(heartbeatIntervalSeconds)*time.Second + jitter
-
-		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
-		time.Sleep(sleepDuration)
-
-		// Send single heartbeat for this daemon
-		heartbeatMessage := map[string]string{
-			"type":          "heartbeat",
-			"daemonId":      uniqueDaemonsetId,
-			"daemonPodName": daemonPodName,
-			"timestamp":     fmt.Sprint(time.Now().Unix()),
-			"moduleType":    moduleType,
-			"imageVersion":  imageVersion,
-		}
-
-		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "imageVersion", imageVersion, "heartbeatMessage", heartbeatMessage)
-		err := ProduceHeartbeat(ctx, heartbeatMessage)
-		if err != nil {
-			slog.Error("Failed to send heartbeat to Kafka", "error", err)
-		}
-	}
-}
+// Heartbeat and config consumer functions moved to ebpf_telemetry.go
 
 func LogKafkaStats() {
 	kafkaWriterMutex.RLock()
@@ -505,8 +469,32 @@ func NewTLSConfig(caPath string) (*tls.Config, error) {
 	}, nil
 }
 
-func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
+func getKafkaDialer() *kafka.Dialer {
+	dialer := &kafka.Dialer{}
 
+	// Add TLS config if enabled
+	if useTLS {
+		tlsConfig, err := NewTLSConfig(tlsCACertPath)
+		if err != nil {
+			slog.Error("Failed to create TLS config", "error", err)
+		} else {
+			dialer.TLS = tlsConfig
+		}
+	}
+
+	// Add SASL auth if enabled
+	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
+		dialer.SASLMechanism = plain.Mechanism{
+			Username: kafkaUsername,
+			Password: kafkaPassword,
+		}
+	}
+
+	return dialer
+}
+
+func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
@@ -519,20 +507,10 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
-	transport := &kafka.Transport{}
-
-	if useTLS {
-		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
-		transport.TLS = tlsConfig
-	}
-
-	// Add SASL authentication if enabled
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
-		transport.SASL = plain.Mechanism{
-			Username: kafkaUsername,
-			Password: kafkaPassword,
-		}
+	dialer := getKafkaDialer()
+	transport := &kafka.Transport{
+		TLS:  dialer.TLS,
+		SASL: dialer.SASLMechanism,
 	}
 
 	kafkaWriter.Transport = transport

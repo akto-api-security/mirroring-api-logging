@@ -86,6 +86,7 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
+
 	run()
 }
 
@@ -117,6 +118,8 @@ func run() {
 	// this needs to be called before InitKafka
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
+
+	kafkaUtil.StartConfigConsumer()
 
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
