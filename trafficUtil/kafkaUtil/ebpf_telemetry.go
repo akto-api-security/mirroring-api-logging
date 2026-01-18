@@ -80,17 +80,19 @@ func getProfilingData() map[string]interface{} {
 
 	allocMB := float64(memStats.Alloc) / 1024 / 1024
 	sysMB := float64(memStats.Sys) / 1024 / 1024
+	totalAllocMB := float64(memStats.TotalAlloc) / 1024 / 1024
 
 	cpuPercent, cpuCoresUsed := getCPUUsage()
 
 	profiling := map[string]interface{}{
-		"memory_used_mb":  allocMB,
-		"memory_total_mb": sysMB,
-		"cpu_percent":     cpuPercent,
-		"cpu_cores_used":  cpuCoresUsed,
-		"cpu_cores_total": runtime.NumCPU(),
-		"goroutines":      runtime.NumGoroutine(),
-		"num_gc":          memStats.NumGC,
+		"memory_used_mb":       allocMB,
+		"memory_total_mb":      sysMB,
+		"memory_cumulative_mb": totalAllocMB,
+		"cpu_percent":          cpuPercent,
+		"cpu_cores_used":       cpuCoresUsed,
+		"cpu_cores_total":      runtime.NumCPU(),
+		"goroutines":           runtime.NumGoroutine(),
+		"num_gc":               memStats.NumGC,
 	}
 
 	return profiling
