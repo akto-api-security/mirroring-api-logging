@@ -129,13 +129,13 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 	}
 
 	if ctx.Direction == utils.DirectionOutbound {
-		checkDebugUrlAndPrint(url, host, "Pod labels not resolved for outbound direction request: "+fmt.Sprint(ctx.Direction))
+		checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels not resolved for outbound request, podName: %s, direction: %v", ctx.HostName, ctx.Direction))
 		return
 	}
 
 	processName := PodInformerInstance.GetProcessNameByProcessId(int32(ctx.ProcessID))
 	if strings.Contains(processName, "envoy") {
-		checkDebugUrlAndPrint(url, host, "Pod labels not resolved for envoy request: "+fmt.Sprint(ctx.Direction))
+		checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels not resolved for envoy request, podName: %s, direction: %v", ctx.HostName, ctx.Direction))
 		return
 	}
 
@@ -332,13 +332,13 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
 				ctx := context.Background()
-				logMsg := fmt.Sprintf("%s : %s", message, url)
+				logMsg := fmt.Sprintf("url: %s, host: %s, message: %s", url, host, message)
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
 			} else if strings.Contains(host, debugString) {
 				ctx := context.Background()
-				logMsg := fmt.Sprintf("%s : %s", message, host)
+				logMsg := fmt.Sprintf("url: %s, host: %s, message: %s", url, host, message)
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
