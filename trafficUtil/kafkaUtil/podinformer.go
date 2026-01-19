@@ -42,13 +42,17 @@ func init() {
 	utils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
 }
 
+type PidInfo struct {
+	HostName    string
+	ProcessName string
+}
+
 type PodInformer struct {
 	clientset        *kubernetes.Clientset
 	nodeName         string
 	podNameLabelsMap sync.Map // Maps pod names to their labels directly
-	pidHostNameMap   map[int32]string
+	pidHostNameMap   map[int32]PidInfo
 }
-
 
 func SetupPodInformer() (chan struct{}, error) {
 	if !KubeInjectEnabled {
@@ -116,21 +120,29 @@ func NewPodInformer() (*PodInformer, error) {
 		clientset:        clientset,
 		nodeName:         nodeName,
 		podNameLabelsMap: sync.Map{},
-		pidHostNameMap:   make(map[int32]string),
+		pidHostNameMap:   make(map[int32]PidInfo),
 	}, nil
 }
 
 func (w *PodInformer) GetPodNameByProcessId(pid int32) string {
-	if hostName, ok := w.pidHostNameMap[pid]; ok {
-		return hostName
+	if info, ok := w.pidHostNameMap[pid]; ok {
+		return info.HostName
 	}
-	slog.Debug("Hostname not found for", "processId", pid)
+
+	return ""
+}
+
+func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
+	if info, ok := w.pidHostNameMap[pid]; ok {
+		return info.ProcessName
+	}
+	slog.Debug("Process name not found for", "processId", pid)
 	return ""
 }
 
 func (w *PodInformer) BuildPidHostNameMap() {
 
-	cmd := exec.Command("sh", "-c", "for dir in /host/proc/[0-9]*; do pid=$(echo \"$dir\" | cut -d'/' -f4); if [ -f \"$dir/environ\" ]; then hostname=$(strings \"$dir/environ\" | grep '^HOSTNAME=' | cut -d'=' -f2); if [ -n \"$hostname\" ]; then echo \"$pid $hostname\"; fi; fi; done")
+	cmd := exec.Command("sh", "-c", "for dir in /host/proc/[0-9]*; do pid=$(basename \"$dir\"); if [ -f $dir/environ ]; then hostname=$(strings $dir/environ | grep '^HOSTNAME=' | cut -d'=' -f2); if [ -n \"$hostname\" ]; then comm=$(cat $dir/comm 2>/dev/null); echo \"$pid $comm $hostname\"; fi; fi; done | sort -k3")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Error("Failed to execute shell command", "error", err)
@@ -140,10 +152,13 @@ func (w *PodInformer) BuildPidHostNameMap() {
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		parts := strings.Fields(line)
-		if len(parts) == 2 {
+		if len(parts) == 3 {
 			pid, err := strconv.Atoi(parts[0])
 			if err == nil {
-				w.pidHostNameMap[int32(pid)] = parts[1]
+				w.pidHostNameMap[int32(pid)] = PidInfo{
+					ProcessName: parts[1],
+					HostName:    parts[2],
+				}
 			}
 		}
 	}
@@ -152,7 +167,6 @@ func (w *PodInformer) BuildPidHostNameMap() {
 }
 
 func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (string, error) {
-	slog.Debug("Resolving Pod Name to labels", "podName", podName)
 	checkDebugUrlAndPrint(url, reqHost, "Resolving Pod Name to labels for "+podName)
 
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
@@ -186,10 +200,10 @@ func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (str
 func (w *PodInformer) logPidHostNameMap() {
 	slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "PID\tHostname:\n")
+	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 
-	for pid, hostName := range w.pidHostNameMap {
-		fmt.Fprintf(&builder, "%d\t%s\n", pid, hostName)
+	for pid, info := range w.pidHostNameMap {
+		fmt.Fprintf(&builder, "%d\t%s\t%s\n", pid, info.ProcessName, info.HostName)
 	}
 	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
@@ -332,6 +346,7 @@ func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
 	slog.Debug("Pod update:", "namespace", newPod.Namespace, "podName", newPod.Name)
 	w.podNameLabelsMap.Delete(oldPod.Name)
 	w.podNameLabelsMap.Store(newPod.Name, newPod.Labels)
+	w.BuildPidHostNameMap()
 }
 
 func (w *PodInformer) handlePodDelete(obj interface{}) {
