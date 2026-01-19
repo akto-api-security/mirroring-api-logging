@@ -7,20 +7,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/plain"
 	"google.golang.org/protobuf/proto"
 )
 
 var kafkaWriter *kafka.Writer
+var kafkaWriterMutex sync.RWMutex
 var KafkaErrMsgCount = 0
 var KafkaErrMsgEpoch = time.Now()
 var BytesInThreshold = 500 * 1024 * 1024
@@ -29,12 +34,29 @@ var useTLS = false
 var InsecureSkipVerify = true
 var tlsCACertPath = "./ca.crt"
 
+var isAuthImplemented = false
+var kafkaUsername = ""
+var kafkaPassword = ""
+
+var kafkaErrorThreshold = 500
+var kafkaReconnectIntervalMinutes = -1
+var heartbeatIntervalSeconds = 60
+var uniqueDaemonsetId = uuid.New().String()
+var moduleType = "TRAFFIC_COLLECTOR"
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
 	utils.InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
 	utils.InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
 
+	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
+	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
+	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
+
+	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
+	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
+	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
 }
 
 func InitKafka() {
@@ -63,19 +85,20 @@ func InitKafka() {
 
 	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
 	if e != nil {
-		utils.PrintLog("AKTO_TRAFFIC_BATCH_SIZE should be valid integer")
-		return
+		kafka_batch_size = 100
 	}
 
 	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
 	if e != nil {
-		utils.PrintLog("AKTO_TRAFFIC_BATCH_TIME_SECS should be valid integer")
-		return
+		kafka_batch_time_secs = 10
 	}
 	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
 
 	for {
+		kafkaWriterMutex.Lock()
 		kafkaWriter = getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		kafkaWriterMutex.Unlock()
+
 		utils.LogMemoryStats()
 		utils.PrintLog("logging kafka stats before pushing message")
 		LogKafkaStats()
@@ -85,16 +108,28 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
-		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost")
+		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost", "")
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
 			slog.Error("error establishing connection with kafka, sending message failed, retrying in 2 seconds", "error", err)
+			kafkaWriterMutex.Lock()
 			kafkaWriter.Close()
+			kafkaWriterMutex.Unlock()
 			time.Sleep(time.Second * 2)
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
+			kafkaWriterMutex.Lock()
 			kafkaWriter.Completion = kafkaCompletion()
+			kafkaWriterMutex.Unlock()
+
+			// Start periodic reconnection routine
+			go periodicKafkaReconnect(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
+
+			// Start heartbeat routine
+			go sendKafkaHeartbeat()
+			slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
 			break
 		}
 	}
@@ -105,17 +140,138 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
 			slog.Error("kafka error message", "err", err, "count", KafkaErrMsgCount, "messagesCount", len(messages))
+
+			if KafkaErrMsgCount > kafkaErrorThreshold {
+				slog.Error("kafka error count exceeded threshold, restarting module", "count", KafkaErrMsgCount, "threshold", kafkaErrorThreshold)
+				os.Exit(1)
+			}
 		} else {
 			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
 	}
 }
 
-func Close() {
-	kafkaWriter.Close()
+func periodicKafkaReconnect(kafka_url string, kafka_batch_size int, kafka_batch_time_secs_duration time.Duration) {
+	if kafkaReconnectIntervalMinutes <= 0 {
+		slog.Info("Kafka reconnection disabled", "interval", kafkaReconnectIntervalMinutes)
+		return
+	}
+
+	ticker := time.NewTicker(time.Duration(kafkaReconnectIntervalMinutes) * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		slog.Info("Starting periodic Kafka reconnection", "interval_minutes", kafkaReconnectIntervalMinutes)
+
+		// Create new writer
+		newWriter := getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration)
+		newWriter.Completion = kafkaCompletion()
+
+		// Test the new connection
+		ctx := context.Background()
+		value := map[string]string{
+			"testConnectionString": "periodicReconnect",
+		}
+		out, _ := json.Marshal(value)
+		testMsg := kafka.Message{
+			Topic: "akto.api.logs",
+			Value: out,
+		}
+
+		err := newWriter.WriteMessages(ctx, testMsg)
+		if err != nil {
+			slog.Error("Failed to test new Kafka connection during periodic reconnect, keeping old connection", "error", err)
+			newWriter.Close()
+			continue
+		}
+
+		// Replace old writer with new one
+		kafkaWriterMutex.Lock()
+		oldWriter := kafkaWriter
+		kafkaWriter = newWriter
+		kafkaWriterMutex.Unlock()
+
+		// Close old writer
+		if oldWriter != nil {
+			slog.Info("Closing old Kafka writer")
+			oldWriter.Close()
+		}
+
+		slog.Info("Kafka reconnection completed successfully")
+	}
+}
+
+func getDaemonPodName() string {
+	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
+	podName := os.Getenv("POD_NAME")
+	nodeName := os.Getenv("NODE_NAME")
+
+	if aktoAgentName != "" {
+		return fmt.Sprintf("akto-tc:%s", aktoAgentName)
+	}
+
+	if podName != "" && nodeName != "" {
+		return fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
+	}
+
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		hostname = fmt.Sprintf("daemon-%s", uniqueDaemonsetId[:8])
+	}
+	return fmt.Sprintf("akto-tc:%s", hostname)
+}
+
+func getImageVersion() string {
+	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
+	if imageVersion == "" {
+		imageVersion = "aktosecurity/mirror-api-logging:k8s-ebpf"
+	}
+	return imageVersion
+}
+
+func sendKafkaHeartbeat() {
+	if heartbeatIntervalSeconds <= 0 {
+		slog.Info("Kafka heartbeat disabled", "interval", heartbeatIntervalSeconds)
+		return
+	}
+
+	daemonPodName := getDaemonPodName()
+	imageVersion := getImageVersion()
+
+	slog.Debug("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
+	ctx := context.Background()
+
+	for {
+		jitter := time.Duration(1+rand.Intn(5)) * time.Second
+		sleepDuration := time.Duration(heartbeatIntervalSeconds)*time.Second + jitter
+
+		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
+		time.Sleep(sleepDuration)
+
+		// Send single heartbeat for this daemon
+		heartbeatMessage := map[string]string{
+			"type":          "heartbeat",
+			"daemonId":      uniqueDaemonsetId,
+			"daemonPodName": daemonPodName,
+			"timestamp":     fmt.Sprint(time.Now().Unix()),
+			"moduleType":    moduleType,
+			"imageVersion":  imageVersion,
+		}
+
+		slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "imageVersion", imageVersion, "heartbeatMessage", heartbeatMessage)
+		err := ProduceHeartbeat(ctx, heartbeatMessage)
+		if err != nil {
+			slog.Error("Failed to send heartbeat to Kafka", "error", err)
+		}
+	}
 }
 
 func LogKafkaStats() {
+	kafkaWriterMutex.RLock()
+	defer kafkaWriterMutex.RUnlock()
+	if kafkaWriter == nil {
+		return
+	}
 	stats := kafkaWriter.Stats()
 	slog.Debug("Kafka Stats",
 		"dials", stats.Dials,
@@ -200,7 +356,11 @@ func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 		Value: protoBytes,
 	}
 
-	err = kafkaWriter.WriteMessages(ctx, msg)
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err = writer.WriteMessages(ctx, msg)
 	if err != nil {
 		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
 		return err
@@ -234,6 +394,31 @@ const (
 	LogTypeDebug = "DEBUG"
 )
 
+func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) error {
+	out, err := json.Marshal(heartbeatData)
+	if err != nil {
+		return err
+	}
+
+	topic := "akto.daemonset.producer.heartbeats"
+	msg := kafka.Message{
+		Topic: topic,
+		Value: []byte(string(out)),
+	}
+
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err = writer.WriteMessages(ctx, msg)
+
+	if err != nil {
+		slog.Error("ERROR while writing heartbeat messages", "topic", topic, "error", err)
+		return err
+	}
+	return nil
+}
+
 func ProduceLogs(ctx context.Context, message string, logType string) error {
 	value := map[string]string{
 		"message": message,
@@ -250,7 +435,11 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 		Value: []byte(string(out)),
 	}
 
-	err := kafkaWriter.WriteMessages(ctx, msg)
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err := writer.WriteMessages(ctx, msg)
 
 	if err != nil {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
@@ -259,21 +448,43 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 	return nil
 }
 
-func ProduceStr(ctx context.Context, message string, url, reqHost string) error {
-	// initialize the writer with the broker addresses, and the topic
-	topic := "akto.api.logs"
-	msg := kafka.Message{
-		Topic: topic,
-		Value: []byte(message),
+// buildCollectionDetailsHeader creates the collection_details Kafka header
+// Format: "host|method|url"
+// Returns nil if any parameter is empty (skip header for incomplete messages)
+func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
+	if host == "" || method == "" || url == "" {
+		return nil
 	}
 
-	err := kafkaWriter.WriteMessages(ctx, msg)
+	headerValue := fmt.Sprintf("%s|%s|%s", host, method, url)
+	return []kafka.Header{
+		{
+			Key:   "collection_details",
+			Value: []byte(headerValue),
+		},
+	}
+}
+
+func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
+	topic := "akto.api.logs"
+
+	msg := kafka.Message{
+		Topic:   topic,
+		Value:   []byte(message),
+		Headers: buildCollectionDetailsHeader(reqHost, method, url),
+	}
+
+	kafkaWriterMutex.RLock()
+	writer := kafkaWriter
+	kafkaWriterMutex.RUnlock()
+
+	err := writer.WriteMessages(ctx, msg)
 
 	if err != nil {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}
-	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: "+message)
+	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")
 
 	return nil
 }
@@ -308,11 +519,22 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
+	transport := &kafka.Transport{}
+
 	if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
-		kafkaWriter.Transport = &kafka.Transport{
-			TLS: tlsConfig,
+		transport.TLS = tlsConfig
+	}
+
+	// Add SASL authentication if enabled
+	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
+		transport.SASL = plain.Mechanism{
+			Username: kafkaUsername,
+			Password: kafkaPassword,
 		}
 	}
+
+	kafkaWriter.Transport = transport
 	return &kafkaWriter
 }

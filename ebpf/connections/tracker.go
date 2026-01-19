@@ -108,3 +108,11 @@ func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
 	conn.closeTimestamp = uint64(time.Now().UnixNano())
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }
+
+func (conn *Tracker) GetSentBytes() uint64 {
+	return conn.sentBytes
+}
+
+func (conn *Tracker) GetRecvBytes() uint64 {
+	return conn.recvBytes
+}

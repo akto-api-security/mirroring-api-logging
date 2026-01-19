@@ -37,7 +37,7 @@ var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 var IgnoreEnvoyProxycalls = false
 var EnableGraph = true
-var ThreatEnabled = false
+var ThreatEnabled = true
 
 const EnvoyProxyIp = "127.0.0.6"
 
@@ -76,6 +76,5 @@ func InitVar(envVarName string, targetVar interface{}) {
 			slog.Warn("Unsupported type for targetVar", "type", v)
 		}
 	} else {
-		slog.Warn("Missing env value, using default value", "name", envVarName)
 	}
 }
