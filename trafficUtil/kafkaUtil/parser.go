@@ -122,8 +122,20 @@ func buildJSONPayload(input PayloadInput) map[string]string {
 
 // resolvePodLabels resolves pod labels for inbound traffic and adds them to the value map.
 func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host string) {
-	if PodInformerInstance == nil || ctx.Direction != utils.DirectionInbound {
-		checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil or direction is not inbound, direction: "+fmt.Sprint(ctx.Direction))
+		
+	if PodInformerInstance == nil {
+		checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil")
+		return
+	}
+
+	if ctx.Direction == utils.DirectionOutbound {
+		checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels not resolved for outbound request, podName: %s, direction: %v", ctx.HostName, ctx.Direction))
+		return
+	}
+
+	processName := PodInformerInstance.GetProcessNameByProcessId(int32(ctx.ProcessID))
+	if strings.Contains(processName, "envoy") {
+		checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels not resolved for envoy request, podName: %s, direction: %v", ctx.HostName, ctx.Direction))
 		return
 	}
 
@@ -320,13 +332,13 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
 				ctx := context.Background()
-				logMsg := fmt.Sprintf("%s : %s", message, url)
+				logMsg := fmt.Sprintf("url: %s, host: %s, message: %s", url, host, message)
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
 			} else if strings.Contains(host, debugString) {
 				ctx := context.Background()
-				logMsg := fmt.Sprintf("%s : %s", message, host)
+				logMsg := fmt.Sprintf("url: %s, host: %s, message: %s", url, host, message)
 				utils.PrintLogDebug(logMsg)
 				go ProduceLogs(ctx, logMsg, LogTypeInfo)
 				break
@@ -530,7 +542,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		value := buildJSONPayload(input)
 
 		// Debug logging
-		log := fmt.Sprintf("pod direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
+		log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
 			ctx.Direction,
 			headers.Request.StringMap["host"],
 			value["path"],
@@ -561,9 +573,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			apiProcessor.CloudProcessorInstance.Produce(value)
 
 		} else {
-			// Produce to kafka
-			// TODO : remove and use protobuf instead
-			go ProduceStr(bgCtx, string(out), url, req.Host)
+			// Produce to kafka with collection_details header
+			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
 			go Produce(bgCtx, payload)
 		}
 	}

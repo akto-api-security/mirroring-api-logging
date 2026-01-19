@@ -107,7 +107,7 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
-		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost")
+		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost", "")
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
@@ -412,12 +412,30 @@ func ProduceLogs(ctx context.Context, message string, logType string) error {
 	return nil
 }
 
-func ProduceStr(ctx context.Context, message string, url, reqHost string) error {
-	// initialize the writer with the broker addresses, and the topic
+// buildCollectionDetailsHeader creates the collection_details Kafka header
+// Format: "host|method|url"
+// Returns nil if any parameter is empty (skip header for incomplete messages)
+func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
+	if host == "" || method == "" || url == "" {
+		return nil
+	}
+
+	headerValue := fmt.Sprintf("%s|%s|%s", host, method, url)
+	return []kafka.Header{
+		{
+			Key:   "collection_details",
+			Value: []byte(headerValue),
+		},
+	}
+}
+
+func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
 	topic := "akto.api.logs"
+
 	msg := kafka.Message{
-		Topic: topic,
-		Value: []byte(message),
+		Topic:   topic,
+		Value:   []byte(message),
+		Headers: buildCollectionDetailsHeader(reqHost, method, url),
 	}
 
 	kafkaWriterMutex.RLock()
