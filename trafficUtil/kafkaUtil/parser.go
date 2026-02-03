@@ -79,6 +79,7 @@ func buildProtobufPayload(input PayloadInput) *trafficpb.HttpResponseParam {
 		RequestPayload:  input.RequestBody,
 		ResponsePayload: input.ResponseBody,
 		Ip:              input.SourceIP,
+		DestIp:          input.Context.DestIP,
 		Time:            int32(time.Now().Unix()),
 		StatusCode:      int32(input.Response.StatusCode),
 		Type:            string(input.Request.Proto),
