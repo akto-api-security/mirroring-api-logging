@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"os"
@@ -111,6 +112,31 @@ func run() {
 		panic("bpf module is nil")
 	}
 	defer bpfModule.Close()
+
+	// Populate kubernetes_pids map from TRACE_PIDS env variable (comma-separated list of PIDs)
+	kubePidsTable := bcc.NewTable(bpfModule.TableId("kubernetes_pids"), bpfModule)
+	if tracePids := os.Getenv("TRACE_PIDS"); tracePids != "" {
+		for _, pidStr := range strings.Split(tracePids, ",") {
+			pidStr = strings.TrimSpace(pidStr)
+			if pidStr == "" {
+				continue
+			}
+			pid, err := strconv.ParseUint(pidStr, 10, 32)
+			if err != nil {
+				slog.Error("invalid pid in TRACE_PIDS", "pid", pidStr, "error", err)
+				continue
+			}
+			var pidKey [4]byte
+			binary.LittleEndian.PutUint32(pidKey[:], uint32(pid))
+			if err := kubePidsTable.Set(pidKey[:], []byte{1}); err != nil {
+				slog.Error("failed to add pid to kubernetes_pids map", "pid", pid, "error", err)
+			} else {
+				slog.Info("added pid to kubernetes_pids map", "pid", pid)
+			}
+		}
+	} else {
+		slog.Warn("TRACE_PIDS env variable not set, no PIDs will be traced")
+	}
 
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
