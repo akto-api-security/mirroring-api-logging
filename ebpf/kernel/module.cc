@@ -356,8 +356,12 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     }
     struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
     if (conn_info == NULL) {
-        return;
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("process_syscall_data conn_info not found %d %llu %lu", id, tgid_fd, tgid);
+      }
+      return;
     }
+
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
     }
@@ -1092,7 +1096,7 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
   }
 
     process_syscall_data(ctx, write_args, id, true, false);
-    }
+  }
 
     active_write_args_map.delete(&id);
     return 0;
