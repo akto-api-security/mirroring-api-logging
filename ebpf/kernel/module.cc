@@ -155,10 +155,12 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
     int ret_fd = PT_REGS_RC(ret);
 
-    bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd: %d isConnect: %d", ret_fd, isConnect);
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd: %d isConnect: %d", ret_fd, isConnect);
+    }
 
     if(!isConnect && ret_fd < 0){
-        bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd < 0, returning early");
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd < 0, returning early"); }
         return;
     }
     union sockaddr_t* addr;
@@ -169,7 +171,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     u32 srcIp = 0;
     uint16_t lport = 0;
 
-    bpf_trace_printk("DEBUG_PROCESS_ACCEPT: addr=%p sock_alloc=%p", args->addr, args->sock_alloc_socket);
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("DEBUG_PROCESS_ACCEPT: addr=%p sock_alloc=%p", args->addr, args->sock_alloc_socket);
+    }
 
     if(args->addr != NULL){
       if (PRINT_BPF_LOGS){
@@ -209,7 +213,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
           conn_info.ip = (in_addr.s6_addr32)[3];
           srcIp = (in_addr_2.s6_addr32)[3];
         } else {
-          bpf_trace_printk("DEBUG_PROCESS_ACCEPT: unknown family %d, returning", family);
+          if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: unknown family %d, returning", family); }
           return;
         }
         if (PRINT_BPF_LOGS){
@@ -218,9 +222,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         }
     }
 
-    bpf_trace_printk("DEBUG_PROCESS_ACCEPT: socketConn=%d", socketConn);
+    if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: socketConn=%d", socketConn); }
     if ( !socketConn && addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6 ) {
-        bpf_trace_printk("DEBUG_PROCESS_ACCEPT: bad sa_family, returning");
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: bad sa_family, returning"); }
         return;
     }
 
@@ -492,22 +496,23 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
     u32 tgid = id >> 32;
     int ret_fd = PT_REGS_RC(ctx);
 
-    // Always print - unconditional debug to confirm kretprobe fires
-    bpf_trace_printk("DEBUG_RET_ACCEPT: tgid: %d pid: %d ret_fd: %d", tgid, (u32)id, ret_fd);
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("DEBUG_RET_ACCEPT: tgid: %d pid: %d ret_fd: %d", tgid, (u32)id, ret_fd);
+    }
 
     if (!should_trace_tgid(id)) {
-        bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d NOT in kubernetes_pids", tgid);
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d NOT in kubernetes_pids", tgid); }
         return 0;
     }
 
-    bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d passed trace check", tgid);
+    if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d passed trace check", tgid); }
 
     struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
 
     if (accept_args == NULL) {
-        bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args NULL for id: %llu", id);
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args NULL for id: %llu", id); }
     } else {
-        bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args found, calling process_syscall_accept");
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args found, calling process_syscall_accept"); }
         process_syscall_accept(ctx, accept_args, id, false);
     }
 
