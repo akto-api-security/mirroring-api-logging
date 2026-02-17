@@ -16,6 +16,7 @@ import (
 	"net/http"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
+	"github.com/akto-api-security/api-gateway-logging/openapiprocessor"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -56,6 +57,9 @@ func main() {
 
 	kafkaUtil.InitKafka()
 
+	// Map of API Gateway clients per role ARN (for OpenAPI discovery)
+	apiGatewayClientsPerRole := make(map[string]*openapiprocessor.ClientSet)
+
 	monitored := make(map[string]bool)
 	var mu sync.Mutex
 
@@ -83,6 +87,14 @@ func main() {
 		}
 	}
 	log.Printf("Ticker interval set to %d minutes", tickerIntervalMinutes)
+
+	// OpenAPI discovery feature flag (enabled by default)
+	discoverOpenAPISpec := true
+	utils.InitVar("DISCOVER_OPENAPI_SPEC", &discoverOpenAPISpec)
+
+	// OpenAPI discovery polling interval (default: 15 minutes)
+	openapiDiscoveryIntervalMinutes := 15
+	utils.InitVar("OPENAPI_DISCOVERY_INTERVAL_MINUTES", &openapiDiscoveryIntervalMinutes)
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(tickerIntervalMinutes) * time.Minute)
@@ -134,6 +146,54 @@ func main() {
 			<-ticker.C
 		}
 	}()
+
+	// Start OpenAPI spec discovery if enabled (DOES NOT MODIFY CLOUDWATCH LOGIC)
+	if discoverOpenAPISpec {
+		log.Printf("OpenAPI spec discovery enabled with %d minute interval", openapiDiscoveryIntervalMinutes)
+
+		go func() {
+			ticker := time.NewTicker(time.Duration(openapiDiscoveryIntervalMinutes) * time.Minute)
+			defer ticker.Stop()
+
+			for {
+				mu.Lock()
+				roleArns := make([]string, len(awsRoleArnsFromAkto))
+				copy(roleArns, awsRoleArnsFromAkto)
+				mu.Unlock()
+
+				log.Printf("Discovering OpenAPI specs for %d roles", len(roleArns))
+
+				for _, roleArn := range roleArns {
+					// Create API Gateway clients if not exist
+					_, exists := apiGatewayClientsPerRole[roleArn]
+					if !exists {
+						clientSet, err := openapiprocessor.CreateAPIGatewayClients(
+							roleArn, cfg, stsSvc, sessionName,
+						)
+						if err != nil {
+							log.Printf("Failed to create API Gateway clients for role %s: %v", roleArn, err)
+							continue
+						}
+						apiGatewayClientsPerRole[roleArn] = clientSet
+					}
+
+					// Spawn goroutine per role for API discovery
+					clientSet := apiGatewayClientsPerRole[roleArn]
+					go func(rArn string, cs *openapiprocessor.ClientSet) {
+						log.Printf("Starting OpenAPI discovery for role: %s", rArn)
+						openapiprocessor.MonitorAPIs(
+							context.TODO(),
+							cs,
+							rArn,
+							awsRegion,
+						)
+					}(roleArn, clientSet)
+				}
+
+				<-ticker.C
+			}
+		}()
+	}
 
 	select {}
 }
