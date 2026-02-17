@@ -111,7 +111,7 @@ func discoverRESTAPIs(
 				if shouldSendSpec(roleArn, *api.Id, *stage.StageName, spec.Body) {
 					utils.DebugLog("Spec changed for API %s stage %s, sending to Kafka", *api.Id, *stage.StageName)
 					// Parse and send to Kafka
-					if err := parseAndSendOpenAPISpec(spec.Body, *api.Name, roleArn, region, *stage.StageName); err != nil {
+					if err := parseAndSendOpenAPISpec(spec.Body, *api.Name, *api.Id, roleArn, region, *stage.StageName); err != nil {
 						utils.DebugLog("Error parsing/sending spec for API %s stage %s: %v", *api.Id, *stage.StageName, err)
 					}
 				} else {
@@ -174,7 +174,7 @@ func discoverHTTPAPIs(
 			if shouldSendSpec(roleArn, *api.ApiId, "", spec.Body) {
 				utils.DebugLog("Spec changed for HTTP API %s, sending to Kafka", *api.ApiId)
 				// Parse and send to Kafka
-				if err := parseAndSendOpenAPISpec(spec.Body, *api.Name, roleArn, region, ""); err != nil {
+				if err := parseAndSendOpenAPISpec(spec.Body, *api.Name, *api.ApiId, roleArn, region, ""); err != nil {
 					utils.DebugLog("Error parsing/sending spec for HTTP API %s: %v", *api.ApiId, err)
 				}
 			} else {
