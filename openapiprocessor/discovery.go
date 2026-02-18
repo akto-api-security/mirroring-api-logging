@@ -20,22 +20,21 @@ func MonitorAPIs(
 	clientSet *ClientSet,
 	roleArn string,
 	region string,
-	dashboardURL string,
-	aktoToken string,
+	authToken string,
 ) {
 	for {
 		utils.DebugLog("Starting OpenAPI discovery cycle for role: %s", roleArn)
 
 		// Discover REST APIs (v1)
 		if clientSet.RestClient != nil {
-			if err := discoverRESTAPIs(ctx, clientSet.RestClient, roleArn, region, dashboardURL, aktoToken); err != nil {
+			if err := discoverRESTAPIs(ctx, clientSet.RestClient, roleArn, region, authToken); err != nil {
 				utils.DebugLog("Error discovering REST APIs for %s: %v", roleArn, err)
 			}
 		}
 
 		// Discover HTTP APIs (v2)
 		if clientSet.HttpClient != nil {
-			if err := discoverHTTPAPIs(ctx, clientSet.HttpClient, roleArn, region, dashboardURL, aktoToken); err != nil {
+			if err := discoverHTTPAPIs(ctx, clientSet.HttpClient, roleArn, region, authToken); err != nil {
 				utils.DebugLog("Error discovering HTTP APIs for %s: %v", roleArn, err)
 			}
 		}
@@ -53,8 +52,7 @@ func discoverRESTAPIs(
 	client *apigateway.Client,
 	roleArn string,
 	region string,
-	dashboardURL string,
-	aktoToken string,
+	authToken string,
 ) error {
 	utils.DebugLog("Discovering REST APIs for role: %s", roleArn)
 
@@ -115,7 +113,7 @@ func discoverRESTAPIs(
 				if shouldSendSpec(roleArn, *api.Id, *stage.StageName, spec.Body) {
 					utils.DebugLog("Spec changed for API %s stage %s, uploading to dashboard", *api.Id, *stage.StageName)
 					// Upload to dashboard
-					if err := uploadOpenAPISpecToDashboard(spec.Body, *api.Name, *api.Id, roleArn, region, *stage.StageName, dashboardURL, aktoToken); err != nil {
+					if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.Id, roleArn, region, *stage.StageName, authToken); err != nil {
 						utils.DebugLog("Error uploading spec for API %s stage %s: %v", *api.Id, *stage.StageName, err)
 					}
 				} else {
@@ -135,8 +133,7 @@ func discoverHTTPAPIs(
 	client *apigatewayv2.Client,
 	roleArn string,
 	region string,
-	dashboardURL string,
-	aktoToken string,
+	authToken string,
 ) error {
 	utils.DebugLog("Discovering HTTP APIs for role: %s", roleArn)
 
@@ -180,7 +177,7 @@ func discoverHTTPAPIs(
 			if shouldSendSpec(roleArn, *api.ApiId, "", spec.Body) {
 				utils.DebugLog("Spec changed for HTTP API %s, uploading to dashboard", *api.ApiId)
 				// Upload to dashboard
-				if err := uploadOpenAPISpecToDashboard(spec.Body, *api.Name, *api.ApiId, roleArn, region, "", dashboardURL, aktoToken); err != nil {
+				if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.ApiId, roleArn, region, "", authToken); err != nil {
 					utils.DebugLog("Error uploading spec for HTTP API %s: %v", *api.ApiId, err)
 				}
 			} else {

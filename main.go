@@ -96,17 +96,9 @@ func main() {
 	openapiDiscoveryIntervalMinutes := 15
 	utils.InitVar("OPENAPI_DISCOVERY_INTERVAL_MINUTES", &openapiDiscoveryIntervalMinutes)
 
-	// Akto dashboard URL (optional, default: https://app.akto.io)
-	aktoDashboardURL := os.Getenv("AKTO_DASHBOARD_URL")
-	if aktoDashboardURL == "" {
-		aktoDashboardURL = "https://app.akto.io"
-	}
-	log.Printf("Using Akto dashboard URL: %s", aktoDashboardURL)
-
-	// Akto token for API authentication (required if OpenAPI discovery is enabled)
-	aktoToken := os.Getenv("AKTO_TOKEN")
-	if discoverOpenAPISpec && aktoToken == "" {
-		log.Printf("WARNING: AKTO_TOKEN not set - disabling OpenAPI discovery")
+	// OpenAPI discovery requires DATABASE_ABSTRACTOR_TOKEN for cyborg auth
+	if discoverOpenAPISpec && databaseAbstractorToken == "" {
+		log.Printf("WARNING: DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
 		discoverOpenAPISpec = false
 	}
 
@@ -200,8 +192,7 @@ func main() {
 							cs,
 							rArn,
 							awsRegion,
-							aktoDashboardURL,
-							aktoToken,
+							databaseAbstractorToken,
 						)
 					}(roleArn, clientSet)
 				}
