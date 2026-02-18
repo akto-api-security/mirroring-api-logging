@@ -162,7 +162,7 @@ func (w *PodInformer) BuildPidHostNameMap() {
 			}
 		}
 	}
-	slog.Info("PID to Hostname map built successfully", "map", w.pidHostNameMap)
+	slog.Debug("PID to Hostname map built successfully", "map", w.pidHostNameMap)
 	w.logPidHostNameMap()
 }
 
@@ -207,7 +207,7 @@ func (w *PodInformer) logPidHostNameMap() {
 	}
 	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
-	slog.Warn("PID to Hostname Map logged", "map", w.pidHostNameMap)
+	slog.Debug("PID to Hostname Map logged", "map", w.pidHostNameMap)
 }
 
 func (w *PodInformer) logPodLabelsMapFile() {
@@ -236,7 +236,7 @@ func (w *PodInformer) logPodNameLabelsMap() {
 		result += fmt.Sprintf("Name: %s, Labels: %s; ", key, value)
 		return true
 	})
-	slog.Warn("Pod Name Labels Map", "map", result)
+	slog.Debug("Pod Name Labels Map", "map", result)
 	w.logPodLabelsMapFile()
 }
 
