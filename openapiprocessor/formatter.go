@@ -71,7 +71,7 @@ func uploadSpec(specContent []byte, dashboardURL string, aktoToken string) (stri
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-akto-key", aktoToken)
+	req.Header.Set("X-API-KEY", aktoToken)
 
 	// Send request
 	client := &http.Client{
@@ -142,7 +142,7 @@ func pollUploadStatus(uploadID string, dashboardURL string, aktoToken string) er
 
 		// Set headers
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-akto-key", aktoToken)
+		req.Header.Set("X-API-KEY", aktoToken)
 
 		// Send request
 		resp, err := client.Do(req)
@@ -242,7 +242,7 @@ func importSpec(uploadID string, dashboardURL string, aktoToken string) error {
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-akto-key", aktoToken)
+	req.Header.Set("X-API-KEY", aktoToken)
 
 	// Send request
 	client := &http.Client{
