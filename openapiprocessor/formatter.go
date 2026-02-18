@@ -71,7 +71,7 @@ func uploadSpec(specContent []byte, dashboardURL string, aktoToken string) (stri
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-akto-token", aktoToken)
+	req.Header.Set("x-akto-key", aktoToken)
 
 	// Send request
 	client := &http.Client{
@@ -129,8 +129,8 @@ func pollUploadStatus(uploadID string, dashboardURL string, aktoToken string) er
 	}
 
 	// Poll with exponential backoff (max 5 minutes total)
-	maxAttempts := 60                  // 60 attempts
-	pollInterval := 5 * time.Second    // Start with 5 seconds
+	maxAttempts := 60               // 60 attempts
+	pollInterval := 5 * time.Second // Start with 5 seconds
 	maxPollInterval := 30 * time.Second
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -142,7 +142,7 @@ func pollUploadStatus(uploadID string, dashboardURL string, aktoToken string) er
 
 		// Set headers
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-akto-token", aktoToken)
+		req.Header.Set("x-akto-key", aktoToken)
 
 		// Send request
 		resp, err := client.Do(req)
@@ -172,13 +172,13 @@ func pollUploadStatus(uploadID string, dashboardURL string, aktoToken string) er
 		// Parse response
 		var result struct {
 			UploadDetails struct {
-				UploadStatus                     string   `json:"uploadStatus"`
-				CollectionErrors                 []string `json:"collectionErrors"`
-				Logs                             []string `json:"logs"`
-				APIsWithErrorsAndParsed          int      `json:"apisWithErrorsAndParsed"`
+				UploadStatus                      string   `json:"uploadStatus"`
+				CollectionErrors                  []string `json:"collectionErrors"`
+				Logs                              []string `json:"logs"`
+				APIsWithErrorsAndParsed           int      `json:"apisWithErrorsAndParsed"`
 				APIsWithErrorsAndCannotBeImported int      `json:"apisWithErrorsAndCannotBeImported"`
-				CorrectlyParsedAPIs              int      `json:"correctlyParsedApis"`
-				TotalCount                       int      `json:"totalCount"`
+				CorrectlyParsedAPIs               int      `json:"correctlyParsedApis"`
+				TotalCount                        int      `json:"totalCount"`
 			} `json:"uploadDetails"`
 			UploadID string `json:"uploadId"`
 		}
@@ -242,7 +242,7 @@ func importSpec(uploadID string, dashboardURL string, aktoToken string) error {
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-akto-token", aktoToken)
+	req.Header.Set("x-akto-key", aktoToken)
 
 	// Send request
 	client := &http.Client{
