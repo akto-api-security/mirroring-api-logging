@@ -17,6 +17,10 @@ func PrintLog(val string) {
 	}
 }
 
+func DebugLog(message string, args ...interface{}) {
+	log.Printf(message+"\n", args...)
+}
+
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 

@@ -6,18 +6,18 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: api-gateway-logging 
+      app: api-gateway-logging
   template:
     metadata:
       labels:
-        app: api-gateway-logging 
+        app: api-gateway-logging
     spec:
       containers:
         - image: aktosecurity/mirror-api-logging:api-gateway-logging
-          name: api-gateway-logging 
+          name: api-gateway-logging
           imagePullPolicy: Always
           resources: {}
-          env: 
+          env:
             - name: AKTO_BYTES_IN_THRESHOLD
               value: "100"
             - name: AKTO_TRAFFIC_BATCH_TIME_SECS
@@ -38,3 +38,9 @@ spec:
               value: ""
             - name: AWS_REGION
               value: ""
+            - name: DATABASE_ABSTRACTOR_TOKEN
+              value: ""
+            - name: DISCOVER_OPENAPI_SPEC
+              value: "true"
+            - name: OPENAPI_DISCOVERY_INTERVAL_MINUTES
+              value: "15"
