@@ -2,6 +2,7 @@ package logprocesser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -154,26 +155,48 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 	log.Printf("DEBUG [%s] Got %d events. NextToken: %v → NextForwardToken: %v",
 		streamName, len(output.Events), tracker.NextToken, output.NextForwardToken)
 
-	reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
-	// Print log events
+	// Try to parse JSON format first (API Gateway access logs)
+	// Fall back to regex for execution logs
 	eventsWithReqID := 0
 	eventsWithoutReqID := 0
 
 	for _, event := range output.Events {
-
 		message := *event.Message
-		matches := reqIDRegex.FindStringSubmatch(message)
-		if len(matches) < 2 {
+
+		// Try parsing as JSON first
+		var logEntry map[string]interface{}
+		err := json.Unmarshal([]byte(message), &logEntry)
+
+		var reqID string
+
+		if err == nil {
+			// Successfully parsed as JSON - look for requestId field
+			if reqIDVal, exists := logEntry["requestId"]; exists {
+				reqID = reqIDVal.(string)
+				log.Printf("DEBUG [%s] Parsed JSON format - requestId: %s", streamName, reqID)
+			} else if extReqIDVal, exists := logEntry["extendedRequestId"]; exists {
+				// Fallback to extendedRequestId if requestId not found
+				reqID = extReqIDVal.(string)
+				log.Printf("DEBUG [%s] Parsed JSON format - extendedRequestId: %s", streamName, reqID)
+			}
+		} else {
+			// Fall back to regex for execution log format
+			reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
+			matches := reqIDRegex.FindStringSubmatch(message)
+			if len(matches) >= 2 {
+				reqID = matches[1]
+			}
+		}
+
+		if reqID == "" {
 			eventsWithoutReqID++
 			// Log first few messages to see what we're getting
 			if eventsWithoutReqID <= 3 {
-				log.Printf("DEBUG [%s] Message without request ID (sample %d): %s", streamName, eventsWithoutReqID, message[:min(200, len(message))])
+				log.Printf("DEBUG [%s] Could not parse request ID (sample %d): %s", streamName, eventsWithoutReqID, message[:min(200, len(message))])
 			}
 			continue // Skip if no request ID found
 		}
 		eventsWithReqID++
-
-		reqID := matches[1]
 
 		// fmt.Printf("reqId: %s\n", reqID)
 
