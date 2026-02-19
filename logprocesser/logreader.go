@@ -165,22 +165,29 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 
 		// Try parsing as JSON first
 		var logEntry map[string]interface{}
+		isJSON := false
 		err := json.Unmarshal([]byte(message), &logEntry)
 
 		var reqID string
 
 		if err == nil {
+			isJSON = true
 			// Successfully parsed as JSON - look for requestId field
 			if reqIDVal, exists := logEntry["requestId"]; exists {
-				reqID = reqIDVal.(string)
-				log.Printf("DEBUG [%s] Parsed JSON format - requestId: %s", streamName, reqID)
+				if reqIDStr, ok := reqIDVal.(string); ok {
+					reqID = reqIDStr
+					log.Printf("DEBUG [%s] Parsed JSON format - requestId: %s", streamName, reqID)
+				}
 			} else if extReqIDVal, exists := logEntry["extendedRequestId"]; exists {
 				// Fallback to extendedRequestId if requestId not found
-				reqID = extReqIDVal.(string)
-				log.Printf("DEBUG [%s] Parsed JSON format - extendedRequestId: %s", streamName, reqID)
+				if extReqIDStr, ok := extReqIDVal.(string); ok {
+					reqID = extReqIDStr
+					log.Printf("DEBUG [%s] Parsed JSON format - extendedRequestId: %s", streamName, reqID)
+				}
 			}
 		} else {
 			// Fall back to regex for execution log format
+			isJSON = false
 			reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
 			matches := reqIDRegex.FindStringSubmatch(message)
 			if len(matches) >= 2 {
@@ -212,10 +219,96 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 
 		entry := tracker.logs[reqID]
 
-		httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
+		// If JSON format, extract data from JSON fields
+		if isJSON && err == nil {
+			// Extract HTTP method (try multiple field names)
+			if httpMethod, exists := logEntry["httpMethod"]; exists {
+				if httpMethodStr, ok := httpMethod.(string); ok {
+					entry.HTTPMethod = httpMethodStr
+				}
+			} else if method, exists := logEntry["method"]; exists {
+				if methodStr, ok := method.(string); ok {
+					entry.HTTPMethod = methodStr
+				}
+			}
 
-		if !strings.Contains(message, "TRUNCATED") {
-			if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
+			// Extract resource path (try multiple field names)
+			if resourcePath, exists := logEntry["resourcePath"]; exists {
+				if resourcePathStr, ok := resourcePath.(string); ok {
+					entry.ResourcePath = resourcePathStr
+				}
+			} else if path, exists := logEntry["path"]; exists {
+				if pathStr, ok := path.(string); ok {
+					entry.ResourcePath = pathStr
+				}
+			}
+
+			// Extract status code (try multiple field names and types)
+			if status, exists := logEntry["status"]; exists {
+				switch v := status.(type) {
+				case float64:
+					entry.StatusCode = int(v)
+				case string:
+					if code, err := strconv.Atoi(v); err == nil {
+						entry.StatusCode = code
+					}
+				}
+			} else if statusCode, exists := logEntry["statusCode"]; exists {
+				switch v := statusCode.(type) {
+				case float64:
+					entry.StatusCode = int(v)
+				case string:
+					if code, err := strconv.Atoi(v); err == nil {
+						entry.StatusCode = code
+					}
+				}
+			}
+
+			// Extract request headers
+			if headers, exists := logEntry["headers"]; exists {
+				if headersMap, ok := headers.(map[string]interface{}); ok {
+					for k, v := range headersMap {
+						if vStr, ok := v.(string); ok {
+							entry.RequestHeaders[k] = vStr
+						}
+					}
+				}
+			}
+
+			// Extract response headers
+			if responseHeaders, exists := logEntry["responseHeaders"]; exists {
+				if headersMap, ok := responseHeaders.(map[string]interface{}); ok {
+					for k, v := range headersMap {
+						if vStr, ok := v.(string); ok {
+							entry.ResponseHeaders[k] = vStr
+						}
+					}
+				}
+			}
+
+			// Extract request payload/body
+			if requestPayload, exists := logEntry["requestPayload"]; exists {
+				if payloadStr, ok := requestPayload.(string); ok {
+					entry.RequestBody = payloadStr
+				}
+			}
+
+			// Extract response payload/body
+			if responsePayload, exists := logEntry["responsePayload"]; exists {
+				if payloadStr, ok := responsePayload.(string); ok {
+					entry.ResponseBody = payloadStr
+				}
+			}
+
+			if entry.HTTPMethod != "" {
+				log.Printf("DEBUG [%s] Extracted from JSON: %s %s (status: %d)", streamName, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
+			}
+		} else {
+			// Fall back to regex pattern matching for execution logs
+			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
+
+			if !strings.Contains(message, "TRUNCATED") {
+				if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
 				// fmt.Printf("scanning method: %s\n", message)
 
 				// Use regex to extract HTTP Method and Resource Path
@@ -253,6 +346,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					fmt.Println("Error: Could not find status code in the message")
 				}
 			}
+		}
 		}
 
 		// fmt.Printf("Stream: %s, Timestamp: %d, Message: %s\n", streamName, *event.Timestamp, *event.Message)
