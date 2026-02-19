@@ -5,9 +5,11 @@ USER root
 # Install all dependencies (cached layer - rarely changes)
 RUN apk add --no-cache bcc-tools bcc-dev bcc-doc linux-headers build-base perf
 
-# Copy only go.mod and go.sum first for better caching
-COPY ebpf/go.mod ebpf/go.sum ./ebpf/
+# Set working directory first
 WORKDIR /ebpf
+
+# Copy only go.mod and go.sum first for better caching
+COPY ebpf/go.mod ebpf/go.sum ./
 
 # Download Go dependencies (cached layer - only rebuilds if go.mod/go.sum changes)
 RUN go mod download
