@@ -198,7 +198,7 @@ func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (str
 }
 
 func (w *PodInformer) logPidHostNameMap() {
-	slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
+	slog.Debug("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 

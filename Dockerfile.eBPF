@@ -8,6 +8,9 @@ RUN apk add --no-cache bcc-tools bcc-dev bcc-doc linux-headers build-base perf
 # Set working directory first
 WORKDIR /ebpf
 
+# Copy trafficUtil first (required by go.mod replace directive)
+COPY trafficUtil ../trafficUtil
+
 # Copy only go.mod and go.sum first for better caching
 COPY ebpf/go.mod ebpf/go.sum ./
 
