@@ -116,52 +116,52 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			slog.Debug("Attempting for process", "pid", pid, "libraries", len(libraries))
 			// openssl probes here are being attached on dynamically linked SSL libraries only.
-			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
+			// attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
 			if len(containers) == 0 {
 				containers = append(containers, "unknown")
 			}
 
-			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    DynamicLink,
-					probeType:   ssl.OpenSSL,
-				}
-				processFactory.processMap[pid] = p
-				continue
-			} else if err != nil {
-				slog.Error("openSSL probing error", "pid", pid, "error", err)
-			}
+			// if attached {
+			// 	p := Process{
+			// 		pid:         pid,
+			// 		containerId: containers[0],
+			// 		linkType:    DynamicLink,
+			// 		probeType:   ssl.OpenSSL,
+			// 	}
+			// 	processFactory.processMap[pid] = p
+			// 	continue
+			// } else if err != nil {
+			// 	slog.Error("openSSL probing error", "pid", pid, "error", err)
+			// }
 
-			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
-			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    StaticLink,
-					probeType:   ssl.GoTLS,
-				}
-				processFactory.processMap[pid] = p
-				continue
-			} else if err != nil {
-				slog.Error("GoTLS probing error", "pid", pid, "error", err)
-			}
+			// attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
+			// if attached {
+			// 	p := Process{
+			// 		pid:         pid,
+			// 		containerId: containers[0],
+			// 		linkType:    StaticLink,
+			// 		probeType:   ssl.GoTLS,
+			// 	}
+			// 	processFactory.processMap[pid] = p
+			// 	continue
+			// } else if err != nil {
+			// 	slog.Error("GoTLS probing error", "pid", pid, "error", err)
+			// }
 
-			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
-			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    StaticLink,
-					probeType:   ssl.Node,
-				}
-				processFactory.processMap[pid] = p
-				continue
-			} else if err != nil {
-				slog.Error("Node probing error", "pid", pid, "error", err)
-			}
+			// attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
+			// if attached {
+			// 	p := Process{
+			// 		pid:         pid,
+			// 		containerId: containers[0],
+			// 		linkType:    StaticLink,
+			// 		probeType:   ssl.Node,
+			// 	}
+			// 	processFactory.processMap[pid] = p
+			// 	continue
+			// } else if err != nil {
+			// 	slog.Error("Node probing error", "pid", pid, "error", err)
+			// }
 			processFactory.unattachedProcess[pid] = true
 		}
 	}

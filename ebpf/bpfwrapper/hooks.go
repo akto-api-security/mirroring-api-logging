@@ -340,112 +340,112 @@ var (
 		},
 	}
 
-	SslHooks = []Uprobe{
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_entry_SSL_write",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_entry_SSL_read",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_entry_SSL_write",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_entry_SSL_read",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-	}
+	// SslHooks = []Uprobe{
+	// 	{
+	// 		FunctionToHook: "SSL_write",
+	// 		HookName:       "probe_entry_SSL_write",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write",
+	// 		HookName:       "probe_ret_SSL_write",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read",
+	// 		HookName:       "probe_entry_SSL_read",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read",
+	// 		HookName:       "probe_ret_SSL_read",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write_ex",
+	// 		HookName:       "probe_entry_SSL_write",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write_ex",
+	// 		HookName:       "probe_ret_SSL_write",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read_ex",
+	// 		HookName:       "probe_entry_SSL_read",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read_ex",
+	// 		HookName:       "probe_ret_SSL_read",
+	// 		Type:           ReturnType,
+	// 	},
+	// }
 
-	SslHooksEgress = []Uprobe{
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_entry_SSL_write",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_entry_SSL_read",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_entry_SSL_write",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_entry_SSL_read",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-	}
+	// SslHooksEgress = []Uprobe{
+	// 	{
+	// 		FunctionToHook: "SSL_read",
+	// 		HookName:       "probe_entry_SSL_write",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read",
+	// 		HookName:       "probe_ret_SSL_write",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write",
+	// 		HookName:       "probe_entry_SSL_read",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write",
+	// 		HookName:       "probe_ret_SSL_read",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read_ex",
+	// 		HookName:       "probe_entry_SSL_write",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read_ex",
+	// 		HookName:       "probe_ret_SSL_write",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write_ex",
+	// 		HookName:       "probe_entry_SSL_read",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write_ex",
+	// 		HookName:       "probe_ret_SSL_read",
+	// 		Type:           ReturnType,
+	// 	},
+	// }
 
-	BoringsslHooks = []Uprobe{
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_entry_SSL_write_boring",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_entry_SSL_read_boring",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-	}
+	// BoringsslHooks = []Uprobe{
+	// 	{
+	// 		FunctionToHook: "SSL_write",
+	// 		HookName:       "probe_entry_SSL_write_boring",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_write",
+	// 		HookName:       "probe_ret_SSL_write",
+	// 		Type:           ReturnType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read",
+	// 		HookName:       "probe_entry_SSL_read_boring",
+	// 		Type:           EntryType,
+	// 	},
+	// 	{
+	// 		FunctionToHook: "SSL_read",
+	// 		HookName:       "probe_ret_SSL_read",
+	// 		Type:           ReturnType,
+	// 	},
+	// }
 )
