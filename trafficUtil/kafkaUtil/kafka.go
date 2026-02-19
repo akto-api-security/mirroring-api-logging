@@ -135,6 +135,7 @@ func Produce(ctx context.Context, message string) error {
 		log.Println("ERROR while writing messages: ", err)
 		return err
 	}
+	log.Printf("✓ Message successfully sent to Kafka topic 'akto.api.logs': %s", message)
 	return nil
 }
 

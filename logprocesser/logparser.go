@@ -93,5 +93,9 @@ func ParseAndProduce(log LogEntry) {
 		"direction":       fmt.Sprint(1),
 	}
 
+	// Debug: Print the Kafka message being sent
+	msgBytes, _ := json.MarshalIndent(value, "", "  ")
+	fmt.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
+
 	kafkaUtil.ParseAndProduce(value)
 }
