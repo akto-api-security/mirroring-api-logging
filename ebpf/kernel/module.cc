@@ -155,9 +155,6 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
     int ret_fd = PT_REGS_RC(ret);
 
-    if(PRINT_BPF_LOGS){
-      bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd: %d isConnect: %d", ret_fd, isConnect);
-    }
 
     if(!isConnect && ret_fd < 0){
         if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd < 0, returning early"); }
@@ -171,20 +168,10 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     u32 srcIp = 0;
     uint16_t lport = 0;
 
-    if(PRINT_BPF_LOGS){
-      bpf_trace_printk("DEBUG_PROCESS_ACCEPT: addr=%p sock_alloc=%p", args->addr, args->sock_alloc_socket);
-    }
-
     if(args->addr != NULL){
-      if (PRINT_BPF_LOGS){
-        bpf_trace_printk("sock addr found, processing");
-      }
         addr = (union sockaddr_t*)args->addr;
     }
     if(args->sock_alloc_socket !=NULL){
-      if (PRINT_BPF_LOGS){
-        bpf_trace_printk("sock alloc found, processing");
-      }
         socketConn = true;
         struct sock* sk = NULL;
         bpf_probe_read_kernel(&sk, sizeof(sk),  &(args->sock_alloc_socket)->sk);
@@ -197,15 +184,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
         conn_info.port = rport;
         if (family == AF_INET) {
-          if (PRINT_BPF_LOGS){
-            bpf_trace_printk("sock alloc found ipv4, processing");
-          }
           bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
           bpf_probe_read_kernel(&(srcIp), sizeof(srcIp), &sk_common->skc_rcv_saddr);
         } else if (family == AF_INET6) {
-          if (PRINT_BPF_LOGS){
-            bpf_trace_printk("sock alloc found ipv6, processing");
-          }
           struct in6_addr in_addr;
           struct in6_addr in_addr_2;
           bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
@@ -216,13 +197,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
           if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: unknown family %d, returning", family); }
           return;
         }
-        if (PRINT_BPF_LOGS){
-          bpf_trace_printk("sock alloc found, processed: id: %llu ip: %llu port: %d", id, conn_info.ip, conn_info.port);
-          bpf_trace_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d", id, srcIp, lport);
-        }
     }
-
-    if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: socketConn=%d", socketConn); }
     if ( !socketConn && addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6 ) {
         if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: bad sa_family, returning"); }
         return;
@@ -303,12 +278,6 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     socket_open_event.src_ip = srcIp;
     socket_open_event.src_port = lport;
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("accept call 1: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
-      bpf_trace_printk("accept call 2: %llu %d %d", socket_open_event.ip, socket_open_event.port, isConnect);
-      bpf_trace_printk("accept call 3: %llu %d %d", socket_open_event.src_ip, socket_open_event.src_port, isConnect);
-    }
-
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
     socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
 }
@@ -354,36 +323,22 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         return;
     }
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 1 %d", id);
-    }
     if (args->fd < 0) {
         return;
     }
 
     u32 tgid = id >> 32;
     u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
-    }
     struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
     if (conn_info == NULL) {
       if (PRINT_BPF_LOGS){
-        bpf_trace_printk("process_syscall_data conn_info not found %d %llu %lu", id, tgid_fd, tgid);
+        bpf_trace_printk("process_syscall_data conn_info not found id=%llu tgid_fd=%llu", id, tgid_fd);
       }
       return;
     }
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
-    }
-    
     if (conn_info->ssl != ssl) {
         return;
-    }
-
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
     }
 
     u32 kZero = 0;
@@ -396,9 +351,13 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->fd = conn_info->fd;
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
     socket_data_event->port = conn_info->port;
-    socket_data_event->ip = conn_info->ip; 
+    socket_data_event->ip = conn_info->ip;
     socket_data_event->ssl = conn_info->ssl;
-    
+
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("data_loop_start: id=%llu fd=%d total_bytes=%d", id, conn_info->fd, bytes_exchanged);
+    }
+
     int bytes_sent = 0;
     size_t size_to_save = 0;
     int i =0;
@@ -436,14 +395,6 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->writeEventsCount = conn_info->writeEventsCount;
     socket_data_event->readEventsCount = conn_info->readEventsCount;
 
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
-    bpf_trace_printk("current_size: %d i:%d, bytes_exchanged: %d", current_size, i, bytes_exchanged);
-    unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
-    bpf_trace_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000),tgid_fd, socket_data_event->msg);
-  }
-    
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
     socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
@@ -496,21 +447,15 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
     u32 tgid = id >> 32;
     int ret_fd = PT_REGS_RC(ctx);
 
-    if(PRINT_BPF_LOGS){
-      bpf_trace_printk("DEBUG_RET_ACCEPT: tgid: %d pid: %d ret_fd: %d", tgid, (u32)id, ret_fd);
-    }
 
     if (!should_trace_tgid(id)) {
         if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d NOT in kubernetes_pids", tgid); }
         return 0;
     }
 
-    if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d passed trace check", tgid); }
-
     struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
 
     if (accept_args == NULL) {
-        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args NULL for id: %llu", id); }
     } else {
         if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args found, calling process_syscall_accept"); }
         process_syscall_accept(ctx, accept_args, id, false);
