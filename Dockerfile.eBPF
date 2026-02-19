@@ -1,38 +1,47 @@
-FROM golang:1.24-alpine
+FROM alpine:3.22 AS base
 
 USER root
+RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 
-# Install all dependencies (cached layer - rarely changes)
-RUN apk add --no-cache bcc-tools bcc-dev bcc-doc linux-headers build-base perf
+FROM base AS builder
 
-# Set working directory first
+# Install Go based on architecture
+ARG GO_VERSION=1.24.3
+ARG TARGETARCH
+
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ARCH="arm64"; \
+    elif [ "$TARGETARCH" = "amd64" ]; then \
+        ARCH="amd64"; \
+    fi && \
+    wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${ARCH}.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+COPY ebpf ./ebpf
+COPY trafficUtil ./trafficUtil
 WORKDIR /ebpf
 
-# Copy trafficUtil first (required by go.mod replace directive)
-COPY trafficUtil ../trafficUtil
-
-# Copy only go.mod and go.sum first for better caching
-COPY ebpf/go.mod ebpf/go.sum ./
-
-# Download Go dependencies (cached layer - only rebuilds if go.mod/go.sum changes)
 RUN go get
 RUN go mod download
+RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
+RUN sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
+RUN sed -i "s/attachUProbe(/AttachUProbeInternal(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
+RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/symbol.go
+RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
 
-# Apply sed modifications to downloaded modules (combined into single RUN)
-RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go && \
-    sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go && \
-    sed -i "s/attachUProbe(/AttachUProbeInternal(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go && \
-    sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/symbol.go && \
-    sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
-
-# Now copy source code (changes frequently - invalidates cache from here down)
-COPY ebpf/ ./
-
-# Build the application
 RUN go build -o ebpf-logging
 
-# Copy run script (kernel/module.cc already copied with ebpf/)
-COPY ebpf-run.sh ./ebpf-run.sh
-RUN chmod +x ./ebpf-run.sh
+FROM base
 
-CMD ["./ebpf-run.sh"]
+WORKDIR /ebpf
+COPY --from=builder /ebpf/ebpf-logging /ebpf/ebpf-logging
+COPY --from=builder /ebpf/kernel/module.cc /ebpf/kernel/module.cc
+COPY ebpf-run.sh /ebpf/ebpf-run.sh
+RUN chmod +x /ebpf/ebpf-run.sh
+
+RUN apk add perf
+
+CMD "./ebpf-run.sh"
