@@ -29,6 +29,14 @@ func init() {
 	utils.InitVar("CLOUDWATCH_READ_BATCH_SIZE", &cloudwatchReadBatchSize)
 }
 
+// Helper function to get minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
 	activeStreams := make(map[string]*StreamTracker)
@@ -46,7 +54,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		// Update the next token for log streams pagination
 		if newNextToken != nil {
-			fmt.Printf("new streams found %s \n", *newNextToken)
+			log.Printf("DEBUG New streams token found: %s", *newNextToken)
 			nextLogStreamsToken = newNextToken
 		} else {
 			// if newNextToken is nil,
@@ -54,14 +62,15 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			// so clear the log stream
 			// or there are less than stream batch size messages.
 			// so to avoid recalculating later, skip them for now
-			fmt.Printf("no new streams found \n")
+			log.Printf("DEBUG No new streams token (pagination complete), clearing stream list")
 			logStreams = []types.LogStream{}
 		}
 
 		// Step 2: Add new log streams to the active list
+		log.Printf("DEBUG Processing %d log streams from batch", len(logStreams))
 		for _, stream := range logStreams {
 			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
-				log.Printf("Discovered new log stream: %s", *stream.LogStreamName)
+				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v)", *stream.LogStreamName, stream.LastEventTimestamp)
 				activeStreams[*stream.LogStreamName] = &StreamTracker{
 					NextToken:   nil,
 					LastChecked: time.Now(),
@@ -70,6 +79,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				}
 			}
 		}
+		log.Printf("DEBUG Total active streams: %d", len(activeStreams))
 
 		// Step 3: Process logs from active streams
 		for streamName, tracker := range activeStreams {
@@ -137,18 +147,31 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		StartFromHead: aws.Bool(true),
 	})
 	if err != nil {
+		log.Printf("Error getting log events from stream %s: %v", streamName, err)
 		return err
 	}
 
+	log.Printf("DEBUG [%s] Got %d events. NextToken: %v → NextForwardToken: %v",
+		streamName, len(output.Events), tracker.NextToken, output.NextForwardToken)
+
 	reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
 	// Print log events
+	eventsWithReqID := 0
+	eventsWithoutReqID := 0
+
 	for _, event := range output.Events {
 
 		message := *event.Message
 		matches := reqIDRegex.FindStringSubmatch(message)
 		if len(matches) < 2 {
+			eventsWithoutReqID++
+			// Log first few messages to see what we're getting
+			if eventsWithoutReqID <= 3 {
+				log.Printf("DEBUG [%s] Message without request ID (sample %d): %s", streamName, eventsWithoutReqID, message[:min(200, len(message))])
+			}
 			continue // Skip if no request ID found
 		}
+		eventsWithReqID++
 
 		reqID := matches[1]
 
@@ -212,11 +235,15 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		// fmt.Printf("Stream: %s, Timestamp: %d, Message: %s\n", streamName, *event.Timestamp, *event.Message)
 	}
 
+	log.Printf("DEBUG [%s] Summary: %d events with request IDs, %d without", streamName, eventsWithReqID, eventsWithoutReqID)
+
 	// Update the next token for the stream
 	if tracker.NextToken == nil || *tracker.NextToken != *output.NextForwardToken {
+		log.Printf("DEBUG [%s] Token changed or initial read. Updating token from %v to %v", streamName, tracker.NextToken, output.NextForwardToken)
 		tracker.NextToken = output.NextForwardToken
 	} else {
 		// If no new logs, consider the stream inactive
+		log.Printf("DEBUG [%s] Token unchanged (%v == %v), marking as inactive", streamName, *tracker.NextToken, *output.NextForwardToken)
 		tracker.Active = false
 		log.Printf("Marking stream as inactive, no new logs: %s", streamName)
 	}
