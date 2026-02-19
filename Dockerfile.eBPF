@@ -15,6 +15,7 @@ COPY trafficUtil ../trafficUtil
 COPY ebpf/go.mod ebpf/go.sum ./
 
 # Download Go dependencies (cached layer - only rebuilds if go.mod/go.sum changes)
+RUN go get
 RUN go mod download
 
 # Apply sed modifications to downloaded modules (combined into single RUN)
@@ -26,13 +27,11 @@ RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.2
 
 # Now copy source code (changes frequently - invalidates cache from here down)
 COPY ebpf/ ./
-COPY trafficUtil ../trafficUtil
 
 # Build the application
 RUN go build -o ebpf-logging
 
-# Copy kernel module and run script
-COPY ebpf/kernel/module.cc ./kernel/module.cc
+# Copy run script (kernel/module.cc already copied with ebpf/)
 COPY ebpf-run.sh ./ebpf-run.sh
 RUN chmod +x ./ebpf-run.sh
 
