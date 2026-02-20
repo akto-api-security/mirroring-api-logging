@@ -127,7 +127,7 @@ func InitKafka() {
 			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
 
 			// Start heartbeat routine
-			go sendKafkaHeartbeat()
+			// go sendKafkaHeartbeat()
 			slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
 			break
 		}
@@ -293,7 +293,7 @@ func ProducePodMapping(ctx context.Context, podName string) error {
 
 	out, _ := json.Marshal(message)
 	slog.Debug("Producing pod mapping", "podName", podName, "message", string(out))
-	go ProduceLogs(ctx, string(out), LogTypeDebug)
+	// go ProduceLogs(ctx, string(out), LogTypeDebug)
 	return nil
 }
 

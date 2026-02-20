@@ -52,10 +52,15 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	kPrev := -1
 	for _, k := range keys {
 		if kPrev == -1 {
-			if k != 1 {
-				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
-				break
-			}
+			// C sets read, write event count=0 only on new connection open
+			// For requests arriving after a time gap on the same underlying connection the 
+			// read,write count will not be 1, they will simply continue from the last request
+			// This can only be replicated when there is a time gap/inactivityThreshold between requests
+			// on the same underlying connection
+			// if k != 1 {
+				// utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
+				// break
+			// }
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
