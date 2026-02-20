@@ -302,6 +302,19 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 
 			if entry.HTTPMethod != "" {
 				log.Printf("DEBUG [%s] Extracted from JSON: %s %s (status: %d)", streamName, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
+			// Debug: Show what headers/payloads were extracted
+			if len(entry.RequestHeaders) > 0 {
+				log.Printf("DEBUG [%s]   RequestHeaders: %v", streamName, entry.RequestHeaders)
+			}
+			if len(entry.ResponseHeaders) > 0 {
+				log.Printf("DEBUG [%s]   ResponseHeaders: %v", streamName, entry.ResponseHeaders)
+			}
+			if entry.RequestBody != "" {
+				log.Printf("DEBUG [%s]   RequestBody: %s", streamName, entry.RequestBody[:min(100, len(entry.RequestBody))])
+			}
+			if entry.ResponseBody != "" {
+				log.Printf("DEBUG [%s]   ResponseBody: %s", streamName, entry.ResponseBody[:min(100, len(entry.ResponseBody))])
+			}
 			}
 		} else {
 			// Fall back to regex pattern matching for execution logs

@@ -73,7 +73,7 @@ func ParseAndProduce(log LogEntry) {
 
 	reqHeaderString, _ := json.Marshal(log.RequestHeaders)
 	respHeaderString, _ := json.Marshal(log.ResponseHeaders)
-	value := map[string]string{
+	trafficData := map[string]string{
 		"path":            log.ResourcePath,
 		"requestHeaders":  string(reqHeaderString),
 		"responseHeaders": string(respHeaderString),
@@ -93,9 +93,16 @@ func ParseAndProduce(log LogEntry) {
 		"direction":       fmt.Sprint(1),
 	}
 
+	// Wrap in batchData format for Akto
+	batchMessage := map[string]interface{}{
+		"batchData": []map[string]string{trafficData},
+	}
+
 	// Debug: Print the Kafka message being sent
-	msgBytes, _ := json.MarshalIndent(value, "", "  ")
+	msgBytes, _ := json.MarshalIndent(batchMessage, "", "  ")
 	fmt.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
 
-	kafkaUtil.ParseAndProduce(value)
+	// Convert to JSON string for Kafka
+	out, _ := json.Marshal(batchMessage)
+	kafkaUtil.SendRawMessage(string(out))
 }
