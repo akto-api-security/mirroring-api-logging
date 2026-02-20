@@ -93,16 +93,9 @@ func ParseAndProduce(log LogEntry) {
 		"direction":       fmt.Sprint(1),
 	}
 
-	// Wrap in batchData format for Akto
-	batchMessage := map[string]interface{}{
-		"batchData": []map[string]string{trafficData},
-	}
-
 	// Debug: Print the Kafka message being sent
-	msgBytes, _ := json.MarshalIndent(batchMessage, "", "  ")
+	msgBytes, _ := json.MarshalIndent(trafficData, "", "  ")
 	fmt.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
 
-	// Convert to JSON string for Kafka
-	out, _ := json.Marshal(batchMessage)
-	kafkaUtil.SendRawMessage(string(out))
+	kafkaUtil.ParseAndProduce(trafficData)
 }
