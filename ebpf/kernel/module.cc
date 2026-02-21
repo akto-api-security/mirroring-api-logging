@@ -49,6 +49,7 @@ struct conn_info_t {
     bool ssl;
     u32 readEventsCount;
     u32 writeEventsCount;
+    char protocol[8];
 };
 
 union sockaddr_t {
@@ -87,6 +88,7 @@ struct socket_open_event_t {
     u32 src_ip;
     unsigned short src_port;
     u64 socket_open_ns;
+    char protocol[8]; // Protocol detected from payload: "HTTP1", "HTTP2", "UNKN"
 };
 
 struct socket_close_event_t {
@@ -108,6 +110,7 @@ struct socket_data_event_t {
     u32 readEventsCount;
     u32 writeEventsCount;
     bool ssl;
+    char protocol[8]; // Protocol detected: "HTTP1", "HTTP2", "UNKN"
     char msg[MAX_MSG_SIZE];
 };
 
@@ -233,6 +236,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
+    // Initialize protocol as unknown - will be detected from first data packet
+    __builtin_memcpy(conn_info.protocol, "UNKN", 5);
+
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
     if(isConnect){
@@ -280,6 +286,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     socket_open_event.ip = conn_info.ip;
     socket_open_event.src_ip = srcIp;
     socket_open_event.src_port = lport;
+    __builtin_memcpy(socket_open_event.protocol, conn_info.protocol, 8);
 
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("accept call: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
@@ -318,7 +325,42 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
-    conn_info_map.delete(&tgid_fd);    
+    conn_info_map.delete(&tgid_fd);
+}
+
+static __inline void detect_protocol_from_data(struct conn_info_t *conn_info, const char *buf, size_t count) {
+    // Only detect if protocol is still unknown
+    if (conn_info->protocol[0] != 'U') {
+        return;
+    }
+
+    if (count < 6) {
+        return;
+    }
+
+    // HTTP/2 connection preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    if (buf[0] == 'P' && buf[1] == 'R' && buf[2] == 'I' && buf[3] == ' ' && buf[4] == '*') {
+        __builtin_memcpy(conn_info->protocol, "HTTP2", 6);
+        return;
+    }
+
+    // HTTP/1.x request methods (verbs): GET, POST, PUT, DELETE, HEAD, PATCH
+    // GET /path HTTP/1.1
+    if ((buf[0] == 'G' && buf[1] == 'E' && buf[2] == 'T' && buf[3] == ' ') ||
+        (buf[0] == 'P' && buf[1] == 'O' && buf[2] == 'S' && buf[3] == 'T') ||
+        (buf[0] == 'P' && buf[1] == 'U' && buf[2] == 'T' && buf[3] == ' ') ||
+        (buf[0] == 'D' && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'E') ||
+        (buf[0] == 'H' && buf[1] == 'E' && buf[2] == 'A' && buf[3] == 'D') ||
+        (buf[0] == 'P' && buf[1] == 'A' && buf[2] == 'T' && buf[3] == 'C')) {
+        __builtin_memcpy(conn_info->protocol, "HTTP1", 6);
+        return;
+    }
+
+    // HTTP/1.x response: "HTTP/1.0 200 OK" or "HTTP/1.1 200 OK"
+    if (buf[0] == 'H' && buf[1] == 'T' && buf[2] == 'T' && buf[3] == 'P' && buf[4] == '/') {
+        __builtin_memcpy(conn_info->protocol, "HTTP1", 6);
+        return;
+    }
 }
 
 static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
@@ -370,8 +412,9 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->fd = conn_info->fd;
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
     socket_data_event->port = conn_info->port;
-    socket_data_event->ip = conn_info->ip; 
+    socket_data_event->ip = conn_info->ip;
     socket_data_event->ssl = conn_info->ssl;
+    __builtin_memcpy(socket_data_event->protocol, conn_info->protocol, 8);
     
     int bytes_sent = 0;
     size_t size_to_save = 0;
@@ -400,6 +443,9 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
       bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf + bytes_sent);
       size_to_save = MAX_MSG_SIZE;
     }
+
+    // Detect protocol from first packet payload
+    detect_protocol_from_data(conn_info, socket_data_event->msg, size_to_save);
 
     if (is_send){
       conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;

@@ -17,6 +17,7 @@ import (
 )
 
 var httpBytes = []byte("HTTP")
+var http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
@@ -89,6 +90,12 @@ var (
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
 )
 
+const (
+	protocolUnknown = "UNKN"
+	protocolhttp1   = "HTTP1"
+	protocolhttp2   = "HTTP2"
+)
+
 func init() {
 	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
 	utils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
@@ -97,6 +104,14 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+}
+
+func hasHTTPResponse(buffer []byte) bool {
+	return len(buffer) >= len(httpBytes) && bytes.Equal(buffer[:len(httpBytes)], httpBytes)
+}
+
+func hasHTTP2Preface(buffer []byte) bool {
+	return len(buffer) >= len(http2Preface) && bytes.Equal(buffer[:len(http2Preface)], http2Preface)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -128,14 +143,14 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
-		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+	protocol := tracker.protocol
+
+	if hasHTTPResponse(sentBuffer) || hasHTTP2Preface(receiveBuffer) {
+		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 	}
-	if !disableEgress {
-		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-		}
+
+	if !disableEgress && (hasHTTPResponse(receiveBuffer) || hasHTTP2Preface(sentBuffer)) {
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, protocol)
 	}
 }
 

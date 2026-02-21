@@ -4,7 +4,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 )
 
-func tryReadFromBD(ip string, destIp string, receiveBuffer []byte, sentBuffer []byte, isComplete bool, direction int, id uint64, fd uint32, daemonsetIdentifier, hostName string) {
+func tryReadFromBD(ip string, destIp string, receiveBuffer []byte, sentBuffer []byte, isComplete bool, direction int, id uint64, fd uint32, daemonsetIdentifier, hostName string, protocol string) {
 	ctx := kafkaUtil.TrafficContext{
 		SourceIP:            ip,
 		DestIP:              destIp,
@@ -17,6 +17,7 @@ func tryReadFromBD(ip string, destIp string, receiveBuffer []byte, sentBuffer []
 		SocketFD:            fd,
 		DaemonsetIdentifier: daemonsetIdentifier,
 		HostName:            hostName,
+		Protocol:            protocol,
 	}
 	kafkaUtil.ParseAndProduce(receiveBuffer, sentBuffer, ctx)
 }

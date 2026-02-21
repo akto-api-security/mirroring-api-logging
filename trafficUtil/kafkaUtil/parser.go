@@ -10,11 +10,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	http2parser "github.com/akto-api-security/gomiddleware/http2parser"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
@@ -35,6 +37,7 @@ type TrafficContext struct {
 	SocketFD            uint32
 	DaemonsetIdentifier string
 	HostName            string
+	Protocol            string
 }
 
 // ParsedTraffic holds the parsed HTTP requests and responses with their bodies.
@@ -254,6 +257,10 @@ var (
 )
 
 const ONE_MINUTE = 60
+
+const (
+	protocolhttp2 = "HTTP2"
+)
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
@@ -478,10 +485,17 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
-		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer), "protocol", ctx.Protocol)
 	}
 
-	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
+	// Parse based on protocol
+	var parsed *ParsedTraffic
+	if ctx.Protocol == protocolhttp2 {
+		// slog.Debug("Using HTTP/2 parser", "sourceIp", ctx.SourceIP, "destIp", ctx.DestIP)
+		parsed = parseHTTP2Traffic(receiveBuffer, sentBuffer, ctx, shouldPrint)
+	} else {
+		parsed = parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
+	}
 	if parsed == nil {
 		return
 	}
@@ -514,10 +528,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	for i := 0; i < len(requests); i++ {
 		req := &requests[i]
 		resp := &responses[i]
-		
+
 		url := req.URL.String()
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
-		
+
 		// Convert headers in a single pass (both protobuf and string map formats)
 		headers := convertHeaders(req, resp, shouldPrint)
 
@@ -600,5 +614,148 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 		if goodRequests%100 == 0 || badRequests%100 == 0 {
 			slog.Debug("Good requests", "count", goodRequests, "badRequests", badRequests)
 		}
+	}
+}
+
+func parseHTTP2Traffic(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext, shouldPrint bool) *ParsedTraffic {
+	http2Preface := []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+	if len(receiveBuffer) >= len(http2Preface) && bytes.Equal(receiveBuffer[:len(http2Preface)], http2Preface) {
+		receiveBuffer = receiveBuffer[len(http2Preface):]
+		if shouldPrint {
+			slog.Debug("Skipped HTTP/2 connection preface from receive buffer")
+		}
+	}
+	if len(sentBuffer) >= len(http2Preface) && bytes.Equal(sentBuffer[:len(http2Preface)], http2Preface) {
+		sentBuffer = sentBuffer[len(http2Preface):]
+		if shouldPrint {
+			slog.Debug("Skipped HTTP/2 connection preface from sent buffer")
+		}
+	}
+
+	opts := http2parser.NewParseOptions(
+		http2parser.WithBase64Encoding(true),
+		http2parser.WithWaitForEndStream(true),
+		http2parser.WithGRPCTrailers(true),
+	)
+	streams := make(map[uint32]*http2parser.HTTP2Stream)
+
+	err := http2parser.ParseHTTP2Frames(receiveBuffer, streams, true, opts)
+	if err != nil {
+		slog.Debug("Error parsing HTTP/2 requests", "error", err)
+	}
+
+	err = http2parser.ParseHTTP2Frames(sentBuffer, streams, false, opts)
+	if err != nil {
+		slog.Debug("Error parsing HTTP/2 responses", "error", err)
+	}
+
+	// Convert HTTP/2 streams to ParsedTraffic
+	parsed := &ParsedTraffic{
+		Requests:       []http.Request{},
+		RequestBodies:  []string{},
+		Responses:      []http.Response{},
+		ResponseBodies: []string{},
+	}
+
+	for streamID, stream := range streams {
+		if !stream.RequestComplete || !stream.ResponseComplete {
+			if shouldPrint {
+				slog.Debug("Incomplete HTTP/2 stream", "streamID", streamID, "requestComplete", stream.RequestComplete, "responseComplete", stream.ResponseComplete)
+			}
+			continue
+		}
+
+		req, err := convertHTTP2ToRequest(stream)
+		if err != nil {
+			if shouldPrint {
+				slog.Debug("Failed to convert HTTP/2 stream to request", "streamID", streamID, "error", err)
+			}
+			continue
+		}
+
+		resp := convertHTTP2ToResponse(stream)
+
+		parsed.Requests = append(parsed.Requests, *req)
+		parsed.RequestBodies = append(parsed.RequestBodies, string(stream.RequestBody))
+		parsed.Responses = append(parsed.Responses, *resp)
+		parsed.ResponseBodies = append(parsed.ResponseBodies, string(stream.ResponseBody))
+	}
+
+	if shouldPrint {
+		slog.Debug("Parsed HTTP/2 traffic", "streamCount", len(parsed.Requests))
+	}
+
+	return parsed
+}
+
+func convertHTTP2ToRequest(stream *http2parser.HTTP2Stream) (*http.Request, error) {
+	method := stream.Method
+	if method == "" {
+		method = "GET"
+	}
+
+	path := stream.Path
+	if path == "" {
+		path = "/"
+	}
+
+	scheme := stream.RequestHeaders[":scheme"]
+	if scheme == "" {
+		scheme = "https"
+	}
+
+	authority := stream.RequestHeaders[":authority"]
+	if authority == "" {
+		authority = stream.RequestHeaders["host"]
+	}
+
+	urlStr := scheme + "://" + authority + path
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL %s: %w", urlStr, err)
+	}
+
+	header := make(http.Header)
+	for name, value := range stream.RequestHeaders {
+		if !strings.HasPrefix(name, ":") {
+			header.Set(name, value)
+		}
+	}
+	if authority != "" {
+		header.Set("Host", authority)
+	}
+
+	proto := "HTTP/2.0"
+	if stream.IsGRPC {
+		proto = "gRPC"
+	}
+
+	return &http.Request{
+		Method: method,
+		URL:    parsedURL,
+		Proto:  proto,
+		Header: header,
+		Host:   authority,
+	}, nil
+}
+
+func convertHTTP2ToResponse(stream *http2parser.HTTP2Stream) *http.Response {
+	header := make(http.Header)
+	for name, value := range stream.ResponseHeaders {
+		if !strings.HasPrefix(name, ":") {
+			header.Set(name, value)
+		}
+	}
+
+	proto := "HTTP/2.0"
+	if stream.IsGRPC {
+		proto = "gRPC"
+	}
+
+	return &http.Response{
+		StatusCode: stream.StatusCode,
+		Status:     stream.Status,
+		Proto:      proto,
+		Header:     header,
 	}
 }

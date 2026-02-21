@@ -30,6 +30,7 @@ type Tracker struct {
 	srcPort uint16
 
 	foundHTTP bool
+	protocol  string // "http1", "http2", or "unknown"
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -40,6 +41,7 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		mutex:     sync.RWMutex{},
 		ssl:       false,
 		foundHTTP: false,
+		protocol:  protocolUnknown,
 	}
 }
 
@@ -57,6 +59,29 @@ func (conn *Tracker) IsComplete() bool {
 func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
+
+	// Update protocol from eBPF if it has changed from UNKN
+	protocolBytes := event.Attr.Protocol[:]
+	nullIndex := -1
+	for i, b := range protocolBytes {
+		if b == 0 {
+			nullIndex = i
+			break
+		}
+	}
+	if nullIndex > 0 {
+		protocolStr := string(protocolBytes[:nullIndex])
+		if protocolStr != protocolUnknown && conn.protocol != protocolStr {
+			switch protocolStr {
+			case protocolhttp1:
+				conn.protocol = protocolhttp1
+			case protocolhttp2:
+				conn.protocol = protocolhttp2
+			default:
+				conn.protocol = protocolUnknown
+			}
+		}
+	}
 
 	if !conn.ssl && event.Attr.Ssl {
 		for k := range conn.sentBuf {
