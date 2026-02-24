@@ -8,7 +8,7 @@
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
-#define LOOP_LIMIT 42
+#define LOOP_LIMIT 10
 
 #define ARCH_TYPE 1
 
@@ -361,7 +361,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     int bytes_sent = 0;
     size_t size_to_save = 0;
     int i =0;
-  #pragma unroll
+  // #pragma unroll
   for (i = 0; i < CHUNK_LIMIT; ++i) {
     const int bytes_remaining = bytes_exchanged - bytes_sent;
 
