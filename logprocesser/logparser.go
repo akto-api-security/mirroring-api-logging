@@ -3,11 +3,18 @@ package logprocesser
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
+	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 )
+
+var metaInfoTagsRegex = regexp.MustCompile(`(\t[^\t\n\r]+){1,2}$`)
+var httpMethodBodyRegex = regexp.MustCompile(`"httpMethod"\s*:\s*"([^"]+)"`)
+var pathBodyRegex = regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`)
+var statusCodeBodyRegex = regexp.MustCompile(`"statusCode"\s*:\s*(\d+)`)
 
 // LogEntry holds the extracted details for a single log message.
 type LogEntry struct {
@@ -30,9 +37,9 @@ func extractMap(log string, prefix string) map[string]string {
 		return result
 	}
 
-	// Extract the raw map-like string
 	raw := strings.TrimSpace(log[start+len(prefix):])
-	raw = strings.Trim(raw, "{}") // Remove surrounding braces
+	raw = metaInfoTagsRegex.ReplaceAllString(raw, "")
+	raw = strings.Trim(raw, "{}")
 
 	// Split by comma to get key-value pairs
 	pairs := strings.Split(raw, ", ")
@@ -54,11 +61,15 @@ func extractBody(log string, prefix string) string {
 	if start == -1 {
 		return "{}"
 	}
-	// fmt.Printf("extractBody, %s %v %s %v\n", log, len(strings.TrimSpace(log[start+len(prefix):])), strings.TrimSpace(log[start+len(prefix):]), start)
-	if len(strings.TrimSpace(log[start+len(prefix):])) == 0 {
+
+	body := log[start+len(prefix):]
+	body = metaInfoTagsRegex.ReplaceAllString(body, "")
+	body = strings.TrimSpace(body)
+
+	if len(body) == 0 {
 		return "{}"
 	}
-	return strings.TrimSpace(log[start+len(prefix):])
+	return body
 }
 
 // DebugPrint prints the extracted log entries in JSON format for debugging.
@@ -66,6 +77,46 @@ func DebugPrint(data map[string]*LogEntry) {
 	for _, entry := range data {
 		output, _ := json.MarshalIndent(entry, "", "  ")
 		fmt.Println(string(output))
+	}
+}
+
+func extractEndpointRequestBody(log string, logEntry *LogEntry) {
+	body := extractBody(log, "Endpoint request body after transformations:")
+	if body == "" || body == "{}" {
+		return
+	}
+
+	if logEntry.HTTPMethod == "" {
+		if matches := httpMethodBodyRegex.FindStringSubmatch(body); len(matches) > 1 {
+			logEntry.HTTPMethod = matches[1]
+			utils.DebugLog("extractEndpointRequestBody: extracted HTTPMethod: %s", logEntry.HTTPMethod)
+		}
+	}
+
+	if logEntry.ResourcePath == "" {
+		if matches := pathBodyRegex.FindStringSubmatch(body); len(matches) > 1 {
+			logEntry.ResourcePath = matches[1]
+			utils.DebugLog("extractEndpointRequestBody: extracted ResourcePath: %s", logEntry.ResourcePath)
+		}
+	}
+}
+
+func extractStatusCodeFromEndpointResponse(log string, logEntry *LogEntry) {
+	if logEntry.StatusCode != 0 {
+		return
+	}
+
+	body := extractBody(log, "Endpoint response body before transformations:")
+	if body == "" || body == "{}" {
+		return
+	}
+
+	if matches := statusCodeBodyRegex.FindStringSubmatch(body); len(matches) > 1 {
+		var statusCode int
+		if _, err := fmt.Sscanf(matches[1], "%d", &statusCode); err == nil {
+			logEntry.StatusCode = statusCode
+			utils.DebugLog("extractStatusCodeFromEndpointResponse: extracted StatusCode: %d", logEntry.StatusCode)
+		}
 	}
 }
 
@@ -91,6 +142,7 @@ func ParseAndProduce(log LogEntry) {
 		"is_pending":      fmt.Sprint(false),
 		"source":          "MIRRORING",
 		"direction":       fmt.Sprint(1),
+		"tag":             "{\n  \"service\": \"aws-api-gateway\"\n}",
 	}
 
 	// Debug: Print the Kafka message being sent
