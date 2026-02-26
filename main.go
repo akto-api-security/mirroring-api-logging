@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
@@ -30,11 +31,22 @@ func main() {
 	// Create CloudWatch Logs client
 	client := cloudwatchlogs.NewFromConfig(cfg)
 
-	// Define the log group name
-	logGroupName := os.Getenv("LOG_GROUP_NAME")
-	if logGroupName == "" {
+	logGroupNamesRaw := os.Getenv("LOG_GROUP_NAME")
+	if logGroupNamesRaw == "" {
 		log.Fatalf("LOG_GROUP_NAME environment variable is required")
 	}
+
+	var logGroupNames []string
+	for _, name := range strings.Split(logGroupNamesRaw, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			logGroupNames = append(logGroupNames, name)
+		}
+	}
+	if len(logGroupNames) == 0 {
+		log.Fatalf("No valid log group names provided")
+	}
+	log.Printf("Monitoring %d log group(s): %v", len(logGroupNames), logGroupNames)
 
 	// Initialize Kafka in background (non-blocking)
 	// This allows OpenAPI discovery to start immediately even if Kafka is unavailable
@@ -55,12 +67,14 @@ func main() {
 		discoverOpenAPISpec = false
 	}
 
-	// Start CloudWatch log monitoring in background
-	go func() {
-		if err := logprocesser.MonitorLogGroup(context.TODO(), client, logGroupName); err != nil {
-			log.Fatalf("Error monitoring log group: %v", err)
-		}
-	}()
+	for _, lgName := range logGroupNames {
+		go func(name string) {
+			log.Printf("Starting CloudWatch monitor for log group: %s", name)
+			if err := logprocesser.MonitorLogGroup(context.TODO(), client, name); err != nil {
+				log.Fatalf("Error monitoring log group %s: %v", name, err)
+			}
+		}(lgName)
+	}
 
 	// Start OpenAPI spec discovery if enabled (does not block CloudWatch monitoring)
 	if discoverOpenAPISpec {

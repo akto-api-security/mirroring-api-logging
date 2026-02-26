@@ -55,7 +55,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 		// Update the next token for log streams pagination
 		if newNextToken != nil {
-			log.Printf("DEBUG New streams token found: %s", *newNextToken)
+			log.Printf("DEBUG New streams token found: %s for log group: %s", *newNextToken, logGroupName)
 			nextLogStreamsToken = newNextToken
 		} else {
 			// if newNextToken is nil,
@@ -63,12 +63,12 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			// so clear the log stream
 			// or there are less than stream batch size messages.
 			// so to avoid recalculating later, skip them for now
-			log.Printf("DEBUG No new streams token (pagination complete), clearing stream list")
+			log.Printf("DEBUG No new streams token (pagination complete), clearing stream list for log group: %s", logGroupName)
 			logStreams = []types.LogStream{}
 		}
 
 		// Step 2: Add new log streams to the active list
-		log.Printf("DEBUG Processing %d log streams from batch", len(logStreams))
+		log.Printf("DEBUG Processing %d log streams from batch. Log group: %s", len(logStreams), logGroupName)
 		for _, stream := range logStreams {
 			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
 				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v)", *stream.LogStreamName, stream.LastEventTimestamp)
@@ -80,7 +80,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				}
 			}
 		}
-		log.Printf("DEBUG Total active streams: %d", len(activeStreams))
+		log.Printf("DEBUG Total active streams: %d for log group: %s", len(activeStreams), logGroupName)
 
 		// Step 3: Process logs from active streams
 		for streamName, tracker := range activeStreams {
@@ -98,7 +98,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			// Mark the stream as inactive if no new logs are found and a new stream exists
 			if tracker.NextToken == nil || time.Since(tracker.LastChecked) > 10*time.Second {
 				tracker.Active = false
-				log.Printf("Marking stream as inactive, time interval exceeded: %s", streamName)
+				log.Printf("Marking stream as inactive, time interval exceeded: %s for log group: %s", streamName, logGroupName)
 			}
 		}
 
@@ -127,10 +127,10 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	// starting from the oldest logs
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
-		OrderBy:      types.OrderByLastEventTime,
-		Descending:   aws.Bool(false),
-		Limit:        aws.Int32(int32(cloudwatchReadBatchSize)), // Adjust based on expected stream count
-		NextToken:    nextToken,
+		OrderBy:            types.OrderByLastEventTime,
+		Descending:         aws.Bool(false),
+		Limit:              aws.Int32(int32(cloudwatchReadBatchSize)), // Adjust based on expected stream count
+		NextToken:          nextToken,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -142,10 +142,10 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 // processLogStream reads and processes logs from a specific log stream using nextToken for pagination.
 func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, tracker *StreamTracker) error {
 	output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
-		LogGroupIdentifier:  aws.String(logGroupName),
-		LogStreamName: aws.String(streamName),
-		NextToken:     tracker.NextToken,
-		StartFromHead: aws.Bool(true),
+		LogGroupIdentifier: aws.String(logGroupName),
+		LogStreamName:      aws.String(streamName),
+		NextToken:          tracker.NextToken,
+		StartFromHead:      aws.Bool(true),
 	})
 	if err != nil {
 		log.Printf("Error getting log events from stream %s: %v", streamName, err)
@@ -302,19 +302,19 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 
 			if entry.HTTPMethod != "" {
 				log.Printf("DEBUG [%s] Extracted from JSON: %s %s (status: %d)", streamName, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
-			// Debug: Show what headers/payloads were extracted
-			if len(entry.RequestHeaders) > 0 {
-				log.Printf("DEBUG [%s]   RequestHeaders: %v", streamName, entry.RequestHeaders)
-			}
-			if len(entry.ResponseHeaders) > 0 {
-				log.Printf("DEBUG [%s]   ResponseHeaders: %v", streamName, entry.ResponseHeaders)
-			}
-			if entry.RequestBody != "" {
-				log.Printf("DEBUG [%s]   RequestBody: %s", streamName, entry.RequestBody[:min(100, len(entry.RequestBody))])
-			}
-			if entry.ResponseBody != "" {
-				log.Printf("DEBUG [%s]   ResponseBody: %s", streamName, entry.ResponseBody[:min(100, len(entry.ResponseBody))])
-			}
+				// Debug: Show what headers/payloads were extracted
+				if len(entry.RequestHeaders) > 0 {
+					log.Printf("DEBUG [%s]   RequestHeaders: %v", streamName, entry.RequestHeaders)
+				}
+				if len(entry.ResponseHeaders) > 0 {
+					log.Printf("DEBUG [%s]   ResponseHeaders: %v", streamName, entry.ResponseHeaders)
+				}
+				if entry.RequestBody != "" {
+					log.Printf("DEBUG [%s]   RequestBody: %s", streamName, entry.RequestBody[:min(100, len(entry.RequestBody))])
+				}
+				if entry.ResponseBody != "" {
+					log.Printf("DEBUG [%s]   ResponseBody: %s", streamName, entry.ResponseBody[:min(100, len(entry.ResponseBody))])
+				}
 			}
 		} else {
 			// Fall back to regex pattern matching for execution logs
@@ -322,44 +322,44 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 
 			if !strings.Contains(message, "TRUNCATED") {
 				if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
-				// fmt.Printf("scanning method: %s\n", message)
+					// fmt.Printf("scanning method: %s\n", message)
 
-				// Use regex to extract HTTP Method and Resource Path
-				matches := httpMethodRegex.FindStringSubmatch(message)
-				if len(matches) == 3 { // First match is the full string, then two capture groups
-					entry.HTTPMethod = matches[1]
-					entry.ResourcePath = matches[2]
-					// fmt.Printf("scanned method: %s %s\n", entry.HTTPMethod, entry.ResourcePath)
-				} else {
-					fmt.Println("Error: Could not extract HTTP Method and Resource Path")
-				}
-			} else if strings.Contains(message, "Method request query string:") {
-				entry.QueryParams = extractMap(message, "Method request query string:")
-			} else if strings.Contains(message, "Method request headers:") {
-				entry.RequestHeaders = extractMap(message, "Method request headers:")
-			} else if strings.Contains(message, "Method request body before transformations:") {
-				entry.RequestBody = extractBody(message, "Method request body before transformations:")
-			} else if strings.Contains(message, "Method response headers:") {
-				entry.ResponseHeaders = extractMap(message, "Method response headers:")
-			} else if strings.Contains(message, "Method response body after transformations:") {
-				entry.ResponseBody = extractBody(message, "Method response body after transformations:")
-			} else if strings.Contains(message, "Method completed with status:") {
-				// Split the message into parts and extract the status code
-				parts := strings.Split(message, "Method completed with status:")
-				if len(parts) > 1 {
-					statusCodeStr := strings.TrimSpace(parts[1]) // Extract the part after "status:"
-					statusCode, err := strconv.Atoi(statusCodeStr)
-					if err == nil {
-						entry.StatusCode = statusCode
-						// fmt.Printf("Parsed status code: %d\n", entry.StatusCode)
+					// Use regex to extract HTTP Method and Resource Path
+					matches := httpMethodRegex.FindStringSubmatch(message)
+					if len(matches) == 3 { // First match is the full string, then two capture groups
+						entry.HTTPMethod = matches[1]
+						entry.ResourcePath = matches[2]
+						// fmt.Printf("scanned method: %s %s\n", entry.HTTPMethod, entry.ResourcePath)
 					} else {
-						fmt.Printf("Error converting status code to integer: %v\n", err)
+						fmt.Println("Error: Could not extract HTTP Method and Resource Path")
 					}
-				} else {
-					fmt.Println("Error: Could not find status code in the message")
+				} else if strings.Contains(message, "Method request query string:") {
+					entry.QueryParams = extractMap(message, "Method request query string:")
+				} else if strings.Contains(message, "Method request headers:") {
+					entry.RequestHeaders = extractMap(message, "Method request headers:")
+				} else if strings.Contains(message, "Method request body before transformations:") {
+					entry.RequestBody = extractBody(message, "Method request body before transformations:")
+				} else if strings.Contains(message, "Method response headers:") {
+					entry.ResponseHeaders = extractMap(message, "Method response headers:")
+				} else if strings.Contains(message, "Method response body after transformations:") {
+					entry.ResponseBody = extractBody(message, "Method response body after transformations:")
+				} else if strings.Contains(message, "Method completed with status:") {
+					// Split the message into parts and extract the status code
+					parts := strings.Split(message, "Method completed with status:")
+					if len(parts) > 1 {
+						statusCodeStr := strings.TrimSpace(parts[1]) // Extract the part after "status:"
+						statusCode, err := strconv.Atoi(statusCodeStr)
+						if err == nil {
+							entry.StatusCode = statusCode
+							// fmt.Printf("Parsed status code: %d\n", entry.StatusCode)
+						} else {
+							fmt.Printf("Error converting status code to integer: %v\n", err)
+						}
+					} else {
+						fmt.Println("Error: Could not find status code in the message")
+					}
 				}
 			}
-		}
 		}
 
 		// fmt.Printf("Stream: %s, Timestamp: %d, Message: %s\n", streamName, *event.Timestamp, *event.Message)
