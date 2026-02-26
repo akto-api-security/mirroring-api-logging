@@ -22,6 +22,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/conntrack"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -115,6 +116,7 @@ func run() {
 
 	// Populate kubernetes_pids map from TRACE_PIDS env variable (comma-separated list of PIDs)
 	kubePidsTable := bcc.NewTable(bpfModule.TableId("kubernetes_pids"), bpfModule)
+	var tracedPids []uint32
 	if tracePids := os.Getenv("TRACE_PIDS"); tracePids != "" {
 		for _, pidStr := range strings.Split(tracePids, ",") {
 			pidStr = strings.TrimSpace(pidStr)
@@ -132,10 +134,30 @@ func run() {
 				slog.Error("failed to add pid to kubernetes_pids map", "pid", pid, "error", err)
 			} else {
 				slog.Info("added pid to kubernetes_pids map", "pid", pid)
+				tracedPids = append(tracedPids, uint32(pid))
 			}
 		}
 	} else {
 		slog.Warn("TRACE_PIDS env variable not set, no PIDs will be traced")
+	}
+
+	// Populate conn_info_map with pre-existing connections for traced PIDs
+	if len(tracedPids) > 0 {
+		connInfoTable := bcc.NewTable(bpfModule.TableId("conn_info_map"), bpfModule)
+		connCounterTable := bcc.NewTable(bpfModule.TableId("conn_counter"), bpfModule)
+		connInfoMapKeysTable := bcc.NewTable(bpfModule.TableId("conn_info_map_keys"), bpfModule)
+
+		maxConnectionSizeMapSize := 131072
+		trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
+
+		slog.Info("populating pre-existing connections", "pids", tracedPids)
+		conntrack.PopulateExistingConnections(
+			tracedPids,
+			connInfoTable,
+			connCounterTable,
+			connInfoMapKeysTable,
+			maxConnectionSizeMapSize,
+		)
 	}
 
 	db.InitMongoClient()
