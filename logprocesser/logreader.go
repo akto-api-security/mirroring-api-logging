@@ -286,17 +286,25 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				}
 			}
 
-			// Extract request payload/body
+			// Extract request payload/body and handle truncation
 			if requestPayload, exists := logEntry["requestPayload"]; exists {
 				if payloadStr, ok := requestPayload.(string); ok {
-					entry.RequestBody = payloadStr
+					repairedBody, wasTruncated := RepairTruncatedJSON(payloadStr)
+					entry.RequestBody = repairedBody
+					if wasTruncated {
+						entry.RequestBodyTruncated = true
+					}
 				}
 			}
 
-			// Extract response payload/body
+			// Extract response payload/body and handle truncation
 			if responsePayload, exists := logEntry["responsePayload"]; exists {
 				if payloadStr, ok := responsePayload.(string); ok {
-					entry.ResponseBody = payloadStr
+					repairedBody, wasTruncated := RepairTruncatedJSON(payloadStr)
+					entry.ResponseBody = repairedBody
+					if wasTruncated {
+						entry.ResponseBodyTruncated = true
+					}
 				}
 			}
 
@@ -320,44 +328,48 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 			// Fall back to regex pattern matching for execution logs
 			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
 
-			if !strings.Contains(message, "TRUNCATED") {
-				if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
-					// fmt.Printf("scanning method: %s\n", message)
-
-					// Use regex to extract HTTP Method and Resource Path
-					matches := httpMethodRegex.FindStringSubmatch(message)
-					if len(matches) == 3 { // First match is the full string, then two capture groups
-						entry.HTTPMethod = matches[1]
-						entry.ResourcePath = matches[2]
-						// fmt.Printf("scanned method: %s %s\n", entry.HTTPMethod, entry.ResourcePath)
+			if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
+				// Use regex to extract HTTP Method and Resource Path
+				matches := httpMethodRegex.FindStringSubmatch(message)
+				if len(matches) == 3 { // First match is the full string, then two capture groups
+					entry.HTTPMethod = matches[1]
+					entry.ResourcePath = matches[2]
+				} else {
+					fmt.Println("Error: Could not extract HTTP Method and Resource Path")
+				}
+			} else if strings.Contains(message, "Method request query string:") {
+				entry.QueryParams = extractMap(message, "Method request query string:")
+			} else if strings.Contains(message, "Method request headers:") {
+				entry.RequestHeaders = extractMap(message, "Method request headers:")
+			} else if strings.Contains(message, "Method request body before transformations:") {
+				rawBody := extractBody(message, "Method request body before transformations:")
+				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+				entry.RequestBody = repairedBody
+				if wasTruncated {
+					entry.RequestBodyTruncated = true
+				}
+			} else if strings.Contains(message, "Method response headers:") {
+				entry.ResponseHeaders = extractMap(message, "Method response headers:")
+			} else if strings.Contains(message, "Method response body after transformations:") {
+				rawBody := extractBody(message, "Method response body after transformations:")
+				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+				entry.ResponseBody = repairedBody
+				if wasTruncated {
+					entry.ResponseBodyTruncated = true
+				}
+			} else if strings.Contains(message, "Method completed with status:") {
+				// Split the message into parts and extract the status code
+				parts := strings.Split(message, "Method completed with status:")
+				if len(parts) > 1 {
+					statusCodeStr := strings.TrimSpace(parts[1]) // Extract the part after "status:"
+					statusCode, err := strconv.Atoi(statusCodeStr)
+					if err == nil {
+						entry.StatusCode = statusCode
 					} else {
-						fmt.Println("Error: Could not extract HTTP Method and Resource Path")
+						fmt.Printf("Error converting status code to integer: %v\n", err)
 					}
-				} else if strings.Contains(message, "Method request query string:") {
-					entry.QueryParams = extractMap(message, "Method request query string:")
-				} else if strings.Contains(message, "Method request headers:") {
-					entry.RequestHeaders = extractMap(message, "Method request headers:")
-				} else if strings.Contains(message, "Method request body before transformations:") {
-					entry.RequestBody = extractBody(message, "Method request body before transformations:")
-				} else if strings.Contains(message, "Method response headers:") {
-					entry.ResponseHeaders = extractMap(message, "Method response headers:")
-				} else if strings.Contains(message, "Method response body after transformations:") {
-					entry.ResponseBody = extractBody(message, "Method response body after transformations:")
-				} else if strings.Contains(message, "Method completed with status:") {
-					// Split the message into parts and extract the status code
-					parts := strings.Split(message, "Method completed with status:")
-					if len(parts) > 1 {
-						statusCodeStr := strings.TrimSpace(parts[1]) // Extract the part after "status:"
-						statusCode, err := strconv.Atoi(statusCodeStr)
-						if err == nil {
-							entry.StatusCode = statusCode
-							// fmt.Printf("Parsed status code: %d\n", entry.StatusCode)
-						} else {
-							fmt.Printf("Error converting status code to integer: %v\n", err)
-						}
-					} else {
-						fmt.Println("Error: Could not find status code in the message")
-					}
+				} else {
+					fmt.Println("Error: Could not find status code in the message")
 				}
 			}
 		}
