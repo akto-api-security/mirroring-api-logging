@@ -74,17 +74,16 @@ func RepairTruncatedJSON(body string) (string, bool) {
 		return body, false
 	}
 
-	// Check if body appears truncated ([TRUNCATED] at end or is invalid JSON)
+	// Check if body is truncated (ends with [TRUNCATED])
 	hasTruncMarker := strings.HasSuffix(body, "[TRUNCATED]")
-	isValidJSON := json.Valid([]byte(body))
 
-	// If valid JSON and no truncation marker, return as-is
-	if !hasTruncMarker && isValidJSON {
+	// If no truncation marker, return as-is (don't modify non-truncated bodies)
+	if !hasTruncMarker {
 		return body, false
 	}
 
 	// Remove [TRUNCATED] marker
-	cleanBody := strings.ReplaceAll(body, "[TRUNCATED]", "")
+	cleanBody := strings.TrimSuffix(body, "[TRUNCATED]")
 	cleanBody = strings.TrimSpace(cleanBody)
 
 	if cleanBody == "" {
@@ -94,16 +93,16 @@ func RepairTruncatedJSON(body string) (string, bool) {
 	// Repair the JSON using the library
 	repaired, err := jsonrepair.Repair(cleanBody)
 	if err != nil {
-		// If repair fails, return original body but mark as truncated
-		return body, hasTruncMarker || !isValidJSON
+		// If repair fails, return cleaned body
+		return cleanBody, true
 	}
 
 	// Post-process: fix incomplete key-value pairs (key without colon/value)
 	repaired = fixIncompleteKeyValuePairs(repaired)
 
-	// Final validation - if still invalid, return original marked as truncated
+	// Final validation - if still invalid, return cleaned body
 	if !json.Valid([]byte(repaired)) {
-		return body, true
+		return cleanBody, true
 	}
 
 	return repaired, true

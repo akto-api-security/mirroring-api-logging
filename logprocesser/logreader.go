@@ -327,10 +327,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		} else {
 			// Fall back to regex pattern matching for execution logs
 			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
-			isTruncated := strings.HasSuffix(message, "[TRUNCATED]")
-			if isTruncated {
-				message = strings.TrimSuffix(message, "[TRUNCATED]")
-			}
 
 			if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
 				matches := httpMethodRegex.FindStringSubmatch(message)
@@ -344,7 +340,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				entry.QueryParams = extractMap(message, "Method request query string:")
 			} else if strings.Contains(message, "Method request headers:") {
 				entry.RequestHeaders = extractMap(message, "Method request headers:")
-				entry.RequestHeadersTruncated = isTruncated
 			} else if strings.Contains(message, "Method request body before transformations:") {
 				rawBody := extractBody(message, "Method request body before transformations:")
 				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
@@ -352,7 +347,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				entry.RequestBodyTruncated = wasTruncated
 			} else if strings.Contains(message, "Method response headers:") {
 				entry.ResponseHeaders = extractMap(message, "Method response headers:")
-				entry.ResponseHeadersTruncated = isTruncated
 			} else if strings.Contains(message, "Method response body after transformations:") {
 				rawBody := extractBody(message, "Method response body after transformations:")
 				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
