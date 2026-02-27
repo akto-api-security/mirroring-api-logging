@@ -13,19 +13,17 @@ import (
 
 // LogEntry holds the extracted details for a single log message.
 type LogEntry struct {
-	RequestID                string            `json:"request_id"`
-	HTTPMethod               string            `json:"http_method"`
-	ResourcePath             string            `json:"resource_path"`
-	QueryParams              map[string]string `json:"query_params"`
-	RequestHeaders           map[string]string `json:"request_headers"`
-	RequestBody              string            `json:"request_body"`
-	ResponseHeaders          map[string]string `json:"response_headers"`
-	ResponseBody             string            `json:"response_body"`
-	StatusCode               int               `json:"status_code"`
-	RequestBodyTruncated     bool              `json:"request_body_truncated"`
-	ResponseBodyTruncated    bool              `json:"response_body_truncated"`
-	RequestHeadersTruncated  bool              `json:"request_headers_truncated"`
-	ResponseHeadersTruncated bool              `json:"response_headers_truncated"`
+	RequestID             string            `json:"request_id"`
+	HTTPMethod            string            `json:"http_method"`
+	ResourcePath          string            `json:"resource_path"`
+	QueryParams           map[string]string `json:"query_params"`
+	RequestHeaders        map[string]string `json:"request_headers"`
+	RequestBody           string            `json:"request_body"`
+	ResponseHeaders       map[string]string `json:"response_headers"`
+	ResponseBody          string            `json:"response_body"`
+	StatusCode            int               `json:"status_code"`
+	RequestBodyTruncated  bool              `json:"request_body_truncated"`
+	ResponseBodyTruncated bool              `json:"response_body_truncated"`
 }
 
 // extractMap extracts a JSON-like map from a log message.
@@ -145,16 +143,10 @@ func ParseAndProduce(log LogEntry) {
 
 	// Add truncation headers
 	if log.RequestBodyTruncated {
-		log.RequestHeaders["x-akto-body-truncated"] = "true"
+		log.RequestHeaders["x-akto-payload-truncated"] = "true"
 	}
 	if log.ResponseBodyTruncated {
-		log.ResponseHeaders["x-akto-body-truncated"] = "true"
-	}
-	if log.RequestHeadersTruncated {
-		log.RequestHeaders["x-akto-header-truncated"] = "true"
-	}
-	if log.ResponseHeadersTruncated {
-		log.ResponseHeaders["x-akto-header-truncated"] = "true"
+		log.ResponseHeaders["x-akto-payload-truncated"] = "true"
 	}
 
 	reqHeaderString, _ := json.Marshal(log.RequestHeaders)
