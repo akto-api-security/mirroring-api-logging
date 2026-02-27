@@ -98,22 +98,34 @@ func getProfilingData() map[string]interface{} {
 	return profiling
 }
 
-func restartSelf() {
-	exe, err := os.Executable()
-	if err != nil {
-		slog.Error("Failed to get executable path", "error", err)
-		return
+func writeEnvFile() error {
+	envFile := "/ebpf/.env"
+	var content strings.Builder
+
+	for _, env := range os.Environ() {
+		content.WriteString("export ")
+		content.WriteString(env)
+		content.WriteString("\n")
 	}
 
+	err := os.WriteFile(envFile, []byte(content.String()), 0644)
+	if err != nil {
+		slog.Error("Failed to write environment file", "path", envFile, "error", err)
+		return err
+	}
+
+	slog.Debug("Environment variables written to file", "path", envFile)
+	return nil
+}
+
+func restartSelf() {
 	slog.Warn("Restarting process with new environment...")
 
-	// Replace current process with fresh instance using updated environment
-	err = syscall.Exec(exe, os.Args, os.Environ())
-	if err != nil {
-		slog.Error("Failed to restart process", "error", err)
-	}
-	// Never reaches here if Exec succeeds
-	slog.Debug("Check if the restart enters here")
+	// Write current environment to file so shell script can source it on next restart
+	writeEnvFile()
+
+	// Exit and let shell script restart with fresh process
+	os.Exit(0)
 }
 
 // processCommandMessage handles a single command message

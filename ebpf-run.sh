@@ -93,10 +93,17 @@ echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMI
 
 while :
 do
-if [[ "${ENABLE_LOGS}" == "false" ]]; then
-    ./ebpf-logging >> "$LOG_FILE" 2>&1
-else
-    ./ebpf-logging
-fi
-    sleep 2
+	# Source environment file if it exists (contains vars set by processCommandMessage)
+	if [ -f /ebpf/.env ]; then
+		set -a
+		source /ebpf/.env
+		set +a
+	fi
+
+	if [[ "${ENABLE_LOGS}" == "false" ]]; then
+		./ebpf-logging >> "$LOG_FILE" 2>&1
+	else
+		./ebpf-logging
+	fi
+	sleep 2
 done
