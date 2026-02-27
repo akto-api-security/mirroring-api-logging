@@ -327,11 +327,14 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		} else {
 			// Fall back to regex pattern matching for execution logs
 			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
+			isTruncated := strings.HasSuffix(message, "[TRUNCATED]")
+			if isTruncated {
+				message = strings.TrimSuffix(message, "[TRUNCATED]")
+			}
 
 			if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
-				// Use regex to extract HTTP Method and Resource Path
 				matches := httpMethodRegex.FindStringSubmatch(message)
-				if len(matches) == 3 { // First match is the full string, then two capture groups
+				if len(matches) == 3 {
 					entry.HTTPMethod = matches[1]
 					entry.ResourcePath = matches[2]
 				} else {
@@ -341,27 +344,24 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				entry.QueryParams = extractMap(message, "Method request query string:")
 			} else if strings.Contains(message, "Method request headers:") {
 				entry.RequestHeaders = extractMap(message, "Method request headers:")
+				entry.RequestHeadersTruncated = isTruncated
 			} else if strings.Contains(message, "Method request body before transformations:") {
 				rawBody := extractBody(message, "Method request body before transformations:")
 				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
 				entry.RequestBody = repairedBody
-				if wasTruncated {
-					entry.RequestBodyTruncated = true
-				}
+				entry.RequestBodyTruncated = wasTruncated
 			} else if strings.Contains(message, "Method response headers:") {
 				entry.ResponseHeaders = extractMap(message, "Method response headers:")
+				entry.ResponseHeadersTruncated = isTruncated
 			} else if strings.Contains(message, "Method response body after transformations:") {
 				rawBody := extractBody(message, "Method response body after transformations:")
 				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
 				entry.ResponseBody = repairedBody
-				if wasTruncated {
-					entry.ResponseBodyTruncated = true
-				}
+				entry.ResponseBodyTruncated = wasTruncated
 			} else if strings.Contains(message, "Method completed with status:") {
-				// Split the message into parts and extract the status code
 				parts := strings.Split(message, "Method completed with status:")
 				if len(parts) > 1 {
-					statusCodeStr := strings.TrimSpace(parts[1]) // Extract the part after "status:"
+					statusCodeStr := strings.TrimSpace(parts[1])
 					statusCode, err := strconv.Atoi(statusCodeStr)
 					if err == nil {
 						entry.StatusCode = statusCode

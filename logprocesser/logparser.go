@@ -13,17 +13,19 @@ import (
 
 // LogEntry holds the extracted details for a single log message.
 type LogEntry struct {
-	RequestID             string            `json:"request_id"`
-	HTTPMethod            string            `json:"http_method"`
-	ResourcePath          string            `json:"resource_path"`
-	QueryParams           map[string]string `json:"query_params"`
-	RequestHeaders        map[string]string `json:"request_headers"`
-	RequestBody           string            `json:"request_body"`
-	ResponseHeaders       map[string]string `json:"response_headers"`
-	ResponseBody          string            `json:"response_body"`
-	StatusCode            int               `json:"status_code"`
-	RequestBodyTruncated  bool              `json:"request_body_truncated"`
-	ResponseBodyTruncated bool              `json:"response_body_truncated"`
+	RequestID                string            `json:"request_id"`
+	HTTPMethod               string            `json:"http_method"`
+	ResourcePath             string            `json:"resource_path"`
+	QueryParams              map[string]string `json:"query_params"`
+	RequestHeaders           map[string]string `json:"request_headers"`
+	RequestBody              string            `json:"request_body"`
+	ResponseHeaders          map[string]string `json:"response_headers"`
+	ResponseBody             string            `json:"response_body"`
+	StatusCode               int               `json:"status_code"`
+	RequestBodyTruncated     bool              `json:"request_body_truncated"`
+	ResponseBodyTruncated    bool              `json:"response_body_truncated"`
+	RequestHeadersTruncated  bool              `json:"request_headers_truncated"`
+	ResponseHeadersTruncated bool              `json:"response_headers_truncated"`
 }
 
 // extractMap extracts a JSON-like map from a log message.
@@ -72,8 +74,8 @@ func RepairTruncatedJSON(body string) (string, bool) {
 		return body, false
 	}
 
-	// Check if body appears truncated (contains [TRUNCATED] marker or is invalid JSON)
-	hasTruncMarker := strings.Contains(body, "[TRUNCATED]")
+	// Check if body appears truncated ([TRUNCATED] at end or is invalid JSON)
+	hasTruncMarker := strings.HasSuffix(body, "[TRUNCATED]")
 	isValidJSON := json.Valid([]byte(body))
 
 	// If valid JSON and no truncation marker, return as-is
@@ -142,16 +144,18 @@ func ParseAndProduce(log LogEntry) {
 		log.ResponseHeaders = make(map[string]string)
 	}
 
-	// Add x-akto-truncated header if body was truncated (only if not already present)
+	// Add truncation headers
 	if log.RequestBodyTruncated {
-		if _, exists := log.RequestHeaders["x-akto-truncated"]; !exists {
-			log.RequestHeaders["x-akto-truncated"] = "true"
-		}
+		log.RequestHeaders["x-akto-body-truncated"] = "true"
 	}
 	if log.ResponseBodyTruncated {
-		if _, exists := log.ResponseHeaders["x-akto-truncated"]; !exists {
-			log.ResponseHeaders["x-akto-truncated"] = "true"
-		}
+		log.ResponseHeaders["x-akto-body-truncated"] = "true"
+	}
+	if log.RequestHeadersTruncated {
+		log.RequestHeaders["x-akto-header-truncated"] = "true"
+	}
+	if log.ResponseHeadersTruncated {
+		log.ResponseHeaders["x-akto-header-truncated"] = "true"
 	}
 
 	reqHeaderString, _ := json.Marshal(log.RequestHeaders)
