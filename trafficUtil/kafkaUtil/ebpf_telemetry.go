@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,10 +25,11 @@ const (
 )
 
 type TrafficAgentCommandMessage struct {
-	MessageType MessageType       `json:"messageType"`
-	DaemonNames []string          `json:"daemonNames"`
-	Env         map[string]string `json:"env"`
-	Timestamp   int64             `json:"timestamp"`
+	MessageType  MessageType                  `json:"messageType"`
+	DaemonNames  []string                     `json:"daemonNames"`
+	Env          map[string]string            `json:"env"`
+	DaemonEnvMap map[string]map[string]string `json:"daemonEnvMap"`
+	Timestamp    int64                        `json:"timestamp"`
 }
 
 var (
@@ -99,22 +101,44 @@ func getProfilingData() map[string]interface{} {
 }
 
 func writeEnvFile() error {
-	envFile := "/ebpf/.env"
-	var content strings.Builder
+	dir := "/ebpf"
+	finalPath := "/ebpf/.env"
+	tmpPath := "/ebpf/.env.tmp"
 
-	for _, env := range os.Environ() {
-		content.WriteString("export ")
-		content.WriteString(env)
-		content.WriteString("\n")
-	}
-
-	err := os.WriteFile(envFile, []byte(content.String()), 0644)
-	if err != nil {
-		slog.Error("Failed to write environment file", "path", envFile, "error", err)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
-	slog.Debug("Environment variables written to file", "path", envFile)
+	var content strings.Builder
+
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		key := parts[0]
+		val := parts[1]
+
+		// Proper shell escaping
+		escapedVal := strconv.Quote(val)
+
+		content.WriteString("export ")
+		content.WriteString(key)
+		content.WriteString("=")
+		content.WriteString(escapedVal)
+		content.WriteString("\n")
+	}
+
+	err := os.WriteFile(tmpPath, []byte(content.String()), 0644)
+	if err != nil {
+		slog.Error("Failed to write environment file", "path", tmpPath, "error", err)
+		return err
+	}
+	slog.Debug("Environment variables written to file", "path", tmpPath)
+	// Atomic replace
+	err = os.Rename(tmpPath, finalPath)
+	if err != nil {
+		slog.Error("Failed to rename environment file", "path", tmpPath, "error", err)
+		return err
+	}
+	slog.Debug("Environment variables renamed to file", "path", finalPath)
 	return nil
 }
 
@@ -132,35 +156,43 @@ func restartSelf() {
 func processCommandMessage(command TrafficAgentCommandMessage) {
 	daemonPodName := getDaemonPodName()
 
-	// Check if this message is for this daemon
-	isForThisDaemon := false
-	for _, daemonName := range command.DaemonNames {
-		if daemonName == daemonPodName || daemonName == "ALL" {
-			isForThisDaemon = true
-			break
-		}
-	}
-
-	if !isForThisDaemon {
-		slog.Debug("Command not for this daemon, ignoring",
-			"targetDaemonNames", command.DaemonNames,
-			"thisDaemonPodName", daemonPodName)
-		return
-	}
-
-	slog.Info("Processing command message",
-		"messageType", command.MessageType,
-		"envCount", len(command.Env))
-
 	if command.MessageType == MessageTypeRestart {
+		_, ok := command.DaemonEnvMap[daemonPodName]
+		if !ok {
+			_, ok = command.DaemonEnvMap["ALL"]
+		}
+		if !ok {
+			slog.Debug("Restart command not for this daemon, ignoring",
+				"thisDaemonPodName", daemonPodName)
+			return
+		}
 		slog.Info("Restarting process...")
 		restartSelf()
 		return
 	}
 
-	// For ENV_RELOAD: Apply environment variable updates
-	if len(command.Env) > 0 {
-		for key, value := range command.Env {
+	if command.MessageType == MessageTypeEnvReload {
+		// Resolve env vars for this daemon: prefer pod-specific entry, fall back to "ALL"
+		envVars, ok := command.DaemonEnvMap[daemonPodName]
+		if !ok {
+			envVars, ok = command.DaemonEnvMap["ALL"]
+		}
+		if !ok {
+			slog.Debug("ENV_RELOAD not targeted at this daemon, ignoring",
+				"thisDaemonPodName", daemonPodName)
+			return
+		}
+
+		slog.Info("Processing ENV_RELOAD command",
+			"thisDaemonPodName", daemonPodName,
+			"envCount", len(envVars))
+
+		if len(envVars) == 0 {
+			slog.Warn("ENV_RELOAD with no environment variables provided for this daemon")
+			return
+		}
+
+		for key, value := range envVars {
 			oldValue := os.Getenv(key)
 			if oldValue != value {
 				slog.Warn("Updating environment variable",
@@ -170,11 +202,12 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 				os.Setenv(key, value)
 			}
 		}
-		slog.Info("Environment variables updated successfully restart, Restarting process...")
+		slog.Info("Environment variables updated, restarting process...")
 		restartSelf()
-	} else {
-		slog.Warn("ENV_RELOAD with no environment variables provided")
+		return
 	}
+
+	slog.Warn("Unknown message type, ignoring", "messageType", command.MessageType)
 }
 
 func StartConfigConsumer() {
