@@ -248,7 +248,7 @@ func StartConfigConsumer() {
 
 		ctx := context.Background()
 		for {
-			msg, err := reader.ReadMessage(ctx)
+			msg, err := reader.FetchMessage(ctx)
 			if err != nil {
 				slog.Error("Error reading config update message", "error", err)
 				continue
@@ -260,9 +260,17 @@ func StartConfigConsumer() {
 			err = json.Unmarshal(msg.Value, &command)
 			if err != nil {
 				slog.Error("Failed to parse command message", "error", err)
+				if err := reader.CommitMessages(ctx, msg); err != nil {
+					slog.Error("Failed to commit unparseable message", "error", err)
+				}
 				continue
 			}
 
+			if err := reader.CommitMessages(ctx, msg); err != nil {
+				slog.Error("Failed to commit message offset", "error", err)
+			}
+
+			slog.Debug("Received command message", "value", string(msg.Value))
 			processCommandMessage(command)
 		}
 	}()
