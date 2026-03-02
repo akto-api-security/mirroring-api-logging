@@ -222,7 +222,7 @@ func StartConfigConsumer() {
 	}
 
 	topic := "akto.config.updates"
-	groupID := fmt.Sprintf("ebpf-config-consumer-%s", uniqueDaemonsetId)
+	groupID := fmt.Sprintf("ebpf-config-consumer-%s", getDaemonPodName())
 
 	slog.Info("Starting config consumer", "topic", topic, "groupID", groupID, "daemonId", uniqueDaemonsetId)
 
