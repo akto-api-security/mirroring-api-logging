@@ -3,6 +3,7 @@ package logprocesser
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -91,6 +92,7 @@ func RepairTruncatedJSON(body string) (string, bool) {
 	// Repair the JSON using the library
 	repaired, err := jsonrepair.Repair(cleanBody)
 	if err != nil {
+		log.Printf("RepairTruncatedJSON: repair failed for truncated body (len=%d): %v", len(cleanBody), err)
 		// If repair fails, return cleaned body
 		return cleanBody, true
 	}
@@ -100,9 +102,11 @@ func RepairTruncatedJSON(body string) (string, bool) {
 
 	// Final validation - if still invalid, return cleaned body
 	if !json.Valid([]byte(repaired)) {
+		log.Printf("RepairTruncatedJSON: repaired JSON still invalid (body len=%d)", len(cleanBody))
 		return cleanBody, true
 	}
 
+	log.Printf("RepairTruncatedJSON: successfully repaired truncated JSON (original len=%d)", len(cleanBody))
 	return repaired, true
 }
 
@@ -128,40 +132,41 @@ func fixIncompleteKeyValuePairs(jsonStr string) string {
 func DebugPrint(data map[string]*LogEntry) {
 	for _, entry := range data {
 		output, _ := json.MarshalIndent(entry, "", "  ")
-		fmt.Println(string(output))
+		log.Println(string(output))
 	}
 }
 
-func ParseAndProduce(log LogEntry) {
+func ParseAndProduce(entry LogEntry) {
+	log.Printf("ParseAndProduce: request_id=%s method=%s path=%s status=%d", entry.RequestID, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
 	// Initialize header maps if nil to avoid nil map assignment panic
-	if log.RequestHeaders == nil {
-		log.RequestHeaders = make(map[string]string)
+	if entry.RequestHeaders == nil {
+		entry.RequestHeaders = make(map[string]string)
 	}
-	if log.ResponseHeaders == nil {
-		log.ResponseHeaders = make(map[string]string)
+	if entry.ResponseHeaders == nil {
+		entry.ResponseHeaders = make(map[string]string)
 	}
 
 	// Add truncation headers
-	if log.RequestBodyTruncated {
-		log.RequestHeaders["x-akto-payload-truncated"] = "true"
+	if entry.RequestBodyTruncated {
+		entry.RequestHeaders["x-akto-payload-truncated"] = "true"
 	}
-	if log.ResponseBodyTruncated {
-		log.ResponseHeaders["x-akto-payload-truncated"] = "true"
+	if entry.ResponseBodyTruncated {
+		entry.ResponseHeaders["x-akto-payload-truncated"] = "true"
 	}
 
-	reqHeaderString, _ := json.Marshal(log.RequestHeaders)
-	respHeaderString, _ := json.Marshal(log.ResponseHeaders)
+	reqHeaderString, _ := json.Marshal(entry.RequestHeaders)
+	respHeaderString, _ := json.Marshal(entry.ResponseHeaders)
 	trafficData := map[string]string{
-		"path":            log.ResourcePath,
+		"path":            entry.ResourcePath,
 		"requestHeaders":  string(reqHeaderString),
 		"responseHeaders": string(respHeaderString),
-		"method":          log.HTTPMethod,
-		"requestPayload":  log.RequestBody,
-		"responsePayload": log.ResponseBody,
+		"method":          entry.HTTPMethod,
+		"requestPayload":  entry.RequestBody,
+		"responsePayload": entry.ResponseBody,
 		"ip":              "127.0.0.1",
 		// "destIp":          "",
 		"time":            fmt.Sprint(time.Now().Unix()),
-		"statusCode":      fmt.Sprint(log.StatusCode),
+		"statusCode":      fmt.Sprint(entry.StatusCode),
 		"type":            "HTTP/1.1",
 		"status":          "OK",
 		"akto_account_id": fmt.Sprint(1000000),
@@ -173,7 +178,8 @@ func ParseAndProduce(log LogEntry) {
 
 	// Debug: Print the Kafka message being sent
 	msgBytes, _ := json.MarshalIndent(trafficData, "", "  ")
-	fmt.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
+	log.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
 
+	log.Printf("Sending traffic to Kafka for request_id=%s path=%s", entry.RequestID, entry.ResourcePath)
 	kafkaUtil.ParseAndProduce(trafficData)
 }

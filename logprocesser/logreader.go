@@ -3,7 +3,6 @@ package logprocesser
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"regexp"
 	"strconv"
@@ -45,6 +44,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	var nextLogStreamsToken *string
 
 	for {
+		log.Printf("Poll iteration started for log group: %s", logGroupName)
 		// Step 1: Fetch log streams with pagination using nextToken
 		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
 		if err != nil {
@@ -85,6 +85,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		// Step 3: Process logs from active streams
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
+				log.Printf("Skipping inactive stream: %s (log group: %s)", streamName, logGroupName)
 				continue // Skip inactive streams
 			}
 
@@ -105,11 +106,11 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		// Step 4: Clean up inactive streams
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
-
-				for logId, log := range tracker.logs {
-					fmt.Printf("logId: %s\n", logId)
-					fmt.Printf("log: %v\n", log)
-					ParseAndProduce(*log)
+				log.Printf("Flushing %d completed request(s) from stream %s (log group: %s)", len(tracker.logs), streamName, logGroupName)
+				for logId, entry := range tracker.logs {
+					log.Printf("logId: %s", logId)
+					log.Printf("log: %v", entry)
+					ParseAndProduce(*entry)
 				}
 
 				delete(activeStreams, streamName)
@@ -124,6 +125,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 // fetchLogStreams retrieves log streams with pagination using nextToken.
 func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
+	log.Printf("Fetching log streams for group %s (nextToken: %v)", logGroupName, nextToken != nil)
 	// starting from the oldest logs
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
@@ -141,6 +143,7 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 // processLogStream reads and processes logs from a specific log stream using nextToken for pagination.
 func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, tracker *StreamTracker) error {
+	log.Printf("Processing log stream: %s (log group: %s)", streamName, logGroupName)
 	output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
 		LogStreamName:      aws.String(streamName),
@@ -334,7 +337,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					entry.HTTPMethod = matches[1]
 					entry.ResourcePath = matches[2]
 				} else {
-					fmt.Println("Error: Could not extract HTTP Method and Resource Path")
+					log.Println("Error: Could not extract HTTP Method and Resource Path")
 				}
 			} else if strings.Contains(message, "Method request query string:") {
 				entry.QueryParams = extractMap(message, "Method request query string:")
@@ -360,10 +363,10 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					if err == nil {
 						entry.StatusCode = statusCode
 					} else {
-						fmt.Printf("Error converting status code to integer: %v\n", err)
+						log.Printf("Error converting status code to integer: %v", err)
 					}
 				} else {
-					fmt.Println("Error: Could not find status code in the message")
+					log.Println("Error: Could not find status code in the message")
 				}
 			}
 		}

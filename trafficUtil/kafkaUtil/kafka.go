@@ -31,6 +31,7 @@ func init() {
 }
 
 func InitKafka() {
+	log.Printf("Kafka init started")
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 
 	if len(kafka_url) == 0 {
@@ -65,6 +66,7 @@ func InitKafka() {
 
 	for {
 		kafkaWriter = getKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		log.Printf("Kafka writer created for topic akto.api.logs (batch_size=%d, batch_time=%v)", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		utils.LogMemoryStats()
 		utils.PrintLog("logging kafka stats before pushing message")
 		LogKafkaStats()
@@ -125,6 +127,7 @@ func LogKafkaError() {
 }
 
 func Produce(ctx context.Context, message string) error {
+	log.Printf("Produce: queueing message size=%d bytes to topic akto.api.logs", len(message))
 	// intialize the writer with the broker addresses, and the topic
 	msg := kafka.Message{
 		Value: []byte(message),

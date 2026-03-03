@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -66,6 +67,7 @@ func uploadOpenAPISpecToCyborg(
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		log.Printf("OpenAPI upload failed for API %s (id=%s stage=%s): status=%d body=%s", apiName, apiId, stage, resp.StatusCode, string(body))
 		return fmt.Errorf("cyborg API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
