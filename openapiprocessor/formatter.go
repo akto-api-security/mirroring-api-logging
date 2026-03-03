@@ -25,7 +25,7 @@ func uploadOpenAPISpecToCyborg(
 ) error {
 	utils.DebugLog("Uploading OpenAPI spec for API: %s (ID: %s, stage: %s) to cyborg", apiName, apiId, stage)
 
-	endpoint := "https://cyborg.akto.io/api/importOpenApiSpec"
+	endpoint := "http://localhost:9000/api/importOpenApiSpec"
 
 	// Create request payload
 	payload := map[string]string{

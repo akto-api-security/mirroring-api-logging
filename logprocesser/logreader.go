@@ -3,7 +3,6 @@ package logprocesser
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"regexp"
 	"strconv"
@@ -108,10 +107,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
 				log.Printf("Flushing %d completed request(s) from stream %s (log group: %s)", len(tracker.logs), streamName, logGroupName)
-				for logId, log := range tracker.logs {
-					fmt.Printf("logId: %s\n", logId)
-					fmt.Printf("log: %v\n", log)
-					ParseAndProduce(*log)
+				for logId, entry := range tracker.logs {
+					log.Printf("logId: %s", logId)
+					log.Printf("log: %v", entry)
+					ParseAndProduce(*entry)
 				}
 
 				delete(activeStreams, streamName)
@@ -338,7 +337,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					entry.HTTPMethod = matches[1]
 					entry.ResourcePath = matches[2]
 				} else {
-					fmt.Println("Error: Could not extract HTTP Method and Resource Path")
+					log.Println("Error: Could not extract HTTP Method and Resource Path")
 				}
 			} else if strings.Contains(message, "Method request query string:") {
 				entry.QueryParams = extractMap(message, "Method request query string:")
@@ -364,10 +363,10 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					if err == nil {
 						entry.StatusCode = statusCode
 					} else {
-						fmt.Printf("Error converting status code to integer: %v\n", err)
+						log.Printf("Error converting status code to integer: %v", err)
 					}
 				} else {
-					fmt.Println("Error: Could not find status code in the message")
+					log.Println("Error: Could not find status code in the message")
 				}
 			}
 		}

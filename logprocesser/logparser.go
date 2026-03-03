@@ -132,7 +132,7 @@ func fixIncompleteKeyValuePairs(jsonStr string) string {
 func DebugPrint(data map[string]*LogEntry) {
 	for _, entry := range data {
 		output, _ := json.MarshalIndent(entry, "", "  ")
-		fmt.Println(string(output))
+		log.Println(string(output))
 	}
 }
 
@@ -178,7 +178,7 @@ func ParseAndProduce(entry LogEntry) {
 
 	// Debug: Print the Kafka message being sent
 	msgBytes, _ := json.MarshalIndent(trafficData, "", "  ")
-	fmt.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
+	log.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
 
 	log.Printf("Sending traffic to Kafka for request_id=%s path=%s", entry.RequestID, entry.ResourcePath)
 	kafkaUtil.ParseAndProduce(trafficData)
