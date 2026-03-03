@@ -16,6 +16,7 @@ import (
 	"net/http"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
+	"github.com/akto-api-security/api-gateway-logging/openapiprocessor"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -73,6 +74,20 @@ func main() {
 			}
 		}()
 	}
+
+	// OpenAPI discovery configuration
+	discoverOpenAPISpec := true
+	utils.InitVar("DISCOVER_OPENAPI_SPEC", &discoverOpenAPISpec)
+	openapiDiscoveryIntervalMinutes := 15
+	utils.InitVar("OPENAPI_DISCOVERY_INTERVAL_MINUTES", &openapiDiscoveryIntervalMinutes)
+	if discoverOpenAPISpec && databaseAbstractorToken == "" {
+		log.Printf("WARNING: DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
+		discoverOpenAPISpec = false
+	}
+
+	apiGatewayClientsPerRole := make(map[string]*openapiprocessor.ClientSet)
+	var apiMu sync.Mutex
+
 	// Get ticker interval from environment variable, default to 5 minutes
 	tickerIntervalMinutes := 5
 	if intervalStr := os.Getenv("TICKER_INTERVAL_MINUTES"); intervalStr != "" {
@@ -134,6 +149,43 @@ func main() {
 			<-ticker.C
 		}
 	}()
+
+	if discoverOpenAPISpec {
+		log.Printf("OpenAPI spec discovery enabled with %d minute interval", openapiDiscoveryIntervalMinutes)
+		go func() {
+			ticker := time.NewTicker(time.Duration(openapiDiscoveryIntervalMinutes) * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				mu.Lock()
+				roles := make([]string, len(awsRoleArnsFromAkto))
+				copy(roles, awsRoleArnsFromAkto)
+				mu.Unlock()
+				for _, roleArn := range roles {
+					if strings.TrimSpace(roleArn) == "" {
+						continue
+					}
+					apiMu.Lock()
+					clientSet, ok := apiGatewayClientsPerRole[roleArn]
+					if !ok {
+						var err error
+						clientSet, err = openapiprocessor.CreateAPIGatewayClientsFromRole(cfg, stsSvc, roleArn, sessionName)
+						if err != nil {
+							log.Printf("Failed to create API Gateway clients for role %s: %v", roleArn, err)
+							apiMu.Unlock()
+							continue
+						}
+						if clientSet != nil {
+							apiGatewayClientsPerRole[roleArn] = clientSet
+						}
+					}
+					apiMu.Unlock()
+					if clientSet != nil {
+						openapiprocessor.MonitorAPIs(context.TODO(), clientSet, roleArn, awsRegion, databaseAbstractorToken)
+					}
+				}
+			}
+		}()
+	}
 
 	select {}
 }
