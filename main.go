@@ -27,6 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Unable to load AWS configuration: %v", err)
 	}
+	log.Printf("AWS configuration loaded for region: %s", awsRegion)
 
 	// Create CloudWatch Logs client
 	client := cloudwatchlogs.NewFromConfig(cfg)
@@ -81,13 +82,16 @@ func main() {
 		log.Printf("OpenAPI spec discovery enabled with %d minute interval", openapiDiscoveryIntervalMinutes)
 
 		go func() {
+			log.Printf("OpenAPI discovery goroutine started")
 			ticker := time.NewTicker(time.Duration(openapiDiscoveryIntervalMinutes) * time.Minute)
 			defer ticker.Stop()
 
-			// Create API Gateway clients for default AWS account
+			// Create API Gateway clients for default AWS account (requires AWS credentials)
 			clientSet, err := openapiprocessor.CreateAPIGatewayClients(cfg)
 			if err != nil {
-				log.Fatalf("Failed to create API Gateway clients: %v", err)
+				log.Printf("WARNING: OpenAPI discovery disabled - failed to create API Gateway clients: %v", err)
+				log.Printf("Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (and optionally AWS_SESSION_TOKEN) for OpenAPI spec discovery")
+				return
 			}
 
 			for {
@@ -105,6 +109,7 @@ func main() {
 		}()
 	}
 
+	log.Printf("All monitors started, main loop running")
 	// Keep the application running
 	select {}
 }

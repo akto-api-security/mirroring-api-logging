@@ -45,6 +45,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	var nextLogStreamsToken *string
 
 	for {
+		log.Printf("Poll iteration started for log group: %s", logGroupName)
 		// Step 1: Fetch log streams with pagination using nextToken
 		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
 		if err != nil {
@@ -85,6 +86,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		// Step 3: Process logs from active streams
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
+				log.Printf("Skipping inactive stream: %s (log group: %s)", streamName, logGroupName)
 				continue // Skip inactive streams
 			}
 
@@ -105,7 +107,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		// Step 4: Clean up inactive streams
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
-
+				log.Printf("Flushing %d completed request(s) from stream %s (log group: %s)", len(tracker.logs), streamName, logGroupName)
 				for logId, log := range tracker.logs {
 					fmt.Printf("logId: %s\n", logId)
 					fmt.Printf("log: %v\n", log)
@@ -124,6 +126,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 // fetchLogStreams retrieves log streams with pagination using nextToken.
 func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
+	log.Printf("Fetching log streams for group %s (nextToken: %v)", logGroupName, nextToken != nil)
 	// starting from the oldest logs
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
@@ -141,6 +144,7 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 // processLogStream reads and processes logs from a specific log stream using nextToken for pagination.
 func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, tracker *StreamTracker) error {
+	log.Printf("Processing log stream: %s (log group: %s)", streamName, logGroupName)
 	output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
 		LogStreamName:      aws.String(streamName),

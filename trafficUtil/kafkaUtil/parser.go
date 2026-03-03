@@ -7,6 +7,9 @@ import (
 )
 
 func ParseAndProduce(value map[string]string) {
+	path := value["path"]
+	method := value["method"]
+	log.Printf("Queueing traffic message for Kafka path=%s method=%s", path, method)
 	out, _ := json.Marshal(value)
 	ctx := context.Background()
 	go Produce(ctx, string(out))
