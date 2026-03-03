@@ -9,19 +9,22 @@ import (
 
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
+	"github.com/yinxulai/go-jsonrepair/jsonrepair"
 )
 
 // LogEntry holds the extracted details for a single log message.
 type LogEntry struct {
-	RequestID       string            `json:"request_id"`
-	HTTPMethod      string            `json:"http_method"`
-	ResourcePath    string            `json:"resource_path"`
-	QueryParams     map[string]string `json:"query_params"`
-	RequestHeaders  map[string]string `json:"request_headers"`
-	RequestBody     string            `json:"request_body"`
-	ResponseHeaders map[string]string `json:"response_headers"`
-	ResponseBody    string            `json:"response_body"`
-	StatusCode      int               `json:"status_code"`
+	RequestID             string            `json:"request_id"`
+	HTTPMethod            string            `json:"http_method"`
+	ResourcePath          string            `json:"resource_path"`
+	QueryParams           map[string]string `json:"query_params"`
+	RequestHeaders        map[string]string `json:"request_headers"`
+	RequestBody           string            `json:"request_body"`
+	ResponseHeaders       map[string]string `json:"response_headers"`
+	ResponseBody          string            `json:"response_body"`
+	StatusCode            int               `json:"status_code"`
+	RequestBodyTruncated  bool              `json:"request_body_truncated"`
+	ResponseBodyTruncated bool              `json:"response_body_truncated"`
 }
 
 var metaInfoTagsRegex = regexp.MustCompile(`(\t[^\t\n\r]+){1,2}$`)
@@ -77,6 +80,41 @@ func extractBody(log string, prefix string) string {
 		return "{}"
 	}
 	return log
+}
+
+// RepairTruncatedJSON attempts to repair truncated JSON by completing the structure.
+// Returns the repaired JSON string and a boolean indicating if it was truncated.
+func RepairTruncatedJSON(body string) (string, bool) {
+	if body == "" || body == "{}" {
+		return body, false
+	}
+	if !strings.HasSuffix(body, "[TRUNCATED]") {
+		return body, false
+	}
+	cleanBody := strings.TrimSpace(strings.TrimSuffix(body, "[TRUNCATED]"))
+	if cleanBody == "" {
+		return "{}", true
+	}
+	repaired, err := jsonrepair.Repair(cleanBody)
+	if err != nil {
+		return cleanBody, true
+	}
+	repaired = fixIncompleteKeyValuePairs(repaired)
+	if !json.Valid([]byte(repaired)) {
+		return cleanBody, true
+	}
+	return repaired, true
+}
+
+// fixIncompleteKeyValuePairs removes keys that have no value from JSON.
+func fixIncompleteKeyValuePairs(jsonStr string) string {
+	re1 := regexp.MustCompile(`,"[^"]*"\}`)
+	result := re1.ReplaceAllString(jsonStr, "}")
+	re2 := regexp.MustCompile(`,"[^"]*"\]`)
+	result = re2.ReplaceAllString(result, "]")
+	re3 := regexp.MustCompile(`\{"[^"]*"\}`)
+	result = re3.ReplaceAllString(result, "{}")
+	return result
 }
 
 // DebugPrint prints the extracted log entries in JSON format for debugging.
@@ -141,6 +179,19 @@ func extractStatusCodeFromEndpointResponse(log string, logEntry *LogEntry) {
 
 func ParseAndProduce(log LogEntry) {
 	utils.DebugLog("ParseAndProduce: log: %+v", log)
+
+	if log.RequestHeaders == nil {
+		log.RequestHeaders = make(map[string]string)
+	}
+	if log.ResponseHeaders == nil {
+		log.ResponseHeaders = make(map[string]string)
+	}
+	if log.RequestBodyTruncated {
+		log.RequestHeaders["x-akto-payload-truncated"] = "true"
+	}
+	if log.ResponseBodyTruncated {
+		log.ResponseHeaders["x-akto-payload-truncated"] = "true"
+	}
 
 	reqHeaderString, _ := json.Marshal(log.RequestHeaders)
 	respHeaderString, _ := json.Marshal(log.ResponseHeaders)

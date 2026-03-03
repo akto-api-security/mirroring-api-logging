@@ -218,7 +218,14 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 
 			logEntry, exists := logEntries[requestID]
 			if !exists {
-				logEntry = LogEntry{RequestID: requestID, RequestBody: "{}", ResponseBody: "{}"}
+				logEntry = LogEntry{
+					RequestID:       requestID,
+					RequestBody:     "{}",
+					ResponseBody:    "{}",
+					QueryParams:     make(map[string]string),
+					RequestHeaders:  make(map[string]string),
+					ResponseHeaders: make(map[string]string),
+				}
 			}
 
 			// for method, path and status code, we work around TRUNCATED data as well.
@@ -241,11 +248,17 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 				} else if strings.Contains(message, "Method request headers:") {
 					logEntry.RequestHeaders = extractMap(message, "Method request headers:")
 				} else if strings.Contains(message, "Method request body before transformations:") {
-					logEntry.RequestBody = extractBody(message, "Method request body before transformations:")
+					rawBody := extractBody(message, "Method request body before transformations:")
+					repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+					logEntry.RequestBody = repairedBody
+					logEntry.RequestBodyTruncated = wasTruncated
 				} else if strings.Contains(message, "Method response headers:") {
 					logEntry.ResponseHeaders = extractMap(message, "Method response headers:")
 				} else if strings.Contains(message, "Method response body after transformations:") {
-					logEntry.ResponseBody = extractBody(message, "Method response body after transformations:")
+					rawBody := extractBody(message, "Method response body after transformations:")
+					repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+					logEntry.ResponseBody = repairedBody
+					logEntry.ResponseBodyTruncated = wasTruncated
 				} else if strings.Contains(message, "Method completed with status:") {
 					parts := strings.Split(message, "Method completed with status:")
 					if len(parts) > 1 {

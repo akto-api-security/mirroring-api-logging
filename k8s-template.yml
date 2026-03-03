@@ -38,3 +38,9 @@ spec:
               value: ""
             - name: AWS_REGION
               value: ""
+            - name: DATABASE_ABSTRACTOR_TOKEN
+              value: ""
+            - name: DISCOVER_OPENAPI_SPEC
+              value: "true"
+            - name: OPENAPI_DISCOVERY_INTERVAL_MINUTES
+              value: "15"
