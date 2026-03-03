@@ -228,11 +228,25 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 				}
 			}
 
-			// for method, path and status code, we work around TRUNCATED data as well.
+			// Method/path/status from Endpoint lines (works for TRUNCATED too)
 			if strings.Contains(message, "Endpoint request body after transformations:") {
 				extractEndpointRequestBody(message, &logEntry)
 			} else if strings.Contains(message, "Endpoint response body before transformations:") {
 				extractStatusCodeFromEndpointResponse(message, &logEntry)
+			} else if strings.Contains(message, "Method request body before transformations:") {
+				rawBody := extractBody(message, "Method request body before transformations:")
+				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+				logEntry.RequestBody = repairedBody
+				logEntry.RequestBodyTruncated = wasTruncated
+			} else if strings.Contains(message, "Method response body after transformations:") {
+				rawBody := extractBody(message, "Method response body after transformations:")
+				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+				logEntry.ResponseBody = repairedBody
+				logEntry.ResponseBodyTruncated = wasTruncated
+			} else if strings.Contains(message, "Method request headers:") {
+				logEntry.RequestHeaders = extractMap(message, "Method request headers:")
+			} else if strings.Contains(message, "Method response headers:") {
+				logEntry.ResponseHeaders = extractMap(message, "Method response headers:")
 			} else if !strings.Contains(message, "TRUNCATED") {
 				if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
 					matches := httpMethodRegex.FindStringSubmatch(message)
@@ -245,20 +259,6 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 					}
 				} else if strings.Contains(message, "Method request query string:") {
 					logEntry.QueryParams = extractMap(message, "Method request query string:")
-				} else if strings.Contains(message, "Method request headers:") {
-					logEntry.RequestHeaders = extractMap(message, "Method request headers:")
-				} else if strings.Contains(message, "Method request body before transformations:") {
-					rawBody := extractBody(message, "Method request body before transformations:")
-					repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
-					logEntry.RequestBody = repairedBody
-					logEntry.RequestBodyTruncated = wasTruncated
-				} else if strings.Contains(message, "Method response headers:") {
-					logEntry.ResponseHeaders = extractMap(message, "Method response headers:")
-				} else if strings.Contains(message, "Method response body after transformations:") {
-					rawBody := extractBody(message, "Method response body after transformations:")
-					repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
-					logEntry.ResponseBody = repairedBody
-					logEntry.ResponseBodyTruncated = wasTruncated
 				} else if strings.Contains(message, "Method completed with status:") {
 					parts := strings.Split(message, "Method completed with status:")
 					if len(parts) > 1 {
