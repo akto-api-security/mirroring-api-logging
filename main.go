@@ -151,11 +151,9 @@ func main() {
 	}()
 
 	if discoverOpenAPISpec {
-		log.Printf("OpenAPI spec discovery enabled with %d minute interval", openapiDiscoveryIntervalMinutes)
+		log.Printf("OpenAPI spec discovery enabled: run at start, then every %d minutes", openapiDiscoveryIntervalMinutes)
 		go func() {
-			ticker := time.NewTicker(time.Duration(openapiDiscoveryIntervalMinutes) * time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
+			runOpenAPIDiscovery := func() {
 				mu.Lock()
 				roles := make([]string, len(awsRoleArnsFromAkto))
 				copy(roles, awsRoleArnsFromAkto)
@@ -183,6 +181,12 @@ func main() {
 						openapiprocessor.MonitorAPIs(context.TODO(), clientSet, roleArn, awsRegion, databaseAbstractorToken)
 					}
 				}
+			}
+			runOpenAPIDiscovery() // run at start
+			ticker := time.NewTicker(time.Duration(openapiDiscoveryIntervalMinutes) * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runOpenAPIDiscovery() // then every 15 minutes
 			}
 		}()
 	}
