@@ -241,6 +241,12 @@ func shouldSendSpec(roleArn, apiID, stage string, specContent []byte) bool {
 		return true
 	}
 
+	// Force re-import after refresh interval (reconciliation with backend)
+	if time.Since(time.Unix(existing.LastDiscovered, 0)) >= DISCOVERY_SPEC_REFRESH_AFTER {
+		existing.LastDiscovered = time.Now().Unix()
+		return true
+	}
+
 	// Update last discovered time even if unchanged
 	existing.LastDiscovered = time.Now().Unix()
 	return false // No change, skip

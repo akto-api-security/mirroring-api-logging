@@ -10,16 +10,17 @@ import (
 
 // Constants for OpenAPI discovery
 const (
-	DISCOVERY_POLL_DURATION = 15 * time.Minute // 15 minutes polling interval
-	API_TYPE_REST           = "REST_API"
-	API_TYPE_HTTP           = "HTTP_API"
-	EXPORT_FORMAT_OAS30     = "oas30" // OpenAPI 3.0 format
+	DISCOVERY_POLL_DURATION      = 15 * time.Minute // 15 minutes polling interval
+	DISCOVERY_SPEC_REFRESH_AFTER = 2 * time.Hour    // Re-import spec after this even if unchanged (reconciliation)
+	API_TYPE_REST                = "REST_API"
+	API_TYPE_HTTP                = "HTTP_API"
+	EXPORT_FORMAT_OAS30          = "oas30" // OpenAPI 3.0 format
 )
 
 // ClientSet holds both API Gateway client types (v1 and v2)
 type ClientSet struct {
-	RestClient *apigateway.Client    // For REST APIs (v1)
-	HttpClient *apigatewayv2.Client  // For HTTP APIs (v2)
+	RestClient *apigateway.Client   // For REST APIs (v1)
+	HttpClient *apigatewayv2.Client // For HTTP APIs (v2)
 }
 
 // DiscoveredAPI tracks discovered endpoints for deduplication
