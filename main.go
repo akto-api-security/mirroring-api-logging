@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -27,7 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Unable to load AWS configuration: %v", err)
 	}
-	log.Printf("AWS configuration loaded for region: %s", awsRegion)
+	utils.LogToCyborg("info", "AWS configuration loaded for region: "+awsRegion)
 
 	// Create CloudWatch Logs client
 	client := cloudwatchlogs.NewFromConfig(cfg)
@@ -48,6 +49,7 @@ func main() {
 		log.Fatalf("No valid log group names provided")
 	}
 	log.Printf("Monitoring %d log group(s): %v", len(logGroupNames), logGroupNames)
+	utils.LogToCyborg("info", "Monitoring "+fmt.Sprint(len(logGroupNames))+" log group(s)")
 
 	// Initialize Kafka in background (non-blocking)
 	// This allows OpenAPI discovery to start immediately even if Kafka is unavailable
@@ -64,13 +66,13 @@ func main() {
 
 	// OpenAPI discovery requires DATABASE_ABSTRACTOR_TOKEN for cyborg auth
 	if discoverOpenAPISpec && databaseAbstractorToken == "" {
-		log.Printf("WARNING: DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
+		utils.LogToCyborg("warn", "DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
 		discoverOpenAPISpec = false
 	}
 
 	for _, lgName := range logGroupNames {
 		go func(name string) {
-			log.Printf("Starting CloudWatch monitor for log group: %s", name)
+			utils.LogToCyborg("info", "Starting CloudWatch monitor for log group: "+name)
 			if err := logprocesser.MonitorLogGroup(context.TODO(), client, name); err != nil {
 				log.Fatalf("Error monitoring log group %s: %v", name, err)
 			}
@@ -79,7 +81,7 @@ func main() {
 
 	// Start OpenAPI spec discovery if enabled (does not block CloudWatch monitoring)
 	if discoverOpenAPISpec {
-		log.Printf("OpenAPI spec discovery enabled with %d minute interval", openapiDiscoveryIntervalMinutes)
+		utils.LogToCyborg("info", "OpenAPI spec discovery enabled with "+fmt.Sprint(openapiDiscoveryIntervalMinutes)+" minute interval")
 
 		go func() {
 			log.Printf("OpenAPI discovery goroutine started")
@@ -89,7 +91,7 @@ func main() {
 			// Create API Gateway clients for default AWS account (requires AWS credentials)
 			clientSet, err := openapiprocessor.CreateAPIGatewayClients(cfg)
 			if err != nil {
-				log.Printf("WARNING: OpenAPI discovery disabled - failed to create API Gateway clients: %v", err)
+				utils.LogToCyborg("warn", "OpenAPI discovery disabled - failed to create API Gateway clients: "+err.Error())
 				log.Printf("Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (and optionally AWS_SESSION_TOKEN) for OpenAPI spec discovery")
 				return
 			}
@@ -109,7 +111,7 @@ func main() {
 		}()
 	}
 
-	log.Printf("All monitors started, main loop running")
+	utils.LogToCyborg("info", "All monitors started, main loop running")
 	// Keep the application running
 	select {}
 }

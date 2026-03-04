@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
+	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/yinxulai/go-jsonrepair/jsonrepair"
 )
 
@@ -93,6 +94,7 @@ func RepairTruncatedJSON(body string) (string, bool) {
 	repaired, err := jsonrepair.Repair(cleanBody)
 	if err != nil {
 		log.Printf("RepairTruncatedJSON: repair failed for truncated body (len=%d): %v", len(cleanBody), err)
+		utils.LogToCyborg("error", "RepairTruncatedJSON: repair failed for truncated body")
 		// If repair fails, return cleaned body
 		return cleanBody, true
 	}
@@ -137,7 +139,7 @@ func DebugPrint(data map[string]*LogEntry) {
 }
 
 func ParseAndProduce(entry LogEntry) {
-	log.Printf("ParseAndProduce: request_id=%s method=%s path=%s status=%d", entry.RequestID, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
+	utils.LogToCyborg("info", "Processing traffic: "+entry.HTTPMethod+" "+entry.ResourcePath+" (status: "+fmt.Sprint(entry.StatusCode)+")")
 	// Initialize header maps if nil to avoid nil map assignment panic
 	if entry.RequestHeaders == nil {
 		entry.RequestHeaders = make(map[string]string)

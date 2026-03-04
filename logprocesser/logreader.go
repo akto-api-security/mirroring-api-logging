@@ -3,6 +3,7 @@ package logprocesser
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"regexp"
 	"strconv"
@@ -48,7 +49,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		// Step 1: Fetch log streams with pagination using nextToken
 		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
 		if err != nil {
-			log.Printf("Error fetching log streams: %v", err)
+			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -72,6 +73,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for _, stream := range logStreams {
 			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
 				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v)", *stream.LogStreamName, stream.LastEventTimestamp)
+			utils.LogToCyborg("info", "Discovered new log stream: "+*stream.LogStreamName)
 				activeStreams[*stream.LogStreamName] = &StreamTracker{
 					NextToken:   nil,
 					LastChecked: time.Now(),
@@ -91,7 +93,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 
 			err := processLogStream(ctx, client, logGroupName, streamName, tracker)
 			if err != nil {
-				log.Printf("Error processing stream %s: %v", streamName, err)
+				utils.LogToCyborg("error", "Error processing stream "+streamName+": "+err.Error())
 			} else {
 				tracker.LastChecked = time.Now()
 			}
@@ -99,7 +101,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			// Mark the stream as inactive if no new logs are found and a new stream exists
 			if tracker.NextToken == nil || time.Since(tracker.LastChecked) > 10*time.Second {
 				tracker.Active = false
-				log.Printf("Marking stream as inactive, time interval exceeded: %s for log group: %s", streamName, logGroupName)
+				utils.LogToCyborg("info", "Marking stream as inactive: "+streamName)
 			}
 		}
 
@@ -107,6 +109,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
 				log.Printf("Flushing %d completed request(s) from stream %s (log group: %s)", len(tracker.logs), streamName, logGroupName)
+			utils.LogToCyborg("info", "Flushing "+fmt.Sprint(len(tracker.logs))+" completed request(s) from stream: "+streamName)
 				for logId, entry := range tracker.logs {
 					log.Printf("logId: %s", logId)
 					log.Printf("log: %v", entry)
@@ -114,7 +117,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				}
 
 				delete(activeStreams, streamName)
-				log.Printf("Removed inactive stream: %s", streamName)
+				utils.LogToCyborg("info", "Removed inactive stream: "+streamName)
 			}
 		}
 
@@ -151,7 +154,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		StartFromHead:      aws.Bool(true),
 	})
 	if err != nil {
-		log.Printf("Error getting log events from stream %s: %v", streamName, err)
+		utils.LogToCyborg("error", "Error getting log events from stream "+streamName+": "+err.Error())
 		return err
 	}
 
@@ -384,7 +387,7 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		// If no new logs, consider the stream inactive
 		log.Printf("DEBUG [%s] Token unchanged (%v == %v), marking as inactive", streamName, *tracker.NextToken, *output.NextForwardToken)
 		tracker.Active = false
-		log.Printf("Marking stream as inactive, no new logs: %s", streamName)
+		utils.LogToCyborg("info", "Marking stream as inactive, no new logs: "+streamName)
 	}
 
 	return nil
