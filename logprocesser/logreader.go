@@ -66,6 +66,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for _, s := range rawStreams {
 			if s.LastEventTimestamp == nil || *s.LastEventTimestamp >= windowStartMs {
 				logStreams = append(logStreams, s)
+			} else {
+				log.Printf("DEBUG Skipping log stream: %s (lastEventTimestamp: %v) because it's before the window start time: %v", *s.LogStreamName, *s.LastEventTimestamp, windowStartMs)
 			}
 		}
 
