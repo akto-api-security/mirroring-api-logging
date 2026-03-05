@@ -26,9 +26,6 @@ type StreamTracker struct {
 
 var cloudwatchReadBatchSize = 5
 
-// Larger batch size used while skipping streams older than 7 days (not configurable via env).
-const cloudwatchSkipPhaseBatchSize = 50
-
 // First run: window = last N days. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
 const logStreamWindowDays = 7
 
@@ -51,21 +48,16 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	activeStreams := make(map[string]*StreamTracker)
 
 	var nextLogStreamsToken *string
-	reachedRecentWindow := false // use larger batch until we see at least one stream in the 7-day window
+	reachedRecentWindow := false // use larger batch until we see at least one stream in the N-day window
 
 	for {
 		// Always use "last 7 days" window — we never read from the start of the log group.
 		windowStartMs := time.Now().Add(-logStreamWindowDays * 24 * time.Hour).UnixMilli()
 
-		// Use larger batch size while skipping old streams; reset to configured size once we hit the 7-day window
-		batchSize := cloudwatchReadBatchSize
-		if !reachedRecentWindow {
-			batchSize = cloudwatchSkipPhaseBatchSize
-		}
-
-		log.Printf("Poll iteration started for log group: %s (window: last %d days, batch size: %d)", logGroupName, logStreamWindowDays, batchSize)
-		// Step 1: Fetch log streams; only add streams that have activity in the last N days
-		rawStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken, batchSize)
+		// Skip phase: omit Limit (API uses default). After 7-day window use Limit=cloudwatchReadBatchSize.
+		omitLimit := !reachedRecentWindow
+		log.Printf("Poll iteration started for log group: %s (window: last %d days)", logGroupName, logStreamWindowDays)
+		rawStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken, omitLimit)
 		if err != nil {
 			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
 			time.Sleep(2 * time.Second)
@@ -78,8 +70,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				logStreams = append(logStreams, s)
 				if !reachedRecentWindow {
 					reachedRecentWindow = true
-					log.Printf("Reached 7-day window: found stream in range. Resetting CloudWatch batch size to %d for log group: %s", cloudwatchReadBatchSize, logGroupName)
-					utils.LogToCyborg("info", fmt.Sprintf("Reached 7-day window for %s; switching to normal batch size %d", logGroupName, cloudwatchReadBatchSize))
+					log.Printf("Reached %d-day window: found stream in range. Resetting CloudWatch batch size to %d for log group: %s", logStreamWindowDays, cloudwatchReadBatchSize, logGroupName)
+					utils.LogToCyborg("info", fmt.Sprintf("Reached %d-day window for %s; switching to normal batch size %d", logStreamWindowDays, logGroupName, cloudwatchReadBatchSize))
 				}
 			} else {
 				log.Printf("DEBUG Skipping log stream: %s (lastEventTimestamp: %v) because it's before the window start time: %v", *s.LogStreamName, *s.LastEventTimestamp, windowStartMs)
@@ -161,18 +153,18 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	}
 }
 
-// fetchLogStreams retrieves log streams with pagination using nextToken.
-// batchSize controls how many streams are requested per DescribeLogStreams call.
-func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string, batchSize int) ([]types.LogStream, *string, error) {
-	log.Printf("Fetching log streams for group %s (nextToken: %v, batchSize: %d)", logGroupName, nextToken != nil, batchSize)
-	// starting from the oldest logs
-	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
+// fetchLogStreams retrieves log streams with pagination. If omitLimit is true, Limit is not set (API default).
+func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string, omitLimit bool) ([]types.LogStream, *string, error) {
+	input := &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
 		OrderBy:            types.OrderByLastEventTime,
 		Descending:         aws.Bool(false),
-		Limit:              aws.Int32(int32(batchSize)),
 		NextToken:          nextToken,
-	})
+	}
+	if !omitLimit {
+		input.Limit = aws.Int32(int32(cloudwatchReadBatchSize))
+	}
+	output, err := client.DescribeLogStreams(ctx, input)
 	if err != nil {
 		return nil, nil, err
 	}
