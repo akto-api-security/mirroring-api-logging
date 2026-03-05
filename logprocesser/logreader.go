@@ -48,18 +48,13 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	activeStreams := make(map[string]*StreamTracker)
 
 	var nextLogStreamsToken *string
-	var windowStartMs int64 // 0 = first run, use 7 days
-	var maxLastEventTsInCycle int64
 
 	for {
-		if windowStartMs == 0 {
-			windowStartMs = time.Now().Add(-logStreamWindowDays * 24 * time.Hour).UnixMilli()
-			log.Printf("Stream window: first run, from %d (last %d days)", windowStartMs, logStreamWindowDays)
-			utils.LogToCyborg("info", "Stream window: first run, from "+fmt.Sprint(windowStartMs)+" (last "+fmt.Sprint(logStreamWindowDays)+" days)")
-		}
+		// Always use "last 7 days" window — we never read from the start of the log group.
+		windowStartMs := time.Now().Add(-logStreamWindowDays * 24 * time.Hour).UnixMilli()
 
-		log.Printf("Poll iteration started for log group: %s", logGroupName)
-		// Step 1: Fetch log streams (oldest first); only in-window streams are added
+		log.Printf("Poll iteration started for log group: %s (window: last %d days)", logGroupName, logStreamWindowDays)
+		// Step 1: Fetch log streams; only add streams that have activity in the last N days
 		rawStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
 		if err != nil {
 			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
@@ -71,9 +66,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for _, s := range rawStreams {
 			if s.LastEventTimestamp == nil || *s.LastEventTimestamp >= windowStartMs {
 				logStreams = append(logStreams, s)
-				if s.LastEventTimestamp != nil && *s.LastEventTimestamp > maxLastEventTsInCycle {
-					maxLastEventTsInCycle = *s.LastEventTimestamp
-				}
 			}
 		}
 
@@ -81,14 +73,14 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			log.Printf("DEBUG New streams token found: %s for log group: %s", *newNextToken, logGroupName)
 			nextLogStreamsToken = newNextToken
 		} else {
-			log.Printf("DEBUG No new streams token (pagination complete) for log group: %s", logGroupName)
-			if maxLastEventTsInCycle > 0 {
-				// Next run: streams with LastEventTimestamp >= max (inclusive so same-ms new events are not missed)
-				windowStartMs = maxLastEventTsInCycle
-				log.Printf("Stream window: next run from %d (max, inclusive)", windowStartMs)
-			}
-			maxLastEventTsInCycle = 0
+			// if newNextToken is nil,
+			// means there are no new messages, these are old messages, we've processed
+			// so clear the log stream
+			// or there are less than stream batch size messages.
+			// so to avoid recalculating later, skip them for now
+			log.Printf("DEBUG No new streams token (pagination complete), clearing stream list for log group: %s", logGroupName)
 			nextLogStreamsToken = nil
+			logStreams = []types.LogStream{}
 		}
 
 		// Step 2: Add new log streams to the active list
