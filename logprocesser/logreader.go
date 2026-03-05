@@ -153,9 +153,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	}
 }
 
-// fetchLogStreams retrieves log streams with pagination (oldest first). Caller filters by time window client-side.
+// fetchLogStreams retrieves log streams with pagination using nextToken.
 func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
 	log.Printf("Fetching log streams for group %s (nextToken: %v)", logGroupName, nextToken != nil)
+	// starting from the oldest logs
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
 		OrderBy:            types.OrderByLastEventTime,
