@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +21,7 @@ type StreamTracker struct {
 	NextToken          *string
 	LastChecked        time.Time
 	Active             bool
-	LastEventTimestamp *int64 // from DescribeLogStreams; used to process streams in ascending order
+	LastEventTimestamp *int64 // from DescribeLogStreams (for logging/debug)
 	logs               map[string]*LogEntry
 }
 
@@ -45,8 +44,7 @@ func min(a, b int) int {
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 // Fetches streams with Descending=true (newest first) and stops when we pass the time window.
-// First run: window = last 7 days. After full pagination: window = max LastEventTimestamp + 1 ms (only newer activity; avoids re-processing when there are no new streams).
-// Streams are processed in ascending order (oldest LastEventTimestamp first).
+// First run: window = last N days. After full pagination: window = max LastEventTimestamp + 1 ms (only newer activity; avoids re-processing when there are no new streams).
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
 	activeStreams := make(map[string]*StreamTracker)
 
@@ -123,24 +121,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		}
 		log.Printf("DEBUG Total active streams: %d for log group: %s", len(activeStreams), logGroupName)
 
-		// Step 3: Process logs from active streams in ascending order (oldest LastEventTimestamp first)
-		streamNames := make([]string, 0, len(activeStreams))
-		for name := range activeStreams {
-			streamNames = append(streamNames, name)
-		}
-		sort.Slice(streamNames, func(i, j int) bool {
-			ti, tj := activeStreams[streamNames[i]].LastEventTimestamp, activeStreams[streamNames[j]].LastEventTimestamp
-			vi, vj := int64(0), int64(0)
-			if ti != nil {
-				vi = *ti
-			}
-			if tj != nil {
-				vj = *tj
-			}
-			return vi < vj
-		})
-		for _, streamName := range streamNames {
-			tracker := activeStreams[streamName]
+		// Step 3: Process logs from active streams
+		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
 				log.Printf("Skipping inactive stream: %s (log group: %s)", streamName, logGroupName)
 				continue // Skip inactive streams
