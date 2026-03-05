@@ -26,7 +26,7 @@ type StreamTracker struct {
 
 var cloudwatchReadBatchSize = 5
 
-// First run: window = last N days. After full pagination: window = max LastEventTimestamp + 1 ms so we only see newer activity (no re-processing).
+// First run: window = last N days. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
 const logStreamWindowDays = 7
 
 func init() {
@@ -43,7 +43,7 @@ func min(a, b int) int {
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
 // Fetches streams with Descending=false (oldest first); only streams in the time window are added.
-// First run: window = last N days. After full pagination: window = max LastEventTimestamp + 1 ms (only newer activity; avoids re-processing when there are no new streams).
+// First run: window = last N days. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
 	activeStreams := make(map[string]*StreamTracker)
 
@@ -59,7 +59,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		}
 
 		log.Printf("Poll iteration started for log group: %s", logGroupName)
-		// Step 1: Fetch log streams (newest first); only in-window streams, stop when we pass the window
+		// Step 1: Fetch log streams (oldest first); only in-window streams are added
 		rawStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
 		if err != nil {
 			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
@@ -83,9 +83,9 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		} else {
 			log.Printf("DEBUG No new streams token (pagination complete) for log group: %s", logGroupName)
 			if maxLastEventTsInCycle > 0 {
-				// Next run: only streams with activity after what we saw (avoids re-processing same streams when no new data)
-				windowStartMs = maxLastEventTsInCycle + 1
-				log.Printf("Stream window: next run from %d (max + 1 ms)", windowStartMs)
+				// Next run: streams with LastEventTimestamp >= max (inclusive so same-ms new events are not missed)
+				windowStartMs = maxLastEventTsInCycle
+				log.Printf("Stream window: next run from %d (max, inclusive)", windowStartMs)
 			}
 			maxLastEventTsInCycle = 0
 			nextLogStreamsToken = nil
