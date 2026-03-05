@@ -359,6 +359,8 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				}
 			}
 		} else {
+
+			utils.LogToCyborg("info", fmt.Sprintf("Event Data: %s | %v | %s", streamName, *event.Timestamp, message))
 			// Fall back to regex pattern matching for execution logs
 			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
 
