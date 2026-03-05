@@ -79,7 +79,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			// or there are less than stream batch size messages.
 			// so to avoid recalculating later, skip them for now
 			log.Printf("DEBUG No new streams token (pagination complete), clearing stream list for log group: %s", logGroupName)
-			nextLogStreamsToken = nil
 			logStreams = []types.LogStream{}
 		}
 
