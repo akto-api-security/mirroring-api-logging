@@ -28,7 +28,7 @@ type StreamTracker struct {
 var cloudwatchReadBatchSize = 5
 
 // First run: window = last N days. After full pagination: window = max LastEventTimestamp + 1 ms so we only see newer activity (no re-processing).
-const logStreamWindowDays = 4
+const logStreamWindowDays = 7
 
 func init() {
 	utils.InitVar("CLOUDWATCH_READ_BATCH_SIZE", &cloudwatchReadBatchSize)
@@ -43,7 +43,7 @@ func min(a, b int) int {
 }
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
-// Fetches streams with Descending=true (newest first) and stops when we pass the time window.
+// Fetches streams with Descending=false (oldest first); only streams in the time window are added.
 // First run: window = last N days. After full pagination: window = max LastEventTimestamp + 1 ms (only newer activity; avoids re-processing when there are no new streams).
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
 	activeStreams := make(map[string]*StreamTracker)
@@ -69,12 +69,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		}
 
 		var logStreams []types.LogStream
-		passedWindow := false
 		for _, s := range rawStreams {
-			if s.LastEventTimestamp != nil && *s.LastEventTimestamp < windowStartMs {
-				passedWindow = true
-				break
-			}
 			if s.LastEventTimestamp == nil || *s.LastEventTimestamp >= windowStartMs {
 				logStreams = append(logStreams, s)
 				if s.LastEventTimestamp != nil && *s.LastEventTimestamp > maxLastEventTsInCycle {
@@ -82,15 +77,12 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				}
 			}
 		}
-		if passedWindow {
-			newNextToken = nil // stop paginating; we've passed the window
-		}
 
 		if newNextToken != nil {
 			log.Printf("DEBUG New streams token found: %s for log group: %s", *newNextToken, logGroupName)
 			nextLogStreamsToken = newNextToken
 		} else {
-			log.Printf("DEBUG No new streams token (pagination complete or window hit) for log group: %s", logGroupName)
+			log.Printf("DEBUG No new streams token (pagination complete) for log group: %s", logGroupName)
 			if maxLastEventTsInCycle > 0 {
 				// Next run: only streams with activity after what we saw (avoids re-processing same streams when no new data)
 				windowStartMs = maxLastEventTsInCycle + 1
@@ -163,13 +155,13 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	}
 }
 
-// fetchLogStreams retrieves log streams with pagination (newest first). Caller stops when LastEventTimestamp passes the window.
+// fetchLogStreams retrieves log streams with pagination (oldest first). Caller filters by time window client-side.
 func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
 	log.Printf("Fetching log streams for group %s (nextToken: %v)", logGroupName, nextToken != nil)
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
 		OrderBy:            types.OrderByLastEventTime,
-		Descending:         aws.Bool(true), // newest first; stop paginating when we hit streams before window
+		Descending:         aws.Bool(false), // oldest first (as before)
 		Limit:              aws.Int32(int32(cloudwatchReadBatchSize)),
 		NextToken:          nextToken,
 	})
