@@ -26,6 +26,9 @@ type StreamTracker struct {
 
 var cloudwatchReadBatchSize = 5
 
+// First run: window = last N days. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
+const logStreamWindowDays = 7
+
 func init() {
 	utils.InitVar("CLOUDWATCH_READ_BATCH_SIZE", &cloudwatchReadBatchSize)
 }
@@ -39,22 +42,35 @@ func min(a, b int) int {
 }
 
 // MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
+// Fetches streams with Descending=false (oldest first); only streams in the time window are added.
+// First run: window = last N days. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
 func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
 	activeStreams := make(map[string]*StreamTracker)
 
 	var nextLogStreamsToken *string
 
 	for {
-		log.Printf("Poll iteration started for log group: %s", logGroupName)
-		// Step 1: Fetch log streams with pagination using nextToken
-		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
+		// Always use "last 7 days" window — we never read from the start of the log group.
+		windowStartMs := time.Now().Add(-logStreamWindowDays * 24 * time.Hour).UnixMilli()
+
+		log.Printf("Poll iteration started for log group: %s (window: last %d days)", logGroupName, logStreamWindowDays)
+		// Step 1: Fetch log streams; only add streams that have activity in the last N days
+		rawStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
 		if err != nil {
 			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// Update the next token for log streams pagination
+		var logStreams []types.LogStream
+		for _, s := range rawStreams {
+			if s.LastEventTimestamp == nil || *s.LastEventTimestamp >= windowStartMs {
+				logStreams = append(logStreams, s)
+			} else {
+				log.Printf("DEBUG Skipping log stream: %s (lastEventTimestamp: %v) because it's before the window start time: %v", *s.LogStreamName, *s.LastEventTimestamp, windowStartMs)
+			}
+		}
+
 		if newNextToken != nil {
 			log.Printf("DEBUG New streams token found: %s for log group: %s", *newNextToken, logGroupName)
 			nextLogStreamsToken = newNextToken
