@@ -18,11 +18,10 @@ import (
 
 // StreamTracker tracks the progress and state of a log stream.
 type StreamTracker struct {
-	NextToken          *string
-	LastChecked        time.Time
-	Active             bool
-	LastEventTimestamp *int64 // from DescribeLogStreams (for logging/debug)
-	logs               map[string]*LogEntry
+	NextToken   *string
+	LastChecked time.Time
+	Active      bool
+	logs        map[string]*LogEntry
 }
 
 var cloudwatchReadBatchSize = 5
@@ -92,7 +91,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			nextLogStreamsToken = nil
 		}
 
-		// Step 2: Add new log streams to the active list (keep LastEventTimestamp for ascending processing)
+		// Step 2: Add new log streams to the active list
 		log.Printf("DEBUG Processing %d log streams from batch. Log group: %s", len(logStreams), logGroupName)
 		for _, stream := range logStreams {
 			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
@@ -103,11 +102,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v)", *stream.LogStreamName, stream.LastEventTimestamp)
 				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s)", *stream.LogStreamName, lastEventTs))
 				activeStreams[*stream.LogStreamName] = &StreamTracker{
-					NextToken:          nil,
-					LastChecked:        time.Now(),
-					Active:             true,
-					LastEventTimestamp: stream.LastEventTimestamp,
-					logs:               make(map[string]*LogEntry),
+					NextToken:   nil,
+					LastChecked: time.Now(),
+					Active:      true,
+					logs:        make(map[string]*LogEntry),
 				}
 			}
 		}
@@ -161,8 +159,8 @@ func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupIdentifier: aws.String(logGroupName),
 		OrderBy:            types.OrderByLastEventTime,
-		Descending:         aws.Bool(false), // oldest first (as before)
-		Limit:              aws.Int32(int32(cloudwatchReadBatchSize)),
+		Descending:         aws.Bool(false),
+		Limit:              aws.Int32(int32(cloudwatchReadBatchSize)), // Adjust based on expected stream count
 		NextToken:          nextToken,
 	})
 	if err != nil {
