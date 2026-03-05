@@ -72,8 +72,12 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		log.Printf("DEBUG Processing %d log streams from batch. Log group: %s", len(logStreams), logGroupName)
 		for _, stream := range logStreams {
 			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
+				lastEventTs := "n/a"
+				if stream.LastEventTimestamp != nil {
+					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
+				}
 				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v)", *stream.LogStreamName, stream.LastEventTimestamp)
-			utils.LogToCyborg("info", "Discovered new log stream: "+*stream.LogStreamName)
+				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s)", *stream.LogStreamName, lastEventTs))
 				activeStreams[*stream.LogStreamName] = &StreamTracker{
 					NextToken:   nil,
 					LastChecked: time.Now(),
@@ -109,7 +113,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
 				log.Printf("Flushing %d completed request(s) from stream %s (log group: %s)", len(tracker.logs), streamName, logGroupName)
-			utils.LogToCyborg("info", "Flushing "+fmt.Sprint(len(tracker.logs))+" completed request(s) from stream: "+streamName)
+				utils.LogToCyborg("info", "Flushing "+fmt.Sprint(len(tracker.logs))+" completed request(s) from stream: "+streamName)
 				for logId, entry := range tracker.logs {
 					log.Printf("logId: %s", logId)
 					log.Printf("log: %v", entry)

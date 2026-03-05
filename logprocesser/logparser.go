@@ -183,5 +183,6 @@ func ParseAndProduce(entry LogEntry) {
 	log.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
 
 	log.Printf("Sending traffic to Kafka for request_id=%s path=%s", entry.RequestID, entry.ResourcePath)
+	utils.LogToCyborg("info", "Sending traffic to Kafka for request_id="+entry.RequestID+" path="+entry.ResourcePath)
 	kafkaUtil.ParseAndProduce(trafficData)
 }
