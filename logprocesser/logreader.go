@@ -244,10 +244,11 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		// Initialize a LogEntry for this req-id if it doesn't exist
 		if _, exists := tracker.logs[reqID]; !exists {
 			tracker.logs[reqID] = &LogEntry{
-				RequestID:       reqID,
-				QueryParams:     make(map[string]string),
-				RequestHeaders:  make(map[string]string),
-				ResponseHeaders: make(map[string]string),
+				RequestID:          reqID,
+				QueryParams:        make(map[string]string),
+				RequestHeaders:     make(map[string]string),
+				ResponseHeaders:    make(map[string]string),
+				LogGroupIdentifier: logGroupName,
 			}
 		}
 
@@ -359,11 +360,11 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				}
 			}
 		} else {
-			ts := "n/a"
-			if event.Timestamp != nil {
-				ts = fmt.Sprintf("%d", *event.Timestamp) // raw epoch ms, not human-readable
-			}
-			utils.LogToCyborg("info", fmt.Sprintf("Event Data: %s | %s | %s", streamName, ts, message))
+			// ts := "n/a"
+			// if event.Timestamp != nil {
+			// 	ts = fmt.Sprintf("%d", *event.Timestamp) // raw epoch ms, not human-readable
+			// }
+			// utils.LogToCyborg("info", fmt.Sprintf("Event Data: %s | %s | %s", streamName, ts, message))
 			// Fall back to regex pattern matching for execution logs
 			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
 
