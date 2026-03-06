@@ -244,10 +244,11 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		// Initialize a LogEntry for this req-id if it doesn't exist
 		if _, exists := tracker.logs[reqID]; !exists {
 			tracker.logs[reqID] = &LogEntry{
-				RequestID:       reqID,
-				QueryParams:     make(map[string]string),
-				RequestHeaders:  make(map[string]string),
-				ResponseHeaders: make(map[string]string),
+				RequestID:          reqID,
+				QueryParams:        make(map[string]string),
+				RequestHeaders:     make(map[string]string),
+				ResponseHeaders:    make(map[string]string),
+				LogGroupIdentifier: logGroupName,
 			}
 		}
 

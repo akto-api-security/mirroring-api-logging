@@ -26,6 +26,32 @@ type LogEntry struct {
 	StatusCode            int               `json:"status_code"`
 	RequestBodyTruncated  bool              `json:"request_body_truncated"`
 	ResponseBodyTruncated bool              `json:"response_body_truncated"`
+	LogGroupIdentifier    string            `json:"log_group_identifier"`
+}
+
+const apiGatewayLogGroupPrefix = "API-Gateway-Execution-Logs_"
+
+// HostFromLogGroupIdentifier derives a host value from a log group ARN or name.
+// For ARN format (e.g. arn:aws:logs:eu-west-1:524348298903:log-group:API-Gateway-Execution-Logs_c1xxzmg784/Prod),
+// the log group name is the segment after ":log-group:". In all cases, "/" in the derived string
+// is replaced with ".": primary convention uses the part after "API-Gateway-Execution-Logs_";
+// fallback uses the full log group name.
+func HostFromLogGroupIdentifier(identifier string) string {
+	if identifier == "" {
+		return ""
+	}
+	name := identifier
+	if idx := strings.Index(identifier, ":log-group:"); idx != -1 {
+		name = strings.TrimSpace(identifier[idx+len(":log-group:"):])
+	}
+	if name == "" {
+		return ""
+	}
+	base := name
+	if strings.HasPrefix(name, apiGatewayLogGroupPrefix) {
+		base = name[len(apiGatewayLogGroupPrefix):]
+	}
+	return strings.ReplaceAll(base, "/", ".")
 }
 
 // extractMap extracts a JSON-like map from a log message.
@@ -138,6 +164,16 @@ func DebugPrint(data map[string]*LogEntry) {
 	}
 }
 
+// hasHostHeader returns true if headers contain a host key (case-insensitive).
+func hasHostHeader(headers map[string]string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, "host") {
+			return true
+		}
+	}
+	return false
+}
+
 func ParseAndProduce(entry LogEntry) {
 	utils.LogToCyborg("info", "Processing traffic: "+entry.HTTPMethod+" "+entry.ResourcePath+" (status: "+fmt.Sprint(entry.StatusCode)+")")
 	// Initialize header maps if nil to avoid nil map assignment panic
@@ -146,6 +182,13 @@ func ParseAndProduce(entry LogEntry) {
 	}
 	if entry.ResponseHeaders == nil {
 		entry.ResponseHeaders = make(map[string]string)
+	}
+
+	// Backfill Host header from log group if missing
+	if !hasHostHeader(entry.RequestHeaders) {
+		if host := HostFromLogGroupIdentifier(entry.LogGroupIdentifier); host != "" {
+			entry.RequestHeaders["Host"] = host
+		}
 	}
 
 	// Add truncation headers
