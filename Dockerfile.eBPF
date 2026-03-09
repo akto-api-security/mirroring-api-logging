@@ -2,6 +2,11 @@ FROM alpine:3.22 AS base
 
 USER root
 RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
+# Patch kernel headers for BPF_LOAD_ACQ/BPF_STORE_REL when missing (e.g. on AWS Graviton arm64 / kernel 6.17.0-1007-aws)
+RUN grep -q "BPF_LOAD_ACQ" /usr/include/linux/bpf.h 2>/dev/null || ( \
+	echo "#ifndef BPF_LOAD_ACQ"; echo "#define BPF_LOAD_ACQ 0x100"; echo "#endif"; \
+	echo "#ifndef BPF_STORE_REL"; echo "#define BPF_STORE_REL 0x110"; echo "#endif"; \
+	cat /usr/include/linux/bpf.h ) > /tmp/bpf.h && mv /tmp/bpf.h /usr/include/linux/bpf.h
 
 FROM base AS builder
 
