@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// CyborgBaseURL is the base URL for the Cyborg API (Akto backend).
+const CyborgBaseURL = "https://cyborg.akto.io"
+
 // LogEvent logs locally and optionally sends to Cyborg remote endpoint.
 // level: "info", "warn", or "error"
 // sendToCyborg: if true, also sends to Cyborg (non-blocking, fire-and-forget)
@@ -48,7 +51,7 @@ func SendLogToCyborg(level string, message string) {
 		}
 
 		req, err := http.NewRequest("POST",
-			"https://cyborg.akto.io/api/insertAwsApiGatewayLog",
+			CyborgBaseURL+"/api/insertAwsApiGatewayLog",
 			bytes.NewBuffer(payloadJSON))
 		if err != nil {
 			return
