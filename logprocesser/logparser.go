@@ -225,6 +225,5 @@ func ParseAndProduce(entry LogEntry) {
 	msgBytes, _ := json.MarshalIndent(trafficData, "", "  ")
 	log.Printf("KAFKA MESSAGE BEING SENT:\n%s\n", string(msgBytes))
 
-	utils.LogToCyborg("info", fmt.Sprintf("Sending traffic to Kafka %s", string(msgBytes)))
 	kafkaUtil.ParseAndProduce(trafficData)
 }

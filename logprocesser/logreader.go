@@ -26,8 +26,8 @@ type StreamTracker struct {
 
 var cloudwatchReadBatchSize = 5
 
-// First run: window = last N days. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
-const logStreamWindowDays = 7
+// First run: window = last 1 hour. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
+var logStreamWindow = 1 * time.Hour
 
 func init() {
 	utils.InitVar("CLOUDWATCH_READ_BATCH_SIZE", &cloudwatchReadBatchSize)
@@ -51,12 +51,11 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 	reachedRecentWindow := false // use larger batch until we see at least one stream in the N-day window
 
 	for {
-		// Always use "last 7 days" window — we never read from the start of the log group.
-		windowStartMs := time.Now().Add(-logStreamWindowDays * 24 * time.Hour).UnixMilli()
+		// Always use "last 1 hour" window — we never read from the start of the log group.
+		windowStartMs := time.Now().Add(-logStreamWindow).UnixMilli()
 
-		// Skip phase: omit Limit (API uses default). After 7-day window use Limit=cloudwatchReadBatchSize.
+		// Skip phase: omit Limit (API uses default). After 1-hour window use Limit=cloudwatchReadBatchSize.
 		omitLimit := !reachedRecentWindow
-		log.Printf("Poll iteration started for log group: %s (window: last %d days)", logGroupName, logStreamWindowDays)
 		rawStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken, omitLimit)
 		if err != nil {
 			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
@@ -70,11 +69,9 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				logStreams = append(logStreams, s)
 				if !reachedRecentWindow {
 					reachedRecentWindow = true
-					log.Printf("Reached %d-day window: found stream in range. Resetting CloudWatch batch size to %d for log group: %s", logStreamWindowDays, cloudwatchReadBatchSize, logGroupName)
-					utils.LogToCyborg("info", fmt.Sprintf("Reached %d-day window for %s; switching to normal batch size %d", logStreamWindowDays, logGroupName, cloudwatchReadBatchSize))
+					log.Printf("Reached 1-hour window: found stream in range. Resetting CloudWatch batch size to %d for log group: %s", cloudwatchReadBatchSize, logGroupName)
+					utils.LogToCyborg("info", fmt.Sprintf("Reached 1-hour window for %s; switching to normal batch size %d", logGroupName, cloudwatchReadBatchSize))
 				}
-			} else {
-				log.Printf("DEBUG Skipping log stream: %s (lastEventTimestamp: %v) because it's before the window start time: %v", *s.LogStreamName, *s.LastEventTimestamp, windowStartMs)
 			}
 		}
 
@@ -128,7 +125,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			// Mark the stream as inactive if no new logs are found and a new stream exists
 			if tracker.NextToken == nil || time.Since(tracker.LastChecked) > 10*time.Second {
 				tracker.Active = false
-				utils.LogToCyborg("info", "Marking stream as inactive: "+streamName)
 			}
 		}
 
@@ -136,7 +132,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		for streamName, tracker := range activeStreams {
 			if !tracker.Active {
 				log.Printf("Flushing %d completed request(s) from stream %s (log group: %s)", len(tracker.logs), streamName, logGroupName)
-				utils.LogToCyborg("info", "Flushing "+fmt.Sprint(len(tracker.logs))+" completed request(s) from stream: "+streamName)
 				for logId, entry := range tracker.logs {
 					log.Printf("logId: %s", logId)
 					log.Printf("log: %v", entry)
@@ -144,7 +139,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				}
 
 				delete(activeStreams, streamName)
-				utils.LogToCyborg("info", "Removed inactive stream: "+streamName)
 			}
 		}
 
@@ -360,11 +354,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				}
 			}
 		} else {
-			// ts := "n/a"
-			// if event.Timestamp != nil {
-			// 	ts = fmt.Sprintf("%d", *event.Timestamp) // raw epoch ms, not human-readable
-			// }
-			// utils.LogToCyborg("info", fmt.Sprintf("Event Data: %s | %s | %s", streamName, ts, message))
 			// Fall back to regex pattern matching for execution logs
 			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
 
@@ -407,8 +396,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 				}
 			}
 		}
-
-		// fmt.Printf("Stream: %s, Timestamp: %d, Message: %s\n", streamName, *event.Timestamp, *event.Message)
 	}
 
 	log.Printf("DEBUG [%s] Summary: %d events with request IDs, %d without", streamName, eventsWithReqID, eventsWithoutReqID)
@@ -421,7 +408,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 		// If no new logs, consider the stream inactive
 		log.Printf("DEBUG [%s] Token unchanged (%v == %v), marking as inactive", streamName, *tracker.NextToken, *output.NextForwardToken)
 		tracker.Active = false
-		utils.LogToCyborg("info", "Marking stream as inactive, no new logs: "+streamName)
 	}
 
 	return nil
