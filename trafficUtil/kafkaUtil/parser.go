@@ -558,7 +558,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		// Resolve pod labels for inbound traffic
 		resolvePodLabels(value, ctx, url, req.Host)
 
-		out, _ := json.Marshal(value)
+		checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
+		out, err := json.Marshal(value)
+		if err != nil {
+			slog.Error("Failed to json marshal the payload", "error", err)
+			checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
+			return
+		}
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		// this number is the closest (slightly higher) to the actual connection transfer bytes.
@@ -568,8 +574,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			return
 		}
 
-		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
-
 		if apiProcessor.CloudProcessorInstance != nil {
 			apiProcessor.CloudProcessorInstance.Produce(value)
 
@@ -578,6 +582,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
 			go Produce(bgCtx, payload)
 		}
+
+		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
 	}
 }
 
