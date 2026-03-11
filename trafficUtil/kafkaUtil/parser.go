@@ -155,7 +155,6 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 
 	value["tag"] = podLabels
 	checkDebugUrlAndPrint(url, host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+ctx.HostName)
-	slog.Debug("Pod labels", "podName", ctx.HostName, "labels", podLabels)
 }
 
 // convertHeaders converts HTTP headers to both protobuf and string map formats in a single pass.
