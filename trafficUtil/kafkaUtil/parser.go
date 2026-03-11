@@ -538,7 +538,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			SourceIP:     ip,
 			Context:      ctx,
 		}
-		payload := buildProtobufPayload(input)
+
 		value := buildJSONPayload(input)
 
 		// Debug logging
@@ -579,7 +579,12 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		} else {
 			// Produce to kafka with collection_details header
 			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
-			go Produce(bgCtx, payload)
+
+			// Only if threat enabled
+			if utils.ThreatEnabled {
+				payload := buildProtobufPayload(input)
+				go Produce(bgCtx, payload)
+			}
 		}
 
 		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
