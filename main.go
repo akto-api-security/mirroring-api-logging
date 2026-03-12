@@ -21,11 +21,13 @@ func main() {
 	// Load AWS configuration
 	awsRegion := os.Getenv("AWS_REGION")
 	if awsRegion == "" {
+		utils.LogToCyborg("error", "AWS_REGION environment variable is required")
 		log.Fatalf("AWS_REGION environment variable is required")
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(awsRegion))
 	if err != nil {
+		utils.LogToCyborg("error", "Unable to load AWS configuration: "+err.Error())
 		log.Fatalf("Unable to load AWS configuration: %v", err)
 	}
 	utils.LogToCyborg("info", "AWS configuration loaded for region: "+awsRegion)
@@ -35,8 +37,11 @@ func main() {
 
 	logGroupNamesRaw := os.Getenv("LOG_GROUP_NAME")
 	if logGroupNamesRaw == "" {
+		utils.LogToCyborg("error", "LOG_GROUP_NAME environment variable is required")
 		log.Fatalf("LOG_GROUP_NAME environment variable is required")
 	}
+
+	utils.LogToCyborg("info", "Log group names: "+logGroupNamesRaw)
 
 	var logGroupNames []string
 	for _, name := range strings.Split(logGroupNamesRaw, ",") {
@@ -46,9 +51,9 @@ func main() {
 		}
 	}
 	if len(logGroupNames) == 0 {
+		utils.LogToCyborg("error", "No valid log group names provided")
 		log.Fatalf("No valid log group names provided")
 	}
-	log.Printf("Monitoring %d log group(s): %v", len(logGroupNames), logGroupNames)
 	utils.LogToCyborg("info", "Monitoring "+fmt.Sprint(len(logGroupNames))+" log group(s)")
 
 	// Initialize Kafka in background (non-blocking)
@@ -74,6 +79,7 @@ func main() {
 		go func(name string) {
 			utils.LogToCyborg("info", "Starting CloudWatch monitor for log group: "+name)
 			if err := logprocesser.MonitorLogGroup(context.TODO(), client, name); err != nil {
+				utils.LogToCyborg("error", "Error monitoring log group "+name+": "+err.Error())
 				log.Fatalf("Error monitoring log group %s: %v", name, err)
 			}
 		}(lgName)
