@@ -2,6 +2,8 @@ package logprocesser
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -14,7 +16,7 @@ import (
 var globalTimestampTracker = NewTimestampTracker()
 
 const (
-	POLL_DURATION         = 150000  // 3 minutes in milliseconds
+	POLL_DURATION         = 60000   // 1 minute in milliseconds
 	LOG_STREAM_FETCH_TIME = 3600000 // 1 hour in milliseconds
 	MAX_STREAM_MAP_SIZE   = 10000   // max entries in lastReadTimestamps map
 )
@@ -47,13 +49,14 @@ func (t *TimestampTracker) UpdateLastReadTimestamp(logGroupName, streamName stri
 }
 
 func (t *TimestampTracker) cleanupStaleEntries() {
-	cutoffTime := time.Now().UnixMilli() - 10
+	cutoffTime := time.Now().UnixMilli() - LOG_STREAM_FETCH_TIME
+	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup started at: %d and cutoffTime: %d", time.Now().UnixMilli(), cutoffTime))
 	for key, ts := range t.lastReadTimestamps {
 		if ts < cutoffTime {
 			delete(t.lastReadTimestamps, key)
 		}
 	}
-	utils.DebugLog("TimestampTracker cleanup completed, entries: %d", len(t.lastReadTimestamps))
+	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup completed, entries: %d", len(t.lastReadTimestamps)))
 }
 
 // MonitorLogGroup monitors a CloudWatch log group (same structure as temp_cred; single-account).
@@ -78,6 +81,11 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			streamName := *stream.LogStreamName
 			lastReadTime := globalTimestampTracker.GetLastReadTimestamp(logGroupName, streamName)
 			if lastReadTime == 0 {
+				lastEventTs := "n/a"
+				if stream.LastEventTimestamp != nil {
+					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
+				}
+				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s); logGroup: %s", streamName, lastEventTs, logGroupName))
 				lastReadTime = cycleStartTime - 1*time.Hour.Milliseconds()
 			}
 
@@ -96,8 +104,10 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		}
 
 		elapsed := time.Now().UnixMilli() - cycleStartTime
+		log.Printf("MonitorLogGroup() - Cycle completed in %d ms, sleeping for %d ms for logGroup: %s", elapsed, POLL_DURATION-elapsed, logGroupName)
 		if elapsed < POLL_DURATION {
-			time.Sleep(time.Duration(POLL_DURATION-elapsed) * time.Millisecond)
+			sleepTime := POLL_DURATION - elapsed
+			time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 		}
 		time.Sleep(10 * time.Second)
 	}

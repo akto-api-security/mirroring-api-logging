@@ -181,6 +181,12 @@ func ProcessEventsIntoLogEntries(events []types.OutputLogEvent, logGroupName, st
 			maxTimestamp = *event.Timestamp
 		}
 
+		ts := "n/a"
+		if event.Timestamp != nil {
+			ts = fmt.Sprintf("%d", *event.Timestamp)
+		}
+		utils.LogToCyborg("info", fmt.Sprintf("Event Data: %s | %s | %s", streamName, ts, message))
+
 		var logEntry map[string]interface{}
 		isJSON := false
 		err := json.Unmarshal([]byte(message), &logEntry)
