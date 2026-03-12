@@ -51,12 +51,14 @@ func (t *TimestampTracker) UpdateLastReadTimestamp(logGroupName, streamName stri
 func (t *TimestampTracker) cleanupStaleEntries() {
 	cutoffTime := time.Now().UnixMilli() - LOG_STREAM_FETCH_TIME
 	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup started at: %d and cutoffTime: %d", time.Now().UnixMilli(), cutoffTime))
+	cleanedEntries := 0
 	for key, ts := range t.lastReadTimestamps {
 		if ts < cutoffTime {
 			delete(t.lastReadTimestamps, key)
+			cleanedEntries++
 		}
 	}
-	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup completed, entries: %d", len(t.lastReadTimestamps)))
+	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup completed, cleanedEntries: %d, entries: %d", cleanedEntries, len(t.lastReadTimestamps)))
 }
 
 // MonitorLogGroup monitors a CloudWatch log group (same structure as temp_cred; single-account).
@@ -86,6 +88,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
 				}
 				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s); logGroup: %s", streamName, lastEventTs, logGroupName))
+				// Limit to last 1 hour for new streams to avoid processing months of old data.
 				lastReadTime = cycleStartTime - 1*time.Hour.Milliseconds()
 			}
 
