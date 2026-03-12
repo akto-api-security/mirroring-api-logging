@@ -69,7 +69,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				logStreams = append(logStreams, s)
 				if !reachedRecentWindow {
 					reachedRecentWindow = true
-					log.Printf("Reached %d-hour window: found stream in range. Resetting CloudWatch batch size to %d for log group: %s", logStreamWindow/time.Hour, cloudwatchReadBatchSize, logGroupName)
 					utils.LogToCyborg("info", fmt.Sprintf("Reached %d-hour window for %s; switching to normal batch size %d", logStreamWindow/time.Hour, logGroupName, cloudwatchReadBatchSize))
 				}
 			}
@@ -96,7 +95,6 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 				if stream.LastEventTimestamp != nil {
 					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
 				}
-				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v); logGroup: %s", *stream.LogStreamName, stream.LastEventTimestamp, logGroupName)
 				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s); logGroup: %s", *stream.LogStreamName, lastEventTs, logGroupName))
 				activeStreams[*stream.LogStreamName] = &StreamTracker{
 					NextToken:   nil,
@@ -369,7 +367,6 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					entry.HTTPMethod = matches[1]
 					entry.ResourcePath = matches[2]
 				} else {
-					log.Println("Error: Could not extract HTTP Method and Resource Path")
 					utils.LogToCyborg("error", "Could not extract HTTP Method and Resource Path from log message")
 				}
 			} else if strings.Contains(message, "Method request query string:") {
@@ -396,11 +393,9 @@ func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGro
 					if err == nil {
 						entry.StatusCode = statusCode
 					} else {
-						log.Printf("Error converting status code to integer: %v", err)
 						utils.LogToCyborg("error", "Error converting status code to integer: "+err.Error())
 					}
 				} else {
-					log.Println("Error: Could not find status code in the message")
 					utils.LogToCyborg("error", "Could not find status code in the message")
 				}
 			}

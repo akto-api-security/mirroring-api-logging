@@ -119,7 +119,6 @@ func RepairTruncatedJSON(body string) (string, bool) {
 	// Repair the JSON using the library
 	repaired, err := jsonrepair.Repair(cleanBody)
 	if err != nil {
-		log.Printf("RepairTruncatedJSON: repair failed for truncated body (len=%d): %v", len(cleanBody), err)
 		utils.LogToCyborg("error", "RepairTruncatedJSON: repair failed for truncated body")
 		// If repair fails, return cleaned body
 		return cleanBody, true
@@ -130,7 +129,6 @@ func RepairTruncatedJSON(body string) (string, bool) {
 
 	// Final validation - if still invalid, return cleaned body
 	if !json.Valid([]byte(repaired)) {
-		log.Printf("RepairTruncatedJSON: repaired JSON still invalid (body len=%d)", len(cleanBody))
 		utils.LogToCyborg("error", "RepairTruncatedJSON: repaired JSON still invalid. Returning original body.")
 		return cleanBody, true
 	}

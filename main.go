@@ -52,7 +52,6 @@ func main() {
 		utils.LogToCyborg("error", "No valid log group names provided")
 		log.Fatalf("No valid log group names provided")
 	}
-	log.Printf("Monitoring %d log group(s): %v", len(logGroupNames), logGroupNames)
 	utils.LogToCyborg("info", "Monitoring "+fmt.Sprint(len(logGroupNames))+" log group(s)")
 
 	// Initialize Kafka in background (non-blocking)

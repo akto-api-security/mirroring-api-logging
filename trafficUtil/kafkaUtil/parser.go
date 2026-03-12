@@ -22,7 +22,6 @@ func SendRawMessage(message string) {
 	// Send synchronously to ensure message is actually written to Kafka
 	err := Produce(ctx, message)
 	if err != nil {
-		log.Printf("ERROR: Failed to send to Kafka: %v", err)
 		utils.LogToCyborg("error", "Failed to send to Kafka: "+err.Error())
 	}
 }
