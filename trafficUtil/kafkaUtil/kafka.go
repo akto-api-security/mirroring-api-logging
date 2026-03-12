@@ -99,6 +99,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
 			log.Printf("kafkaErrMsgCount : %d, messagesCount %d", KafkaErrMsgCount, len(messages))
+			utils.LogToCyborg("error", "Kafka batch write error: "+err.Error())
 		}
 	}
 }

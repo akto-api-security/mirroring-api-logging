@@ -131,6 +131,7 @@ func RepairTruncatedJSON(body string) (string, bool) {
 	// Final validation - if still invalid, return cleaned body
 	if !json.Valid([]byte(repaired)) {
 		log.Printf("RepairTruncatedJSON: repaired JSON still invalid (body len=%d)", len(cleanBody))
+		utils.LogToCyborg("error", "RepairTruncatedJSON: repaired JSON still invalid. Returning original body.")
 		return cleanBody, true
 	}
 

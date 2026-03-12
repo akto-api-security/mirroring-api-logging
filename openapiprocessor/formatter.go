@@ -35,12 +35,14 @@ func uploadOpenAPISpecToCyborg(
 
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
+		utils.LogToCyborg("error", "Open API Upload Failed: Failed to marshal payload: "+err.Error())
 		return fmt.Errorf("failed to marshal payload: %v", err)
 	}
 
 	// Create HTTP request
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(payloadJSON))
 	if err != nil {
+		utils.LogToCyborg("error", "Open API Upload Failed: Failed to create request: "+err.Error())
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
@@ -55,6 +57,7 @@ func uploadOpenAPISpecToCyborg(
 
 	resp, err := client.Do(req)
 	if err != nil {
+		utils.LogToCyborg("error", "Open API Upload Failed: Failed to send request: "+err.Error())
 		return fmt.Errorf("failed to send request: %v", err)
 	}
 	defer resp.Body.Close()
@@ -62,6 +65,7 @@ func uploadOpenAPISpecToCyborg(
 	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		utils.LogToCyborg("error", "Open API Upload Failed: Failed to read response: "+err.Error())
 		return fmt.Errorf("failed to read response: %v", err)
 	}
 
