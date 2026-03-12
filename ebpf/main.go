@@ -117,7 +117,7 @@ func run() {
 	// Populate kubernetes_pids map from TRACE_PIDS env variable (comma-separated list of PIDs)
 	tracedPids := setupTracePids(bpfModule)
 	slog.Info("here are the traced", "pids", tracedPids)
-	// TODO: pids should be of K8 services only
+	// TODO: pids should be of K8 services only ??
 	fillExistingConnections(bpfModule, tracedPids)
 
 	db.InitMongoClient()
@@ -132,6 +132,10 @@ func run() {
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
 		slog.Error("Failed to setup pod watcher", "error", err)
+	}
+	if kafkaUtil.PodInformerInstance != nil {
+		kubePids := kafkaUtil.PodInformerInstance.GetAllKubePids()
+		fillExistingConnections(bpfModule, kubePids)
 	}
 
 	connectionFactory := connections.NewFactory()

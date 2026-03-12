@@ -13,7 +13,14 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/iovisor/gobpf/bcc"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
+
+var enableConnPrefill = false
+
+func init() {
+	utils.InitVar("AKTO_CONN_PREFILL", &enableConnPrefill)
+}
 
 // SocketInfo holds parsed socket information from /proc/net/tcp
 type SocketInfo struct {
@@ -232,7 +239,7 @@ func EnumerateExistingConnections(pid uint32) ([]ConnectionInfo, error) {
 			})
 		}
 	}
-
+	slog.Debug("Existing connections", "for pid", pid, " number: ", len(connections))
 	return connections, nil
 }
 
@@ -304,6 +311,13 @@ func PopulateExistingConnections(
 		connections, err := EnumerateExistingConnections(pid)
 		if err != nil {
 			slog.Warn("failed to enumerate connections for pid", "pid", pid, "error", err)
+			continue
+		}
+
+		// Don't actually prefill in C maps, finding conn is still done 
+		// to know how many are typically open and therefore data is not captured.
+		if !enableConnPrefill {
+			slog.Debug("prefill connection skipped due to", "enableConnPrefill: ", enableConnPrefill)
 			continue
 		}
 
