@@ -16,7 +16,7 @@ import (
 var globalTimestampTracker = NewTimestampTracker()
 
 const (
-	POLL_DURATION         = 60000   // 1 minute in milliseconds
+	POLL_DURATION         = 180000  // 3 minute in milliseconds
 	LOG_STREAM_FETCH_TIME = 3600000 // 1 hour in milliseconds
 	MAX_STREAM_MAP_SIZE   = 10000   // max entries in lastReadTimestamps map
 )
