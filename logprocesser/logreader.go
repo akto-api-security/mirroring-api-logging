@@ -27,7 +27,7 @@ type StreamTracker struct {
 var cloudwatchReadBatchSize = 5
 
 // First run: window = last 1 hour. After full pagination: window = max LastEventTimestamp (inclusive, so same-ms new events are not missed).
-var logStreamWindow = 24 * time.Hour
+var logStreamWindow = 1 * time.Hour
 
 func init() {
 	utils.InitVar("CLOUDWATCH_READ_BATCH_SIZE", &cloudwatchReadBatchSize)
