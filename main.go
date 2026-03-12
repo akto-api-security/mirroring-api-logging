@@ -41,6 +41,8 @@ func main() {
 		log.Fatalf("LOG_GROUP_NAME environment variable is required")
 	}
 
+	utils.LogToCyborg("info", "Log group names: "+logGroupNamesRaw)
+
 	var logGroupNames []string
 	for _, name := range strings.Split(logGroupNamesRaw, ",") {
 		name = strings.TrimSpace(name)
