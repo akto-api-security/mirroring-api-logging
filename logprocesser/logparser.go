@@ -441,6 +441,7 @@ func ParseAndProduce(entry LogEntry) {
 		"is_pending":      fmt.Sprint(false),
 		"source":          "MIRRORING",
 		"direction":       fmt.Sprint(1),
+		"tag":             "{\n  \"service\": \"aws-api-gateway\"\n}",
 	}
 
 	// Debug: Print the Kafka message being sent

@@ -75,6 +75,9 @@ func main() {
 		discoverOpenAPISpec = false
 	}
 
+	// Configurable lookback window from accountId (parsed from JWT in SetLookbackWindow)
+	logprocesser.SetLookbackWindow(databaseAbstractorToken)
+
 	for _, lgName := range logGroupNames {
 		go func(name string) {
 			utils.LogToCyborg("info", "Starting CloudWatch monitor for log group: "+name)
