@@ -133,13 +133,16 @@ func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 			return nil, err
 		}
 
+		foundOldStream := false
 		for _, stream := range output.LogStreams {
-			if stream.LastEventTimestamp != nil && *stream.LastEventTimestamp > lastProcessedEventTime {
-				logStreams = append(logStreams, stream)
+			if stream.LastEventTimestamp == nil || *stream.LastEventTimestamp <= lastProcessedEventTime {
+				foundOldStream = true
+				break
 			}
+			logStreams = append(logStreams, stream)
 		}
 
-		if output.NextToken == nil {
+		if foundOldStream || output.NextToken == nil {
 			break
 		}
 		nextToken = output.NextToken
