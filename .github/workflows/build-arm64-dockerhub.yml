@@ -12,7 +12,7 @@ env:
   REGISTRY: aktosecurity
   IMAGE_NAME: mirror-api-logging
   MODULE: ebpf
-  PLATFORM: linux/arm64/v8
+  PLATFORM: linux/amd64 
   DOCKERFILE: Dockerfile.eBPF
 
 jobs:
