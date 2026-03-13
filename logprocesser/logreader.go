@@ -16,9 +16,9 @@ import (
 var globalTimestampTracker = NewTimestampTracker()
 
 const (
-	POLL_DURATION         = 180000  // 3 minute in milliseconds
-	LOG_STREAM_FETCH_TIME = 3600000 // 1 hour in milliseconds
-	MAX_STREAM_MAP_SIZE   = 10000   // max entries in lastReadTimestamps map
+	POLL_DURATION         = 180000             // 3 minute in milliseconds
+	LOG_STREAM_FETCH_TIME = 6 * 60 * 60 * 1000 // 6 hours in milliseconds
+	MAX_STREAM_MAP_SIZE   = 20000              // max entries in lastReadTimestamps map
 )
 
 // TimestampTracker tracks last read timestamp per log group + stream (same structure as temp_cred).
@@ -88,8 +88,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
 				}
 				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s); logGroup: %s", streamName, lastEventTs, logGroupName))
-				// Limit to last 1 hour for new streams to avoid processing months of old data.
-				lastReadTime = cycleStartTime - 1*time.Hour.Milliseconds()
+				// Limit to last 1 hour for new streams to avoid processing old data.
+				lastReadTime = cycleStartTime - LOG_STREAM_FETCH_TIME
 			}
 
 			utils.DebugLog("MonitorLogGroup() - Processing stream: %s, reading from: %d for logGroup: %s", streamName, lastReadTime, logGroupName)

@@ -8,12 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akto-api-security/api-gateway-logging/loggroupdiscovery"
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
 	"github.com/akto-api-security/api-gateway-logging/openapiprocessor"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 )
 
@@ -35,25 +38,16 @@ func main() {
 	// Create CloudWatch Logs client
 	client := cloudwatchlogs.NewFromConfig(cfg)
 
-	logGroupNamesRaw := os.Getenv("LOG_GROUP_NAME")
-	if logGroupNamesRaw == "" {
-		utils.LogToCyborg("error", "LOG_GROUP_NAME environment variable is required")
-		log.Fatalf("LOG_GROUP_NAME environment variable is required")
-	}
-
-	utils.LogToCyborg("info", "Log group names: "+logGroupNamesRaw)
-
-	var logGroupNames []string
-	for _, name := range strings.Split(logGroupNamesRaw, ",") {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			logGroupNames = append(logGroupNames, name)
-		}
+	logGroupNames, err := getLogGroupNames(context.TODO(), cfg, client)
+	if err != nil {
+		utils.LogToCyborg("error", "Error Getting log groups: "+err.Error())
+		log.Fatalf("Error Getting log groups: %v", err)
 	}
 	if len(logGroupNames) == 0 {
-		utils.LogToCyborg("error", "No valid log group names provided")
-		log.Fatalf("No valid log group names provided")
+		utils.LogToCyborg("error", "No log group names foud for monitoring")
+		log.Fatalf("No log group names foud for monitoring")
 	}
+
 	utils.LogToCyborg("info", "Monitoring "+fmt.Sprint(len(logGroupNames))+" log group(s)")
 
 	// Initialize Kafka in background (non-blocking)
@@ -120,4 +114,20 @@ func main() {
 	utils.LogToCyborg("info", "All monitors started, main loop running")
 	// Keep the application running
 	select {}
+}
+
+// getLogGroupNames returns the list of CloudWatch log group names to monitor.
+// fetches execution log groups for API Gateway REST APIs;
+func getLogGroupNames(ctx context.Context, cfg aws.Config, logsClient *cloudwatchlogs.Client) ([]string, error) {
+
+	var logGroupNames []string
+	restClient := apigateway.NewFromConfig(cfg)
+	discovered, err := loggroupdiscovery.GetExecutionLogGroupNames(ctx, restClient, logsClient)
+	if err != nil {
+		utils.LogToCyborg("error", "Error discovering execution log groups: "+err.Error())
+		return nil, err
+	}
+	logGroupNames = discovered
+	utils.LogToCyborg("info", "Discovered "+fmt.Sprint(len(discovered))+" execution log group(s). Log group names: "+strings.Join(discovered, ", "))
+	return logGroupNames, nil
 }

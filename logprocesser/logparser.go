@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akto-api-security/api-gateway-logging/loggroupdiscovery"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
@@ -31,8 +32,6 @@ type LogEntry struct {
 	LogGroupIdentifier    string            `json:"log_group_identifier"`
 }
 
-const apiGatewayLogGroupPrefix = "API-Gateway-Execution-Logs_"
-
 // HostFromLogGroupIdentifier derives a host value from a log group ARN or name.
 // For ARN format (e.g. arn:aws:logs:eu-west-1:524348298903:log-group:API-Gateway-Execution-Logs_c1xxzmg784/Prod),
 // the log group name is the segment after ":log-group:". In all cases, "/" in the derived string
@@ -50,8 +49,8 @@ func HostFromLogGroupIdentifier(identifier string) string {
 		return ""
 	}
 	base := name
-	if strings.HasPrefix(name, apiGatewayLogGroupPrefix) {
-		base = name[len(apiGatewayLogGroupPrefix):]
+	if strings.HasPrefix(name, loggroupdiscovery.ApiGatewayExecutionLogGroupPrefix) {
+		base = name[len(loggroupdiscovery.ApiGatewayExecutionLogGroupPrefix):]
 	}
 	base = strings.TrimLeft(base, "/")
 	return strings.ReplaceAll(base, "/", ".")
