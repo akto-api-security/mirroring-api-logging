@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/conntrack"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -124,6 +126,11 @@ func run() {
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
 		slog.Error("Failed to setup pod watcher", "error", err)
+	}
+
+	if kafkaUtil.PodInformerInstance != nil {
+		kubePids := kafkaUtil.PodInformerInstance.GetAllKubePids()
+		fillExistingConnections(bpfModule, kubePids)
 	}
 
 	connectionFactory := connections.NewFactory()
@@ -238,6 +245,54 @@ func run() {
 	}
 
 	slog.Info("signaled to terminate")
+}
+
+func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {
+	connInfoTable := bcc.NewTable(bpfModule.TableId("conn_info_map"), bpfModule)
+	connCounterTable := bcc.NewTable(bpfModule.TableId("conn_counter"), bpfModule)
+	connInfoMapKeysTable := bcc.NewTable(bpfModule.TableId("conn_info_map_keys"), bpfModule)
+
+	maxConnectionSizeMapSize := 131072
+	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
+
+	slog.Info("populating pre-existing connections", "pids", tracedPids)
+	conntrack.PopulateExistingConnections(
+		tracedPids,
+		connInfoTable,
+		connCounterTable,
+		connInfoMapKeysTable,
+		maxConnectionSizeMapSize,
+	)
+}
+
+// Use this when specific pids tracing is required.
+func setupTracePids(bpfModule *bcc.Module) []uint32 {
+	kubePidsTable := bcc.NewTable(bpfModule.TableId("kubernetes_pids"), bpfModule)
+	var tracedPids []uint32
+	if tracePids := os.Getenv("TRACE_PIDS"); tracePids != "" {
+		for _, pidStr := range strings.Split(tracePids, ",") {
+			pidStr = strings.TrimSpace(pidStr)
+			if pidStr == "" {
+				continue
+			}
+			pid, err := strconv.ParseUint(pidStr, 10, 32)
+			if err != nil {
+				slog.Error("invalid pid in TRACE_PIDS", "pid", pidStr, "error", err)
+				continue
+			}
+			var pidKey [4]byte
+			binary.LittleEndian.PutUint32(pidKey[:], uint32(pid))
+			if err := kubePidsTable.Set(pidKey[:], []byte{1}); err != nil {
+				slog.Error("failed to add pid to kubernetes_pids map", "pid", pid, "error", err)
+			} else {
+				slog.Info("added pid to kubernetes_pids map", "pid", pid)
+				tracedPids = append(tracedPids, uint32(pid))
+			}
+		}
+	} else {
+		slog.Warn("TRACE_PIDS env variable not set, no PIDs will be traced")
+	}
+	return tracedPids
 }
 
 func captureMemoryProfile() {

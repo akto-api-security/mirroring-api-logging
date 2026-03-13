@@ -140,6 +140,16 @@ func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
 	return ""
 }
 
+func (w *PodInformer) GetAllKubePids() []uint32 {
+	// TODO: should we ignore envoy pids ?
+	pids := make([]uint32, 0, len(w.pidHostNameMap))
+	for pid := range w.pidHostNameMap {
+		pids = append(pids, uint32(pid))
+	}
+	slog.Debug("No of kube/docker pids", "found: ", len(pids))
+	return pids
+}
+
 func (w *PodInformer) BuildPidHostNameMap() {
 
 	cmd := exec.Command("sh", "-c", "for dir in /host/proc/[0-9]*; do pid=$(basename \"$dir\"); if [ -f $dir/environ ]; then hostname=$(strings $dir/environ | grep '^HOSTNAME=' | cut -d'=' -f2); if [ -n \"$hostname\" ]; then comm=$(cat $dir/comm 2>/dev/null); echo \"$pid $comm $hostname\"; fi; fi; done | sort -k3")
