@@ -15,11 +15,35 @@ import (
 
 var globalTimestampTracker = NewTimestampTracker()
 
+// lookbackWindowMs is the time window (ms) for stream/event fetch and tracker cleanup. Set via SetLookbackWindow from main (from accountId).
+// When 0, LOG_STREAM_FETCH_TIME (1 hour) is used.
+var lookbackWindowMs int64 = 0
+
 const (
-	POLL_DURATION         = 180000  // 3 minute in milliseconds
-	LOG_STREAM_FETCH_TIME = 3600000 // 1 hour in milliseconds
-	MAX_STREAM_MAP_SIZE   = 10000   // max entries in lastReadTimestamps map
+	POLL_DURATION         = 30000                // 3 minute in milliseconds
+	LOG_STREAM_FETCH_TIME = 3600000              // 1 hour in milliseconds
+	LOOKBACK_6_DAYS_MS    = 6 * 24 * 3600 * 1000 // 6 days in ms
+	MAX_STREAM_MAP_SIZE   = 20000                // max entries in lastReadTimestamps map
+	ACCOUNT_ID_FOR_6_DAYS = "1729478227"
 )
+
+// SetLookbackWindow parses accountId from the JWT token and sets lookback: accountId 123455666 -> 6 days, else 1 hour. Call before starting monitors.
+func SetLookbackWindow(token string) {
+	accountID := utils.AccountIDFromToken(token)
+	if accountID == ACCOUNT_ID_FOR_6_DAYS {
+		lookbackWindowMs = LOOKBACK_6_DAYS_MS
+	} else {
+		lookbackWindowMs = 0 // use default LOG_STREAM_FETCH_TIME
+	}
+	utils.LogToCyborg("info", fmt.Sprintf("Lookback window: %d ms (accountId: %q)", getLookbackMs(), accountID))
+}
+
+func getLookbackMs() int64 {
+	if lookbackWindowMs > 0 {
+		return lookbackWindowMs
+	}
+	return LOG_STREAM_FETCH_TIME
+}
 
 // TimestampTracker tracks last read timestamp per log group + stream (same structure as temp_cred).
 type TimestampTracker struct {
@@ -49,7 +73,7 @@ func (t *TimestampTracker) UpdateLastReadTimestamp(logGroupName, streamName stri
 }
 
 func (t *TimestampTracker) cleanupStaleEntries() {
-	cutoffTime := time.Now().UnixMilli() - LOG_STREAM_FETCH_TIME
+	cutoffTime := time.Now().UnixMilli() - getLookbackMs()
 	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup started at: %d and cutoffTime: %d", time.Now().UnixMilli(), cutoffTime))
 	cleanedEntries := 0
 	for key, ts := range t.lastReadTimestamps {
@@ -69,7 +93,7 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 		cycleStartTime := time.Now().UnixMilli()
 		utils.DebugLog("MonitorLogGroup() - Starting new monitoring cycle at: %d for logGroup: %s", cycleStartTime, logGroupName)
 
-		lookBackTime := cycleStartTime - LOG_STREAM_FETCH_TIME
+		lookBackTime := cycleStartTime - getLookbackMs()
 		logStreams, err := FetchLogStreams(ctx, client, logGroupName, lookBackTime)
 		if err != nil {
 			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
@@ -88,8 +112,8 @@ func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGrou
 					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
 				}
 				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s); logGroup: %s", streamName, lastEventTs, logGroupName))
-				// Limit to last 1 hour for new streams to avoid processing months of old data.
-				lastReadTime = cycleStartTime - 1*time.Hour.Milliseconds()
+				// Limit new streams to lookback window to avoid processing months of old data.
+				lastReadTime = cycleStartTime - getLookbackMs()
 			}
 
 			utils.DebugLog("MonitorLogGroup() - Processing stream: %s, reading from: %d for logGroup: %s", streamName, lastReadTime, logGroupName)
