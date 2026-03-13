@@ -53,6 +53,7 @@ func HostFromLogGroupIdentifier(identifier string) string {
 	if strings.HasPrefix(name, apiGatewayLogGroupPrefix) {
 		base = name[len(apiGatewayLogGroupPrefix):]
 	}
+	base = strings.TrimLeft(base, "/")
 	return strings.ReplaceAll(base, "/", ".")
 }
 
