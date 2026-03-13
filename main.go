@@ -129,6 +129,7 @@ func getLogGroupNames(ctx context.Context, cfg aws.Config, logsClient *cloudwatc
 		restClient := apigateway.NewFromConfig(cfg)
 		discovered, err := loggroupdiscovery.GetExecutionLogGroupNames(ctx, restClient, logsClient)
 		if err != nil {
+			utils.LogToCyborg("error", "Error discovering execution log groups: "+err.Error())
 			return nil, err
 		}
 		logGroupNames = discovered

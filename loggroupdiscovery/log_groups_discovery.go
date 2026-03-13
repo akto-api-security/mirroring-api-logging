@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/service/apigateway"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 )
@@ -34,6 +35,7 @@ func GetExecutionLogGroupNames(
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
+			utils.LogToCyborg("error", "Error describing log groups: "+err.Error())
 			return nil, err
 		}
 		for _, lg := range page.LogGroups {
@@ -61,6 +63,7 @@ func listRestAPIIds(ctx context.Context, client *apigateway.Client) ([]string, e
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
+			utils.LogToCyborg("error", "Error listing REST API IDs: "+err.Error())
 			return nil, err
 		}
 		for _, api := range page.Items {
