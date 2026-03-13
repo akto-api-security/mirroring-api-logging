@@ -16,9 +16,9 @@ import (
 var globalTimestampTracker = NewTimestampTracker()
 
 const (
-	POLL_DURATION         = 180000             // 3 minute in milliseconds
-	LOG_STREAM_FETCH_TIME = 6 * 60 * 60 * 1000 // 6 hours in milliseconds
-	MAX_STREAM_MAP_SIZE   = 20000              // max entries in lastReadTimestamps map
+	POLL_DURATION         = 180000  // 3 minute in milliseconds
+	LOG_STREAM_FETCH_TIME = 5400000 // 1.5 hours in milliseconds
+	MAX_STREAM_MAP_SIZE   = 20000   // max entries in lastReadTimestamps map
 )
 
 // TimestampTracker tracks last read timestamp per log group + stream (same structure as temp_cred).
