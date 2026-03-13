@@ -117,23 +117,17 @@ func main() {
 }
 
 // getLogGroupNames returns the list of CloudWatch log group names to monitor.
-// When discovery is enabled, fetches execution log groups for API Gateway REST APIs;
+// fetches execution log groups for API Gateway REST APIs;
 func getLogGroupNames(ctx context.Context, cfg aws.Config, logsClient *cloudwatchlogs.Client) ([]string, error) {
 
-	discoverExecutionLogGroups := true
-	utils.InitVar("DISCOVER_EXECUTION_LOG_GROUPS", &discoverExecutionLogGroups)
-
 	var logGroupNames []string
-	// fromEnv := parseLogGroupNamesFromEnv(os.Getenv("LOG_GROUP_NAME"))
-	if discoverExecutionLogGroups {
-		restClient := apigateway.NewFromConfig(cfg)
-		discovered, err := loggroupdiscovery.GetExecutionLogGroupNames(ctx, restClient, logsClient)
-		if err != nil {
-			utils.LogToCyborg("error", "Error discovering execution log groups: "+err.Error())
-			return nil, err
-		}
-		logGroupNames = discovered
-		utils.LogToCyborg("info", "Discovered "+fmt.Sprint(len(discovered))+" execution log group(s). Log group names: "+strings.Join(discovered, ", "))
+	restClient := apigateway.NewFromConfig(cfg)
+	discovered, err := loggroupdiscovery.GetExecutionLogGroupNames(ctx, restClient, logsClient)
+	if err != nil {
+		utils.LogToCyborg("error", "Error discovering execution log groups: "+err.Error())
+		return nil, err
 	}
+	logGroupNames = discovered
+	utils.LogToCyborg("info", "Discovered "+fmt.Sprint(len(discovered))+" execution log group(s). Log group names: "+strings.Join(discovered, ", "))
 	return logGroupNames, nil
 }
