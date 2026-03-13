@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 )
 
-const executionLogGroupPrefix = "API-Gateway-Execution-Logs_"
+const ApiGatewayExecutionLogGroupPrefix = "API-Gateway-Execution-Logs_"
 
 // GetExecutionLogGroupNames returns CloudWatch log group names that are API Gateway
 // execution log groups for REST APIs present in the account. It lists REST API IDs from
@@ -29,7 +29,7 @@ func GetExecutionLogGroupNames(
 
 	var names []string
 	paginator := cloudwatchlogs.NewDescribeLogGroupsPaginator(logsClient, &cloudwatchlogs.DescribeLogGroupsInput{
-		LogGroupNamePrefix: strPtr(executionLogGroupPrefix),
+		LogGroupNamePrefix: strPtr(ApiGatewayExecutionLogGroupPrefix),
 	})
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
@@ -41,7 +41,7 @@ func GetExecutionLogGroupNames(
 				continue
 			}
 			name := strings.TrimSpace(*lg.LogGroupName)
-			if !strings.HasPrefix(name, executionLogGroupPrefix) {
+			if !strings.HasPrefix(name, ApiGatewayExecutionLogGroupPrefix) {
 				continue
 			}
 			for _, apiID := range apiIDs {
