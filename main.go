@@ -44,8 +44,8 @@ func main() {
 		log.Fatalf("Error Getting log groups: %v", err)
 	}
 	if len(logGroupNames) == 0 {
-		utils.LogToCyborg("error", "No log group names: enable DISCOVER_EXECUTION_LOG_GROUPS")
-		log.Fatalf("No log group names: enable DISCOVER_EXECUTION_LOG_GROUPS")
+		utils.LogToCyborg("error", "No log group names foud for monitoring")
+		log.Fatalf("No log group names foud for monitoring")
 	}
 
 	utils.LogToCyborg("info", "Monitoring "+fmt.Sprint(len(logGroupNames))+" log group(s)")
