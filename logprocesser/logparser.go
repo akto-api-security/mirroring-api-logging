@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/yinxulai/go-jsonrepair/jsonrepair"
 )
 
@@ -51,6 +53,7 @@ func HostFromLogGroupIdentifier(identifier string) string {
 	if strings.HasPrefix(name, apiGatewayLogGroupPrefix) {
 		base = name[len(apiGatewayLogGroupPrefix):]
 	}
+	base = strings.TrimLeft(base, "/")
 	return strings.ReplaceAll(base, "/", ".")
 }
 
@@ -153,6 +156,226 @@ func fixIncompleteKeyValuePairs(jsonStr string) string {
 	result = re3.ReplaceAllString(result, "{}")
 
 	return result
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ProcessEventsIntoLogEntries is the original event-reading logic (unchanged). It processes
+// events into logEntries by requestID and returns the max event timestamp in the batch.
+func ProcessEventsIntoLogEntries(events []types.OutputLogEvent, logGroupName, streamName string, logEntries map[string]*LogEntry) (maxTimestamp int64) {
+	reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
+	httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
+	eventsWithReqID := 0
+	eventsWithoutReqID := 0
+
+	for _, event := range events {
+		if event.Message == nil {
+			continue
+		}
+		message := *event.Message
+		if event.Timestamp != nil && *event.Timestamp > maxTimestamp {
+			maxTimestamp = *event.Timestamp
+		}
+
+		ts := "n/a"
+		if event.Timestamp != nil {
+			ts = fmt.Sprintf("%d", *event.Timestamp)
+		}
+		utils.LogToCyborg("info", fmt.Sprintf("Event Data: %s | %s | %s", streamName, ts, message))
+
+		var logEntry map[string]interface{}
+		isJSON := false
+		err := json.Unmarshal([]byte(message), &logEntry)
+
+		var reqID string
+
+		if err == nil {
+			isJSON = true
+			if reqIDVal, exists := logEntry["requestId"]; exists {
+				if reqIDStr, ok := reqIDVal.(string); ok {
+					reqID = reqIDStr
+					log.Printf("DEBUG [%s] Parsed JSON format - requestId: %s", streamName, reqID)
+				}
+			} else if extReqIDVal, exists := logEntry["extendedRequestId"]; exists {
+				if extReqIDStr, ok := extReqIDVal.(string); ok {
+					reqID = extReqIDStr
+					log.Printf("DEBUG [%s] Parsed JSON format - extendedRequestId: %s", streamName, reqID)
+				}
+			}
+		} else {
+			isJSON = false
+			matches := reqIDRegex.FindStringSubmatch(message)
+			if len(matches) >= 2 {
+				reqID = matches[1]
+			}
+		}
+
+		if reqID == "" {
+			eventsWithoutReqID++
+			if eventsWithoutReqID <= 3 {
+				log.Printf("DEBUG [%s] Could not parse request ID (sample %d): %s", streamName, eventsWithoutReqID, message[:minInt(200, len(message))])
+			}
+			continue
+		}
+		eventsWithReqID++
+
+		if _, exists := logEntries[reqID]; !exists {
+			logEntries[reqID] = &LogEntry{
+				RequestID:          reqID,
+				QueryParams:        make(map[string]string),
+				RequestHeaders:     make(map[string]string),
+				ResponseHeaders:    make(map[string]string),
+				LogGroupIdentifier: logGroupName,
+			}
+		}
+
+		entry := logEntries[reqID]
+
+		if isJSON && err == nil {
+			if httpMethod, exists := logEntry["httpMethod"]; exists {
+				if httpMethodStr, ok := httpMethod.(string); ok {
+					entry.HTTPMethod = httpMethodStr
+				}
+			} else if method, exists := logEntry["method"]; exists {
+				if methodStr, ok := method.(string); ok {
+					entry.HTTPMethod = methodStr
+				}
+			}
+
+			if resourcePath, exists := logEntry["resourcePath"]; exists {
+				if resourcePathStr, ok := resourcePath.(string); ok {
+					entry.ResourcePath = resourcePathStr
+				}
+			} else if path, exists := logEntry["path"]; exists {
+				if pathStr, ok := path.(string); ok {
+					entry.ResourcePath = pathStr
+				}
+			}
+
+			if status, exists := logEntry["status"]; exists {
+				switch v := status.(type) {
+				case float64:
+					entry.StatusCode = int(v)
+				case string:
+					if code, err := strconv.Atoi(v); err == nil {
+						entry.StatusCode = code
+					}
+				}
+			} else if statusCode, exists := logEntry["statusCode"]; exists {
+				switch v := statusCode.(type) {
+				case float64:
+					entry.StatusCode = int(v)
+				case string:
+					if code, err := strconv.Atoi(v); err == nil {
+						entry.StatusCode = code
+					}
+				}
+			}
+
+			if headers, exists := logEntry["headers"]; exists {
+				if headersMap, ok := headers.(map[string]interface{}); ok {
+					for k, v := range headersMap {
+						if vStr, ok := v.(string); ok {
+							entry.RequestHeaders[k] = vStr
+						}
+					}
+				}
+			}
+
+			if responseHeaders, exists := logEntry["responseHeaders"]; exists {
+				if headersMap, ok := responseHeaders.(map[string]interface{}); ok {
+					for k, v := range headersMap {
+						if vStr, ok := v.(string); ok {
+							entry.ResponseHeaders[k] = vStr
+						}
+					}
+				}
+			}
+
+			if requestPayload, exists := logEntry["requestPayload"]; exists {
+				if payloadStr, ok := requestPayload.(string); ok {
+					repairedBody, wasTruncated := RepairTruncatedJSON(payloadStr)
+					entry.RequestBody = repairedBody
+					if wasTruncated {
+						entry.RequestBodyTruncated = true
+					}
+				}
+			}
+
+			if responsePayload, exists := logEntry["responsePayload"]; exists {
+				if payloadStr, ok := responsePayload.(string); ok {
+					repairedBody, wasTruncated := RepairTruncatedJSON(payloadStr)
+					entry.ResponseBody = repairedBody
+					if wasTruncated {
+						entry.ResponseBodyTruncated = true
+					}
+				}
+			}
+
+			if entry.HTTPMethod != "" {
+				log.Printf("DEBUG [%s] Extracted from JSON: %s %s (status: %d)", streamName, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
+				if len(entry.RequestHeaders) > 0 {
+					log.Printf("DEBUG [%s]   RequestHeaders: %v", streamName, entry.RequestHeaders)
+				}
+				if len(entry.ResponseHeaders) > 0 {
+					log.Printf("DEBUG [%s]   ResponseHeaders: %v", streamName, entry.ResponseHeaders)
+				}
+				if entry.RequestBody != "" {
+					log.Printf("DEBUG [%s]   RequestBody: %s", streamName, entry.RequestBody[:minInt(100, len(entry.RequestBody))])
+				}
+				if entry.ResponseBody != "" {
+					log.Printf("DEBUG [%s]   ResponseBody: %s", streamName, entry.ResponseBody[:minInt(100, len(entry.ResponseBody))])
+				}
+			}
+		} else {
+			if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
+				matches := httpMethodRegex.FindStringSubmatch(message)
+				if len(matches) == 3 {
+					entry.HTTPMethod = matches[1]
+					entry.ResourcePath = matches[2]
+				} else {
+					utils.LogToCyborg("error", "Could not extract HTTP Method and Resource Path from log message")
+				}
+			} else if strings.Contains(message, "Method request query string:") {
+				entry.QueryParams = extractMap(message, "Method request query string:")
+			} else if strings.Contains(message, "Method request headers:") {
+				entry.RequestHeaders = extractMap(message, "Method request headers:")
+			} else if strings.Contains(message, "Method request body before transformations:") {
+				rawBody := extractBody(message, "Method request body before transformations:")
+				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+				entry.RequestBody = repairedBody
+				entry.RequestBodyTruncated = wasTruncated
+			} else if strings.Contains(message, "Method response headers:") {
+				entry.ResponseHeaders = extractMap(message, "Method response headers:")
+			} else if strings.Contains(message, "Method response body after transformations:") {
+				rawBody := extractBody(message, "Method response body after transformations:")
+				repairedBody, wasTruncated := RepairTruncatedJSON(rawBody)
+				entry.ResponseBody = repairedBody
+				entry.ResponseBodyTruncated = wasTruncated
+			} else if strings.Contains(message, "Method completed with status:") {
+				parts := strings.Split(message, "Method completed with status:")
+				if len(parts) > 1 {
+					statusCodeStr := strings.TrimSpace(parts[1])
+					statusCode, err := strconv.Atoi(statusCodeStr)
+					if err == nil {
+						entry.StatusCode = statusCode
+					} else {
+						utils.LogToCyborg("error", "Error converting status code to integer: "+err.Error())
+					}
+				} else {
+					utils.LogToCyborg("error", "Could not find status code in the message")
+				}
+			}
+		}
+	}
+
+	log.Printf("DEBUG [%s] Summary: %d events with request IDs, %d without", streamName, eventsWithReqID, eventsWithoutReqID)
+	return maxTimestamp
 }
 
 // DebugPrint prints the extracted log entries in JSON format for debugging.
