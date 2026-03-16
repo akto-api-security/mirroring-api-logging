@@ -21,23 +21,29 @@ func MonitorAPIs(
 	region string,
 	authToken string,
 ) {
-	utils.DebugLog("Starting OpenAPI discovery cycle for role: %s", roleArn)
+	utils.LogToCyborg("info", "Starting OpenAPI discovery cycle for role: "+roleArn)
 
 	// Discover REST APIs (v1)
+	if clientSet.RestClient == nil {
+		utils.LogToCyborg("warn", "REST API client not available, skipping REST API discovery")
+	}
 	if clientSet.RestClient != nil {
 		if err := discoverRESTAPIs(ctx, clientSet.RestClient, roleArn, region, authToken); err != nil {
-			utils.DebugLog("Error discovering REST APIs for %s: %v", roleArn, err)
+			utils.LogToCyborg("error", "Error discovering REST APIs for "+roleArn+": "+err.Error())
 		}
 	}
 
 	// Discover HTTP APIs (v2)
+	if clientSet.HttpClient == nil {
+		utils.LogToCyborg("warn", "HTTP API client not available, skipping HTTP API discovery")
+	}
 	if clientSet.HttpClient != nil {
 		if err := discoverHTTPAPIs(ctx, clientSet.HttpClient, roleArn, region, authToken); err != nil {
-			utils.DebugLog("Error discovering HTTP APIs for %s: %v", roleArn, err)
+			utils.LogToCyborg("error", "Error discovering HTTP APIs for "+roleArn+": "+err.Error())
 		}
 	}
 
-	utils.DebugLog("Completed OpenAPI discovery cycle for role: %s", roleArn)
+	utils.LogToCyborg("info", "Completed OpenAPI discovery cycle for role: "+roleArn)
 }
 
 // discoverRESTAPIs discovers all REST APIs and their stages
@@ -48,7 +54,7 @@ func discoverRESTAPIs(
 	region string,
 	authToken string,
 ) error {
-	utils.DebugLog("Discovering REST APIs for role: %s", roleArn)
+	utils.LogToCyborg("info", "Discovering REST APIs for role: "+roleArn)
 
 	// List all REST APIs with pagination
 	paginator := apigateway.NewGetRestApisPaginator(client, &apigateway.GetRestApisInput{})
@@ -59,7 +65,7 @@ func discoverRESTAPIs(
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			utils.DebugLog("Error fetching REST APIs page: %v", err)
+			utils.LogToCyborg("error", "Error fetching REST APIs page: "+err.Error())
 			return err
 		}
 
@@ -69,7 +75,7 @@ func discoverRESTAPIs(
 			}
 
 			apiCount++
-			utils.DebugLog("Found REST API: %s (ID: %s)", *api.Name, *api.Id)
+			utils.LogToCyborg("info", "Found REST API: "+*api.Name+" (ID: "+*api.Id+")")
 
 			// Get stages for this API
 			stages, err := client.GetStages(ctx, &apigateway.GetStagesInput{
@@ -77,7 +83,7 @@ func discoverRESTAPIs(
 			})
 
 			if err != nil {
-				utils.DebugLog("Error fetching stages for API %s: %v", *api.Id, err)
+				utils.LogToCyborg("error", "Error fetching stages for API "+*api.Id+": "+err.Error())
 				continue // Continue to next API
 			}
 
@@ -88,7 +94,7 @@ func discoverRESTAPIs(
 				}
 
 				stageCount++
-				utils.DebugLog("Exporting spec for API %s stage %s", *api.Id, *stage.StageName)
+				utils.LogLocal("info", fmt.Sprintf("Exporting spec for API %s stage %s", *api.Id, *stage.StageName))
 
 				// Export OpenAPI spec for this stage
 				spec, err := client.GetExport(ctx, &apigateway.GetExportInput{
@@ -99,25 +105,26 @@ func discoverRESTAPIs(
 				})
 
 				if err != nil {
-					utils.DebugLog("Error exporting spec for API %s stage %s: %v", *api.Id, *stage.StageName, err)
+					utils.LogToCyborg("error", "Error exporting spec for API "+*api.Id+" stage "+*stage.StageName+": "+err.Error())
 					continue // Continue to next stage
 				}
 
 				// Check if spec changed (deduplication)
 				if shouldSendSpec(roleArn, *api.Id, *stage.StageName, spec.Body) {
-					utils.DebugLog("Spec changed for API %s stage %s, uploading to dashboard", *api.Id, *stage.StageName)
+					utils.LogToCyborg("info", "Spec changed for API "+*api.Id+" stage "+*stage.StageName+", uploading")
 					// Upload to dashboard
 					if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.Id, roleArn, region, *stage.StageName, authToken); err != nil {
-						utils.DebugLog("Error uploading spec for API %s stage %s: %v", *api.Id, *stage.StageName, err)
+						utils.LogToCyborg("error", "Error uploading spec for API "+*api.Id+" stage "+*stage.StageName+": "+err.Error())
+						GetTracker().RemoveDiscoveredAPICache(roleArn, *api.Id, *stage.StageName)
 					}
 				} else {
-					utils.DebugLog("Spec unchanged for API %s stage %s, skipping", *api.Id, *stage.StageName)
+					utils.LogLocal("info", fmt.Sprintf("Spec unchanged for API %s stage %s, skipping", *api.Id, *stage.StageName))
 				}
 			}
 		}
 	}
 
-	utils.DebugLog("Discovered %d REST APIs with %d stages total", apiCount, stageCount)
+	utils.LogToCyborg("info", fmt.Sprintf("Discovered %d REST APIs with %d stages total", apiCount, stageCount))
 	return nil
 }
 
@@ -129,7 +136,7 @@ func discoverHTTPAPIs(
 	region string,
 	authToken string,
 ) error {
-	utils.DebugLog("Discovering HTTP APIs for role: %s", roleArn)
+	utils.LogToCyborg("info", "Discovering HTTP APIs for role: "+roleArn)
 
 	// List all HTTP APIs with manual pagination (no paginator available)
 	apiCount := 0
@@ -143,7 +150,7 @@ func discoverHTTPAPIs(
 
 		page, err := client.GetApis(ctx, input)
 		if err != nil {
-			utils.DebugLog("Error fetching HTTP APIs page: %v", err)
+			utils.LogToCyborg("error", "Error fetching HTTP APIs page: "+err.Error())
 			return err
 		}
 
@@ -153,7 +160,7 @@ func discoverHTTPAPIs(
 			}
 
 			apiCount++
-			utils.DebugLog("Found HTTP API: %s (ID: %s)", *api.Name, *api.ApiId)
+			utils.LogToCyborg("info", "Found HTTP API: "+*api.Name+" (ID: "+*api.ApiId+")")
 
 			// Export OpenAPI spec (HTTP APIs don't have stages)
 			spec, err := client.ExportApi(ctx, &apigatewayv2.ExportApiInput{
@@ -163,19 +170,20 @@ func discoverHTTPAPIs(
 			})
 
 			if err != nil {
-				utils.DebugLog("Error exporting spec for HTTP API %s: %v", *api.ApiId, err)
+				utils.LogToCyborg("error", "Error exporting spec for HTTP API "+*api.ApiId+": "+err.Error())
 				continue // Continue to next API
 			}
 
 			// Check if spec changed (deduplication) - empty stage for HTTP APIs
 			if shouldSendSpec(roleArn, *api.ApiId, "", spec.Body) {
-				utils.DebugLog("Spec changed for HTTP API %s, uploading to dashboard", *api.ApiId)
+				utils.LogToCyborg("info", "Spec changed for HTTP API "+*api.ApiId+", uploading")
 				// Upload to dashboard
 				if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.ApiId, roleArn, region, "", authToken); err != nil {
-					utils.DebugLog("Error uploading spec for HTTP API %s: %v", *api.ApiId, err)
+					utils.LogToCyborg("error", "Error uploading spec for HTTP API "+*api.ApiId+": "+err.Error())
+					GetTracker().RemoveDiscoveredAPICache(roleArn, *api.ApiId, "")
 				}
 			} else {
-				utils.DebugLog("Spec unchanged for HTTP API %s, skipping", *api.ApiId)
+				utils.LogLocal("info", fmt.Sprintf("Spec unchanged for HTTP API %s, skipping", *api.ApiId))
 			}
 		}
 
@@ -186,7 +194,7 @@ func discoverHTTPAPIs(
 		nextToken = page.NextToken
 	}
 
-	utils.DebugLog("Discovered %d HTTP APIs", apiCount)
+	utils.LogToCyborg("info", fmt.Sprintf("Discovered %d HTTP APIs", apiCount))
 	return nil
 }
 

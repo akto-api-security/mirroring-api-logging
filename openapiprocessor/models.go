@@ -1,6 +1,7 @@
 package openapiprocessor
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -46,4 +47,13 @@ var globalDiscoveryTracker = &DiscoveryTracker{
 // GetTracker returns the global discovery tracker instance
 func GetTracker() *DiscoveryTracker {
 	return globalDiscoveryTracker
+}
+
+// RemoveDiscoveredAPICache removes the cached spec for the given API so it will be retried on the next discovery cycle.
+// Call this when upload fails to avoid skipping retries due to stale cache.
+func (t *DiscoveryTracker) RemoveDiscoveredAPICache(roleArn, apiID, stage string) {
+	key := fmt.Sprintf("%s|%s|%s", roleArn, apiID, stage)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.discoveredAPIs, key)
 }

@@ -97,7 +97,7 @@ func main() {
 			log.Printf("Invalid TICKER_INTERVAL_MINUTES value '%s', using default of 5 minutes", intervalStr)
 		}
 	}
-	log.Printf("Ticker interval set to %d minutes", tickerIntervalMinutes)
+	utils.LogToCyborg("info", "Ticker interval set to "+strconv.Itoa(tickerIntervalMinutes)+" minutes")
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(tickerIntervalMinutes) * time.Minute)
@@ -123,7 +123,7 @@ func main() {
 				log.Printf("Fetching log groups for role: %s", roleArn)
 				logGroups, err := fetchAllLogGroupARNs(context.TODO(), clientsPerRole[roleArn])
 				if err != nil {
-					log.Printf("Failed to fetch log groups for role %s: %v", roleArn, err)
+					utils.LogToCyborg("error", "Failed to fetch log groups for role "+roleArn+": "+err.Error())
 					continue
 				}
 				roleArnToLogMap[roleArn] = logGroups
@@ -138,7 +138,7 @@ func main() {
 						go func(logGroupArn string, clientToUse *cloudwatchlogs.Client) {
 							utils.DebugLog("Starting log processor for new log group: %s using client for role %s", logGroupArn, roleArn)
 							if err := logprocesser.MonitorLogGroup(context.TODO(), clientToUse, logGroupArn); err != nil {
-								log.Printf("Error monitoring log group %s: %v", logGroupArn, err)
+								utils.LogToCyborg("error", "Error monitoring log group "+logGroupArn+": "+err.Error())
 							}
 						}(arn, client)
 					}
@@ -151,7 +151,7 @@ func main() {
 	}()
 
 	if discoverOpenAPISpec {
-		log.Printf("OpenAPI spec discovery enabled: run at start, then every %d minutes", openapiDiscoveryIntervalMinutes)
+		utils.LogToCyborg("info", "OpenAPI spec discovery enabled: run at start, then every "+strconv.Itoa(openapiDiscoveryIntervalMinutes)+" minutes")
 		go func() {
 			runOpenAPIDiscovery := func() {
 				mu.Lock()
@@ -168,7 +168,7 @@ func main() {
 						var err error
 						clientSet, err = openapiprocessor.CreateAPIGatewayClientsFromRole(cfg, stsSvc, roleArn, sessionName)
 						if err != nil {
-							log.Printf("Failed to create API Gateway clients for role %s: %v", roleArn, err)
+							utils.LogToCyborg("error", "Failed to create API Gateway clients for role "+roleArn+": "+err.Error())
 							apiMu.Unlock()
 							continue
 						}
@@ -197,7 +197,7 @@ func main() {
 func setRoleArns(databaseAbstractorToken string, awsRoleArnsFromAkto *[]string, mu *sync.Mutex) {
 	awsAccountIds, err := fetchAwsAccountIds(databaseAbstractorToken)
 	if err != nil {
-		log.Printf("Error fetching AWS Role ARNs from Akto: %v", err)
+		utils.LogToCyborg("error", "Error fetching AWS Role ARNs from Akto: "+err.Error())
 	} else {
 		log.Printf("Fetched AWS Role ARNs from Akto: %v", awsAccountIds)
 		mu.Lock()

@@ -22,7 +22,7 @@ func uploadOpenAPISpecToCyborg(
 	stage string,
 	authToken string,
 ) error {
-	utils.DebugLog("Uploading OpenAPI spec for API: %s (ID: %s, stage: %s) to cyborg", apiName, apiId, stage)
+	utils.LogLocal("info", fmt.Sprintf("Uploading OpenAPI spec for API: %s (ID: %s, stage: %s) to cyborg", apiName, apiId, stage))
 
 	endpoint := "https://cyborg.akto.io/api/importOpenApiSpec"
 
@@ -69,6 +69,7 @@ func uploadOpenAPISpecToCyborg(
 		return fmt.Errorf("cyborg API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	utils.DebugLog("✓ Successfully uploaded OpenAPI spec for API %s (stage: %s) to cyborg. Response: %s", apiName, stage, string(body))
+	utils.LogLocal("info", fmt.Sprintf("Successfully uploaded OpenAPI spec for API %s (stage: %s) to cyborg. Response: %s", apiName, stage, string(body)))
+	utils.LogToCyborg("info", "Successfully uploaded OpenAPI spec for API "+apiName+" (stage: "+stage+")")
 	return nil
 }

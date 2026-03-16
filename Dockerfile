@@ -23,6 +23,7 @@ WORKDIR /app
 
 COPY go.mod ./
 COPY go.sum ./
+COPY openapiprocessor ./openapiprocessor
 COPY logprocesser ./logprocesser
 COPY trafficUtil ./trafficUtil
 COPY *.go ./
