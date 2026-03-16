@@ -237,6 +237,7 @@ var (
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
+	injectTagsJSON             = ""
 	methodsMap                 = map[string]bool{
 		"GET":     true,
 		"HEAD":    true,
@@ -269,6 +270,20 @@ func init() {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
+
+	injectTagsEnv := ""
+	utils.InitVar("AKTO_INJECT_TAGS", &injectTagsEnv)
+	if injectTagsEnv != "" {
+		tagMap := map[string]string{}
+		for _, pair := range strings.Split(injectTagsEnv, ";") {
+			if idx := strings.IndexByte(pair, '='); idx > 0 {
+				tagMap[pair[:idx]] = pair[idx+1:]
+			}
+		}
+		if b, err := json.Marshal(tagMap); err == nil {
+			injectTagsJSON = string(b)
+		}
+	}
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
@@ -557,6 +572,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 		// Resolve pod labels for inbound traffic
 		resolvePodLabels(value, ctx, url, req.Host)
+
+		if injectTagsJSON != "" && value["tag"] == "" {
+			value["tag"] = injectTagsJSON
+		}
 
 		out, _ := json.Marshal(value)
 
