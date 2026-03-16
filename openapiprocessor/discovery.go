@@ -65,7 +65,7 @@ func discoverRESTAPIs(
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			utils.LogToCyborg("error", "Error fetching REST APIs page: "+err.Error())
+			utils.LogToCyborg("error", "Error fetching REST APIs page for role "+roleArn+": "+err.Error())
 			return err
 		}
 
@@ -83,7 +83,7 @@ func discoverRESTAPIs(
 			})
 
 			if err != nil {
-				utils.LogToCyborg("error", "Error fetching stages for API "+*api.Id+": "+err.Error())
+				utils.LogToCyborg("error", "Error fetching stages for API "+*api.Id+". role "+roleArn+": "+err.Error())
 				continue // Continue to next API
 			}
 
@@ -105,7 +105,7 @@ func discoverRESTAPIs(
 				})
 
 				if err != nil {
-					utils.LogToCyborg("error", "Error exporting spec for API "+*api.Id+" stage "+*stage.StageName+": "+err.Error())
+					utils.LogToCyborg("error", "Error exporting spec for API "+*api.Id+" stage "+*stage.StageName+". role "+roleArn+": "+err.Error())
 					continue // Continue to next stage
 				}
 
@@ -114,7 +114,7 @@ func discoverRESTAPIs(
 					utils.LogToCyborg("info", "Spec changed for API "+*api.Id+" stage "+*stage.StageName+", uploading")
 					// Upload to dashboard
 					if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.Id, roleArn, region, *stage.StageName, authToken); err != nil {
-						utils.LogToCyborg("error", "Error uploading spec for API "+*api.Id+" stage "+*stage.StageName+": "+err.Error())
+						utils.LogToCyborg("error", "Error uploading spec for API "+*api.Id+" stage "+*stage.StageName+". role "+roleArn+": "+err.Error())
 						GetTracker().RemoveDiscoveredAPICache(roleArn, *api.Id, *stage.StageName)
 					}
 				} else {
@@ -124,7 +124,7 @@ func discoverRESTAPIs(
 		}
 	}
 
-	utils.LogToCyborg("info", fmt.Sprintf("Discovered %d REST APIs with %d stages total", apiCount, stageCount))
+	utils.LogToCyborg("info", fmt.Sprintf("Discovered %d REST APIs with %d stages for role %s", apiCount, stageCount, roleArn))
 	return nil
 }
 
@@ -150,7 +150,7 @@ func discoverHTTPAPIs(
 
 		page, err := client.GetApis(ctx, input)
 		if err != nil {
-			utils.LogToCyborg("error", "Error fetching HTTP APIs page: "+err.Error())
+			utils.LogToCyborg("error", "Error fetching HTTP APIs page for role "+roleArn+": "+err.Error())
 			return err
 		}
 
@@ -170,7 +170,7 @@ func discoverHTTPAPIs(
 			})
 
 			if err != nil {
-				utils.LogToCyborg("error", "Error exporting spec for HTTP API "+*api.ApiId+": "+err.Error())
+				utils.LogToCyborg("error", "Error exporting spec for HTTP API "+*api.ApiId+". role "+roleArn+": "+err.Error())
 				continue // Continue to next API
 			}
 
@@ -179,7 +179,7 @@ func discoverHTTPAPIs(
 				utils.LogToCyborg("info", "Spec changed for HTTP API "+*api.ApiId+", uploading")
 				// Upload to dashboard
 				if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.ApiId, roleArn, region, "", authToken); err != nil {
-					utils.LogToCyborg("error", "Error uploading spec for HTTP API "+*api.ApiId+": "+err.Error())
+					utils.LogToCyborg("error", "Error uploading spec for HTTP API "+*api.ApiId+". role "+roleArn+": "+err.Error())
 					GetTracker().RemoveDiscoveredAPICache(roleArn, *api.ApiId, "")
 				}
 			} else {
@@ -194,7 +194,7 @@ func discoverHTTPAPIs(
 		nextToken = page.NextToken
 	}
 
-	utils.LogToCyborg("info", fmt.Sprintf("Discovered %d HTTP APIs", apiCount))
+	utils.LogToCyborg("info", fmt.Sprintf("Discovered %d HTTP APIs for role %s", apiCount, roleArn))
 	return nil
 }
 
