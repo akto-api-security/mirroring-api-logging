@@ -46,7 +46,7 @@ func InitKafka() {
 	if len(kafka_url) == 0 {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
-	utils.PrintLog("kafka_url: " + kafka_url)
+	utils.LogToCyborg("info", "kafka_url: "+kafka_url)
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
@@ -76,7 +76,7 @@ func InitKafka() {
 	for {
 		kafkaWriter = getKafkaWriter(kafka_url, "akto.api.logs", kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
 		utils.LogMemoryStats()
-		utils.PrintLog("logging kafka stats before pushing message")
+		utils.LogToCyborg("info", "logging kafka stats before pushing message")
 		LogKafkaStats()
 		value := map[string]string{
 			"testConnectionString": "kafkaInit",
@@ -85,14 +85,14 @@ func InitKafka() {
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
 		err := Produce(ctx, string(out))
-		utils.PrintLog("logging kafka stats post pushing message")
+		utils.LogToCyborg("info", "logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
-			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
+			utils.LogToCyborg("error", "error establishing connection with kafka, sending message failed, retrying in 2 seconds: "+err.Error())
 			kafkaWriter.Close()
 			time.Sleep(time.Second * 2)
 		} else {
-			utils.PrintLog("connection establishing with kafka successfully")
+			utils.LogToCyborg("info", "connection established with kafka successfully")
 			kafkaWriter.Completion = kafkaCompletion()
 			break
 		}
@@ -103,7 +103,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 	return func(messages []kafka.Message, err error) {
 		if err != nil {
 			KafkaErrMsgCount += len(messages)
-			log.Printf("kafkaErrMsgCount : %d, messagesCount %d", KafkaErrMsgCount, len(messages))
+			utils.LogToCyborg("error", "kafkaErrMsgCount : "+strconv.Itoa(KafkaErrMsgCount)+", messagesCount "+strconv.Itoa(len(messages)))
 		}
 	}
 }
@@ -126,7 +126,7 @@ func LogKafkaError() {
 	if time.Since(KafkaErrMsgEpoch).Seconds() >= 10 {
 
 		if KafkaErrMsgCount > 1000 {
-			log.Println("kafka error messages exceeded threshold, sleeping for 10 sec ", time.Now())
+			utils.LogToCyborg("error", "kafka error messages exceeded threshold, sleeping for 10 sec "+time.Now().String())
 			time.Sleep(10 * time.Second)
 		}
 		KafkaErrMsgCount = 0
@@ -142,7 +142,7 @@ func Produce(ctx context.Context, message string) error {
 	err := kafkaWriter.WriteMessages(ctx, msg)
 
 	if err != nil {
-		log.Println("ERROR while writing messages: ", err)
+		utils.LogToCyborg("error", "ERROR while writing messages: "+err.Error())
 		return err
 	}
 	return nil

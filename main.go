@@ -16,6 +16,7 @@ import (
 	"net/http"
 
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
+	"github.com/akto-api-security/api-gateway-logging/openapiprocessor"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -73,6 +74,20 @@ func main() {
 			}
 		}()
 	}
+
+	// OpenAPI discovery configuration
+	discoverOpenAPISpec := true
+	utils.InitVar("DISCOVER_OPENAPI_SPEC", &discoverOpenAPISpec)
+	openapiDiscoveryIntervalMinutes := 15
+	utils.InitVar("OPENAPI_DISCOVERY_INTERVAL_MINUTES", &openapiDiscoveryIntervalMinutes)
+	if discoverOpenAPISpec && databaseAbstractorToken == "" {
+		log.Printf("WARNING: DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
+		discoverOpenAPISpec = false
+	}
+
+	apiGatewayClientsPerRole := make(map[string]*openapiprocessor.ClientSet)
+	var apiMu sync.Mutex
+
 	// Get ticker interval from environment variable, default to 5 minutes
 	tickerIntervalMinutes := 5
 	if intervalStr := os.Getenv("TICKER_INTERVAL_MINUTES"); intervalStr != "" {
@@ -82,7 +97,7 @@ func main() {
 			log.Printf("Invalid TICKER_INTERVAL_MINUTES value '%s', using default of 5 minutes", intervalStr)
 		}
 	}
-	log.Printf("Ticker interval set to %d minutes", tickerIntervalMinutes)
+	utils.LogToCyborg("info", "Ticker interval set to "+strconv.Itoa(tickerIntervalMinutes)+" minutes")
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(tickerIntervalMinutes) * time.Minute)
@@ -108,7 +123,7 @@ func main() {
 				log.Printf("Fetching log groups for role: %s", roleArn)
 				logGroups, err := fetchAllLogGroupARNs(context.TODO(), clientsPerRole[roleArn])
 				if err != nil {
-					log.Printf("Failed to fetch log groups for role %s: %v", roleArn, err)
+					utils.LogToCyborg("error", "Failed to fetch log groups for role "+roleArn+": "+err.Error())
 					continue
 				}
 				roleArnToLogMap[roleArn] = logGroups
@@ -123,7 +138,7 @@ func main() {
 						go func(logGroupArn string, clientToUse *cloudwatchlogs.Client) {
 							utils.DebugLog("Starting log processor for new log group: %s using client for role %s", logGroupArn, roleArn)
 							if err := logprocesser.MonitorLogGroup(context.TODO(), clientToUse, logGroupArn); err != nil {
-								log.Printf("Error monitoring log group %s: %v", logGroupArn, err)
+								utils.LogToCyborg("error", "Error monitoring log group "+logGroupArn+": "+err.Error())
 							}
 						}(arn, client)
 					}
@@ -135,13 +150,54 @@ func main() {
 		}
 	}()
 
+	if discoverOpenAPISpec {
+		utils.LogToCyborg("info", "OpenAPI spec discovery enabled: run at start, then every "+strconv.Itoa(openapiDiscoveryIntervalMinutes)+" minutes")
+		go func() {
+			runOpenAPIDiscovery := func() {
+				mu.Lock()
+				roles := make([]string, len(awsRoleArnsFromAkto))
+				copy(roles, awsRoleArnsFromAkto)
+				mu.Unlock()
+				for _, roleArn := range roles {
+					if strings.TrimSpace(roleArn) == "" {
+						continue
+					}
+					apiMu.Lock()
+					clientSet, ok := apiGatewayClientsPerRole[roleArn]
+					if !ok {
+						var err error
+						clientSet, err = openapiprocessor.CreateAPIGatewayClientsFromRole(cfg, stsSvc, roleArn, sessionName)
+						if err != nil {
+							utils.LogToCyborg("error", "Failed to create API Gateway clients for role "+roleArn+": "+err.Error())
+							apiMu.Unlock()
+							continue
+						}
+						if clientSet != nil {
+							apiGatewayClientsPerRole[roleArn] = clientSet
+						}
+					}
+					apiMu.Unlock()
+					if clientSet != nil {
+						openapiprocessor.MonitorAPIs(context.TODO(), clientSet, roleArn, awsRegion, databaseAbstractorToken)
+					}
+				}
+			}
+			runOpenAPIDiscovery() // run at start
+			ticker := time.NewTicker(time.Duration(openapiDiscoveryIntervalMinutes) * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runOpenAPIDiscovery() // then every 15 minutes
+			}
+		}()
+	}
+
 	select {}
 }
 
 func setRoleArns(databaseAbstractorToken string, awsRoleArnsFromAkto *[]string, mu *sync.Mutex) {
 	awsAccountIds, err := fetchAwsAccountIds(databaseAbstractorToken)
 	if err != nil {
-		log.Printf("Error fetching AWS Role ARNs from Akto: %v", err)
+		utils.LogToCyborg("error", "Error fetching AWS Role ARNs from Akto: "+err.Error())
 	} else {
 		log.Printf("Fetched AWS Role ARNs from Akto: %v", awsAccountIds)
 		mu.Lock()
