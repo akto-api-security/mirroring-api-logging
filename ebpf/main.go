@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
@@ -82,6 +84,30 @@ func isAmdArch() bool {
 	return false
 }
 
+// generateVmlinuxHeader uses bpftool to dump the running kernel's BTF type information
+// into a vmlinux.h file that the BCC/Clang compiler can consume via CO-RE.
+// The kernel must be built with CONFIG_DEBUG_INFO_BTF=y (standard on all major distros ≥5.4).
+func generateVmlinuxHeader(kernelDir string) error {
+	const btfPath = "/sys/kernel/btf/vmlinux"
+	if _, err := os.Stat(btfPath); os.IsNotExist(err) {
+		return fmt.Errorf("BTF file not found at %s (kernel needs CONFIG_DEBUG_INFO_BTF=y): %w", btfPath, err)
+	}
+
+	vmlinuxPath := filepath.Join(kernelDir, "vmlinux.h")
+	cmd := exec.Command("bpftool", "btf", "dump", "file", btfPath, "format", "c")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("bpftool failed to generate vmlinux.h: %w", err)
+	}
+
+	if err := os.WriteFile(vmlinuxPath, output, 0644); err != nil {
+		return fmt.Errorf("failed to write vmlinux.h to %s: %w", vmlinuxPath, err)
+	}
+
+	slog.Info("vmlinux.h generated from running kernel BTF", "path", vmlinuxPath)
+	return nil
+}
+
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
@@ -105,7 +131,25 @@ func run() {
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
-	bpfModule := bcc.NewModule(source, []string{})
+	// Resolve the kernel source directory as an absolute path so that the -I flag
+	// passed to BCC/Clang is unambiguous regardless of the compiler's working directory.
+	kernelDir, err := filepath.Abs("./kernel")
+	if err != nil {
+		slog.Error("failed to resolve kernel dir", "error", err)
+		panic(err)
+	}
+
+	// Generate vmlinux.h from the running kernel's BTF data before BCC compiles module.cc.
+	// This is the CO-RE step: BCC/Clang uses the header for type-aware field relocations.
+	if err = generateVmlinuxHeader(kernelDir); err != nil {
+		slog.Error("failed to generate vmlinux.h", "error", err)
+		panic(err)
+	}
+
+	// Pass -I<kernelDir> so that `#include "vmlinux.h"` in module.cc resolves correctly.
+	// BCC compiles from a source string (no file path context), so the include directory
+	// must be supplied explicitly.
+	bpfModule := bcc.NewModule(source, []string{"-I" + kernelDir})
 	if bpfModule == nil {
 		slog.Error("failed to create BPF module", "error", "module is nil")
 		panic("bpf module is nil")

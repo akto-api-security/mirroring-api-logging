@@ -1,9 +1,15 @@
-#include <bcc/proto.h>
-#include <linux/in6.h>
-#include <linux/net.h>
-#include <linux/socket.h>
-#include <net/inet_sock.h>
-#include <net/sock.h>
+// CO-RE: vmlinux.h provides all kernel types from BTF, replacing per-version kernel headers.
+#include "vmlinux.h"
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
+
+// AF_INET / AF_INET6 are preprocessor constants not captured by BTF, define them explicitly.
+#ifndef AF_INET
+#define AF_INET  2
+#endif
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
 
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
@@ -167,32 +173,29 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         bpf_trace_printk("sock alloc found, processing");
       }
         socketConn = true;
-        struct sock* sk = NULL;
-        bpf_probe_read_kernel(&sk, sizeof(sk),  &(args->sock_alloc_socket)->sk);
-        struct sock_common* sk_common = &sk->__sk_common;
-        uint16_t family = -1;
-        uint16_t rport = -1;
-        u32 ip = 0;
-        bpf_probe_read_kernel(&family, sizeof(family), &sk_common->skc_family);
-        bpf_probe_read_kernel(&rport, sizeof(rport), &sk_common->skc_dport);
-        bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
+        // CO-RE: resolve sock pointer and all sock_common fields without bpf_probe_read_kernel
+        // so that field offsets are relocated at load time from BTF data.
+        struct sock* sk = BPF_CORE_READ(args->sock_alloc_socket, sk);
+        uint16_t family = BPF_CORE_READ(sk, __sk_common.skc_family);
+        uint16_t rport  = BPF_CORE_READ(sk, __sk_common.skc_dport);
+        lport = BPF_CORE_READ(sk, __sk_common.skc_num);
         conn_info.port = rport;
         if (family == AF_INET) {
           if (PRINT_BPF_LOGS){
             bpf_trace_printk("sock alloc found ipv4, processing");
           }
-          bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
-          bpf_probe_read_kernel(&(srcIp), sizeof(srcIp), &sk_common->skc_rcv_saddr);
+          conn_info.ip = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+          srcIp        = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
         } else if (family == AF_INET6) {
           if (PRINT_BPF_LOGS){
             bpf_trace_printk("sock alloc found ipv6, processing");
           }
-          struct in6_addr in_addr;
-          struct in6_addr in_addr_2;
-          bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
-          bpf_probe_read_kernel(&(in_addr_2), sizeof(in_addr_2), &sk_common->skc_v6_rcv_saddr);
+          struct in6_addr in_addr  = {};
+          struct in6_addr in_addr_2 = {};
+          BPF_CORE_READ_INTO(&in_addr,   sk, __sk_common.skc_v6_daddr);
+          BPF_CORE_READ_INTO(&in_addr_2, sk, __sk_common.skc_v6_rcv_saddr);
           conn_info.ip = (in_addr.s6_addr32)[3];
-          srcIp = (in_addr_2.s6_addr32)[3];
+          srcIp        = (in_addr_2.s6_addr32)[3];
         } else {
           return;
         }
@@ -543,9 +546,8 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
     if (accept_args != NULL) {
       if (accept_args->sock != NULL) {
         struct sock *sock = accept_args->sock;
-        struct socket *s;
-        bpf_probe_read_kernel(&(s), sizeof(s), &sock->sk_socket);
-        accept_args->sock_alloc_socket = s;
+        // CO-RE: resolve sk_socket offset from BTF instead of a manual bpf_probe_read_kernel.
+        accept_args->sock_alloc_socket = BPF_CORE_READ(sock, sk_socket);
       }
       process_syscall_accept(ctx, accept_args, id, true);
     }
@@ -1401,15 +1403,17 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
   }
 
   // Get fsbase from `struct task_struct`.
-  const struct task_struct* task_ptr = (struct task_struct*)bpf_get_current_task();
+  // CO-RE: use BPF_CORE_READ so that thread_struct field offsets (which vary across kernel
+  // versions) are resolved at load time from the running kernel's BTF data.
+  struct task_struct* task_ptr = (struct task_struct*)bpf_get_current_task();
   if (!task_ptr) {
     return 0;
   }
 
 #if defined(TARGET_ARCH_X86_64)
-  const void* fs_base = (void*)task_ptr->thread.fsbase;
+  const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.fsbase);
 #elif defined(TARGET_ARCH_AARCH64)
-  const void* fs_base = (void*)task_ptr->thread.uw.tp_value;
+  const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.uw.tp_value);
 #else
 #error Target architecture not supported
 #endif
