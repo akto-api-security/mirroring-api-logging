@@ -91,9 +91,9 @@ func main() {
 }
 
 func run() {
-	slog.Debug("Go version: %s\n", runtime.Version())
-	slog.Debug("runtime.NumCPU(): %d\n", runtime.NumCPU())
-	slog.Debug("runtime.GOMAXPROCS(0): %d \n", runtime.GOMAXPROCS(0))
+	slog.Debug("Go version", "version", runtime.Version())
+	slog.Debug("runtime.NumCPU()", "count", runtime.NumCPU())
+	slog.Debug("runtime.GOMAXPROCS(0)", "procs", runtime.GOMAXPROCS(0))
 
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
