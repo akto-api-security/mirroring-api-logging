@@ -90,23 +90,34 @@ export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
 echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
 
 # Set GOMAXPROCS based on AKTO_CPU_LIMIT (from Kubernetes resource limits)
-if [ -z "$AKTO_CPU_LIMIT" ]; then
-    # Fallback to default if not set
-    CPU_LIMIT=0.5
-    echo "AKTO_CPU_LIMIT not set, using default: ${CPU_LIMIT}"
-else
-    # AKTO_CPU_LIMIT comes in millicores (e.g., 500m), convert to CPU units
-    CPU_LIMIT=$(echo "$AKTO_CPU_LIMIT" | sed 's/m$//')
-    CPU_LIMIT=$(awk "BEGIN {printf \"%.3f\", $CPU_LIMIT / 1000}")
-    echo "Using AKTO_CPU_LIMIT from environment: ${AKTO_CPU_LIMIT} (${CPU_LIMIT} CPU units)"
-fi
+# Only set if GOMAXPROCS is not already set (allow Kubernetes to set it directly)
+if [ -z "$GOMAXPROCS" ]; then
+    if [ -z "$AKTO_CPU_LIMIT" ]; then
+        # Fallback to default if not set
+        CPU_LIMIT=0.5
+        echo "AKTO_CPU_LIMIT not set, using default: ${CPU_LIMIT}"
+    else
+        # AKTO_CPU_LIMIT can come as millicores (e.g., "500m") or whole numbers (e.g., "2")
+        if echo "$AKTO_CPU_LIMIT" | grep -q 'm$'; then
+            # Has 'm' suffix, it's in millicores - convert to CPU units
+            CPU_LIMIT=$(echo "$AKTO_CPU_LIMIT" | sed 's/m$//')
+            CPU_LIMIT=$(awk "BEGIN {printf \"%.3f\", $CPU_LIMIT / 1000}")
+        else
+            # No 'm' suffix, it's already in CPU units
+            CPU_LIMIT=$AKTO_CPU_LIMIT
+        fi
+        echo "Using AKTO_CPU_LIMIT from environment: ${AKTO_CPU_LIMIT} (${CPU_LIMIT} CPU units)"
+    fi
 
-GOMAXPROCS=$(awk "BEGIN {printf \"%.0f\", $CPU_LIMIT + 0.5}")
-if [ "$GOMAXPROCS" -lt 1 ]; then
-    GOMAXPROCS=1
+    GOMAXPROCS=$(awk "BEGIN {printf \"%.0f\", $CPU_LIMIT + 0.5}")
+    if [ "$GOMAXPROCS" -lt 1 ]; then
+        GOMAXPROCS=1
+    fi
+    export GOMAXPROCS
+    echo "Setting GOMAXPROCS to: ${GOMAXPROCS} (based on CPU_LIMIT=${CPU_LIMIT})"
+else
+    echo "GOMAXPROCS already set to: ${GOMAXPROCS} (from environment)"
 fi
-export GOMAXPROCS
-echo "Setting GOMAXPROCS to: ${GOMAXPROCS} (based on CPU_LIMIT=${CPU_LIMIT})"
 
 # Start memory monitoring in the background
 
