@@ -1,36 +1,67 @@
-# This is a basic workflow to help you get started with Actions
+# Build and push hello-world-server to ECR (and optionally DockerHub)
 
 name: CI
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the master branch
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
-      Tag: 
-        description: 'The tag for the Docker image.'
+      Tag:
+        description: "The tag for the Docker image."
         required: true
-        default: 'latest'
+        default: "latest"
       Environment:
-        description: 'The environment to deploy to.'
+        description: "The environment to deploy to."
         required: true
         type: choice
         options:
           - prod
           - staging
-        default: staging  
-      
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+        default: staging
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  build-aws:
+    name: Build and push to Amazon ECR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        if: ${{ github.event.inputs.Environment == 'prod' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        if: ${{ github.event.inputs.Environment == 'prod' }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: "true"
+          registry-type: public
+
+      - name: Build, tag, and push image to Amazon ECR
+        if: ${{ github.event.inputs.Environment == 'prod' }}
+        id: build-image-ecr
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REGISTRY_ALIAS: aktosecurity
+          IMAGE_NAME: hello-world-server
+          IMAGE_TAG: ${{ github.event.inputs.Tag || 'latest' }}
+        run: |
+          docker buildx create --use
+          docker buildx build --platform linux/arm64/v8,linux/amd64 \
+            -t $ECR_REGISTRY/$REGISTRY_ALIAS/$IMAGE_NAME:$IMAGE_TAG \
+            . --push
+          echo "image=$ECR_REGISTRY/$REGISTRY_ALIAS/$IMAGE_NAME:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  build-docker:
+    name: Build and push to DockerHub
     runs-on: ubuntu-22.04
 
     # Steps represent a sequence of tasks that will be executed as part of the job
