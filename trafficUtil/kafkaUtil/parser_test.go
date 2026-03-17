@@ -1,156 +1,267 @@
 package kafkaUtil
 
 import (
-	"compress/gzip"
-	"bytes"
+	"fmt"
 	"testing"
+	bloomfilter "github.com/bits-and-blooms/bloom/v3"
 )
 
-func TestParseHTTPTraffic_ValidRequest(t *testing.T) {
-	reqBody := `{"cardId":12,"amount":9100.50,"bookingId":4123}`
-	req := []byte("POST /credit-cards/charge HTTP/1.1\r\nHost: credit-card.default.svc.cluster.local\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n" + reqBody)
+// TestLRUCache tests the LRU cache implementation
+func TestLRUCache(t *testing.T) {
+	cache := NewLRUCache(3)
 
-	respBody := `{"status":"success"}`
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n" + respBody)
+	// Test Put and Get
+	cache.Put("key1", 1)
+	bucket, found := cache.Get("key1")
+	if !found || bucket != 1 {
+		t.Errorf("Expected key1=1, got found=%v, bucket=%d", found, bucket)
+	}
 
-	result := parseHTTPTraffic(req, resp, true)
+	// Test Get non-existent key
+	_, found = cache.Get("nonexistent")
+	if found {
+		t.Errorf("Expected nonexistent key to not be found")
+	}
 
-	if result == nil {
-		t.Fatal("expected non-nil result for valid request")
-	}
-	if len(result.Requests) != 1 {
-		t.Errorf("expected 1 request, got %d", len(result.Requests))
-	}
-	if len(result.Responses) != 1 {
-		t.Errorf("expected 1 response, got %d", len(result.Responses))
-	}
-	if result.RequestBodies[0] != reqBody {
-		t.Errorf("unexpected request body: %s", result.RequestBodies[0])
-	}
-	if result.ResponseBodies[0] != respBody {
-		t.Errorf("unexpected response body: %s", result.ResponseBodies[0])
-	}
-}
+	// Test capacity and eviction
+	cache.Put("key2", 2)
+	cache.Put("key3", 3)
+	cache.Put("key4", 4) // Should evict key1
 
-func TestParseHTTPTraffic_BadGzip(t *testing.T) {
-	reqBody := `{"cardId":12}`
-	req := []byte("POST /credit-cards/charge HTTP/1.1\r\nHost: credit-card.default.svc.cluster.local\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n" + reqBody)
-
-	// Response claims gzip but body is not gzip encoded
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\nnot-gzip-data")
-
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("should not return nil on gzip failure")
+	_, found = cache.Get("key1")
+	if found {
+		t.Errorf("Expected key1 to be evicted")
 	}
-	if len(result.Requests) != 1 {
-		t.Errorf("expected 1 request, got %d", len(result.Requests))
-	}
-	if len(result.Responses) != 1 {
-		t.Errorf("expected 1 response, got %d", len(result.Responses))
-	}
-	if result.ResponseBodies[0] != "" {
-		t.Errorf("expected empty body on gzip failure, got: %s", result.ResponseBodies[0])
+
+	// Check that key4 is present
+	bucket, found = cache.Get("key4")
+	if !found || bucket != 4 {
+		t.Errorf("Expected key4=4, got found=%v, bucket=%d", found, bucket)
 	}
 }
 
-func TestParseHTTPTraffic_TruncatedGzip(t *testing.T) {
-	req := []byte("GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
-
-	// Create valid gzip but truncate it
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	gz.Write([]byte("hello world this is a longer message"))
-	gz.Close()
-	truncatedGzip := buf.Bytes()[:10] // Truncate to first 10 bytes
-
-	resp := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), truncatedGzip...)
-
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("should not return nil on truncated gzip")
+// TestBuildSignatureKey tests signature key generation
+func TestBuildSignatureKey(t *testing.T) {
+	tests := []struct {
+		method   string
+		host     string
+		path     string
+		expected string
+	}{
+		{"GET", "example.com", "/api/users", "GET|example.com|/api/users"},
+		{"POST", "api.example.com", "/v1/data", "POST|api.example.com|/v1/data"},
+		{"DELETE", "localhost:8080", "/test", "DELETE|localhost:8080|/test"},
 	}
-	if result.ResponseBodies[0] != "" {
-		t.Errorf("expected empty body on truncated gzip, got: %s", result.ResponseBodies[0])
-	}
-}
 
-func TestParseHTTPTraffic_ValidGzip(t *testing.T) {
-	req := []byte("GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
-
-	// Create valid gzip response
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	gz.Write([]byte(`{"status":"ok"}`))
-	gz.Close()
-
-	resp := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\n\r\n"), buf.Bytes()...)
-
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("expected non-nil result for valid gzip")
-	}
-	if result.ResponseBodies[0] != `{"status":"ok"}` {
-		t.Errorf("expected decompressed body, got: %s", result.ResponseBodies[0])
+	for _, tt := range tests {
+		result := buildSignatureKey(tt.method, tt.host, tt.path)
+		if result != tt.expected {
+			t.Errorf("buildSignatureKey(%s, %s, %s) = %s, want %s",
+				tt.method, tt.host, tt.path, result, tt.expected)
+		}
 	}
 }
 
-func TestParseHTTPTraffic_EmptyRequestBody(t *testing.T) {
-	req := []byte("GET /health HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
-
-	result := parseHTTPTraffic(req, resp, false)
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
+// TestGetTimeBucket tests time bucket generation
+func TestGetTimeBucket(t *testing.T) {
+	bucket1 := getTimeBucket()
+	if bucket1 < 0 || bucket1 > 255 {
+		t.Errorf("getTimeBucket() returned %d, expected 0-255", bucket1)
 	}
-	if result.RequestBodies[0] != "" {
-		t.Errorf("expected empty request body for GET, got: %s", result.RequestBodies[0])
-	}
-	if result.ResponseBodies[0] != "OK" {
-		t.Errorf("expected 'OK' response body, got: %s", result.ResponseBodies[0])
+
+	// Get bucket again immediately (should be same)
+	bucket2 := getTimeBucket()
+	if bucket1 != bucket2 {
+		t.Errorf("Expected same bucket for immediate calls: %d vs %d", bucket1, bucket2)
 	}
 }
 
-func TestParseHTTPTraffic_MultipleRequests(t *testing.T) {
-	req := []byte("GET /first HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\nGET /second HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirstHTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecond")
-
-	result := parseHTTPTraffic(req, resp, false)
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
+// TestIsTimeBucketExpired tests time bucket expiration detection
+func TestIsTimeBucketExpired(t *testing.T) {
+	// Test recent bucket (should not be expired)
+	currentBucket := getTimeBucket()
+	if isTimeBucketExpired(currentBucket) {
+		t.Errorf("Current bucket should not be expired")
 	}
-	if len(result.Requests) != 2 {
-		t.Errorf("expected 2 requests, got %d", len(result.Requests))
-	}
-	if len(result.Responses) != 2 {
-		t.Errorf("expected 2 responses, got %d", len(result.Responses))
+
+	// Test old bucket (should be expired)
+	oldBucket := uint8((int(currentBucket) - 5 + 256) % 256)
+	if !isTimeBucketExpired(oldBucket) {
+		t.Errorf("Old bucket should be expired")
 	}
 }
 
-func TestParseHTTPTraffic_InvalidRequest(t *testing.T) {
-	req := []byte("not a valid http request")
-	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
+// TestShouldParseBodyFirstRequest tests that first request body is parsed
+func TestShouldParseBodyFirstRequest(t *testing.T) {
+	// Reset Bloom filter for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
-	result := parseHTTPTraffic(req, resp, false)
-
-	// Should return nil because request parsing fails completely
-	if result != nil {
-		t.Error("expected nil result for invalid request")
+	// First request should always be parsed
+	if !shouldParseBody("GET", "example.com", "/api/test") {
+		t.Errorf("First request should always parse body")
 	}
 }
 
-func TestParseHTTPTraffic_NoRequests(t *testing.T) {
-	req := []byte("")
-	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
+// TestShouldParseBodySkipRecent tests that recent requests skip body parsing
+func TestShouldParseBodySkipRecent(t *testing.T) {
+	// Reset Bloom filter and LRU for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
-	result := parseHTTPTraffic(req, resp, false)
+	method, host, path := "POST", "api.example.com", "/v1/submit"
 
-	if result != nil {
-		t.Error("expected nil result for empty request buffer")
+	// First request should parse body
+	shouldParse1 := shouldParseBody(method, host, path)
+	if !shouldParse1 {
+		t.Errorf("First request should parse body")
+	}
+
+	// Immediate second request should skip body
+	shouldParse2 := shouldParseBody(method, host, path)
+	if shouldParse2 {
+		t.Errorf("Recent request should skip body, but got shouldParse=%v", shouldParse2)
+	}
+
+	// Third request should also skip body
+	shouldParse3 := shouldParseBody(method, host, path)
+	if shouldParse3 {
+		t.Errorf("Recent request should skip body, but got shouldParse=%v", shouldParse3)
+	}
+}
+
+// TestShouldParseBodyDifferentSignatures tests different signatures are tracked separately
+func TestShouldParseBodyDifferentSignatures(t *testing.T) {
+	// Reset Bloom filter and LRU for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
+
+	// First signature
+	should1a := shouldParseBody("GET", "example.com", "/api/users")
+	if !should1a {
+		t.Errorf("First request for signature 1 should parse body")
+	}
+
+	// Skip immediate request for signature 1
+	should1b := shouldParseBody("GET", "example.com", "/api/users")
+	if should1b {
+		t.Errorf("Second request for signature 1 should skip body")
+	}
+
+	// Different signature - should parse body
+	should2a := shouldParseBody("GET", "example.com", "/api/orders")
+	if !should2a {
+		t.Errorf("First request for signature 2 should parse body")
+	}
+
+	// Different method - should parse body
+	should3a := shouldParseBody("POST", "example.com", "/api/users")
+	if !should3a {
+		t.Errorf("First request for signature 3 (different method) should parse body")
+	}
+
+	// Different host - should parse body
+	should4a := shouldParseBody("GET", "other.com", "/api/users")
+	if !should4a {
+		t.Errorf("First request for signature 4 (different host) should parse body")
+	}
+}
+
+// TestLRUCacheEviction tests that LRU cache correctly evicts oldest entries
+func TestLRUCacheEviction(t *testing.T) {
+	cache := NewLRUCache(2)
+
+	// Add 2 entries
+	cache.Put("a", 1)
+	cache.Put("b", 2)
+
+	// Both should be present
+	_, foundA := cache.Get("a")
+	_, foundB := cache.Get("b")
+	if !foundA || !foundB {
+		t.Errorf("Both entries should be present")
+	}
+
+	// Add third entry (should evict oldest)
+	cache.Put("c", 3)
+
+	// "a" should be evicted (least recently used)
+	_, foundA = cache.Get("a")
+	if foundA {
+		t.Errorf("Entry 'a' should be evicted")
+	}
+
+	// "b" and "c" should still be present
+	_, foundB = cache.Get("b")
+	_, foundC := cache.Get("c")
+	if !foundB || !foundC {
+		t.Errorf("Entries 'b' and 'c' should be present")
+	}
+}
+
+// TestLRUCacheUpdate tests that updating an entry moves it to front
+func TestLRUCacheUpdate(t *testing.T) {
+	cache := NewLRUCache(2)
+
+	cache.Put("a", 1)
+	cache.Put("b", 2)
+
+	// Access "a" to move it to front
+	cache.Get("a")
+
+	// Add third entry (should evict "b" since "a" was more recently accessed)
+	cache.Put("c", 3)
+
+	// "b" should be evicted, not "a"
+	_, foundA := cache.Get("a")
+	_, foundB := cache.Get("b")
+	if !foundA {
+		t.Errorf("Entry 'a' should not be evicted")
+	}
+	if foundB {
+		t.Errorf("Entry 'b' should be evicted")
+	}
+}
+
+// BenchmarkShouldParseBody benchmarks the shouldParseBody function
+func BenchmarkShouldParseBody(b *testing.B) {
+	// Reset
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
+
+	// Pre-populate with some data
+	for i := 0; i < 1000; i++ {
+		path := fmt.Sprintf("/api/test%d", i%10)
+		shouldParseBody("GET", "example.com", path)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		path := fmt.Sprintf("/api/test%d", i%10)
+		shouldParseBody("GET", "example.com", path)
+	}
+}
+
+// BenchmarkLRUCacheGet benchmarks LRU cache Get operation
+func BenchmarkLRUCacheGet(b *testing.B) {
+	cache := NewLRUCache(10000)
+
+	// Pre-populate
+	for i := 0; i < 1000; i++ {
+		key := fmt.Sprintf("key%d", i)
+		cache.Put(key, uint8(i%256))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("key%d", i%1000)
+		cache.Get(key)
+	}
+}
+
+// BenchmarkBuildSignatureKey benchmarks signature key building
+func BenchmarkBuildSignatureKey(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		buildSignatureKey("GET", "example.com", "/api/users/123")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	bloomfilter "github.com/bits-and-blooms/bloom/v3"
 )
 
 // TrafficContext holds metadata about the captured traffic.
@@ -43,6 +45,62 @@ type ParsedTraffic struct {
 	RequestBodies  []string
 	Responses      []http.Response
 	ResponseBodies []string
+}
+
+// LRUCache is a simple LRU cache for tracking recent request signatures
+type LRUCache struct {
+	capacity int
+	cache    map[string]*list.Element
+	list     *list.List
+	mu       sync.RWMutex
+}
+
+type lruEntry struct {
+	key        string
+	timeBucket uint8 // 0-255 representing time buckets
+}
+
+func NewLRUCache(capacity int) *LRUCache {
+	return &LRUCache{
+		capacity: capacity,
+		cache:    make(map[string]*list.Element),
+		list:     list.New(),
+	}
+}
+
+func (c *LRUCache) Get(key string) (uint8, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if elem, found := c.cache[key]; found {
+		c.list.MoveToFront(elem)
+		return elem.Value.(*lruEntry).timeBucket, true
+	}
+	return 0, false
+}
+
+func (c *LRUCache) Put(key string, timeBucket uint8) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, found := c.cache[key]; found {
+		c.list.MoveToFront(elem)
+		elem.Value.(*lruEntry).timeBucket = timeBucket
+		return
+	}
+
+	if c.list.Len() >= c.capacity {
+		// Evict oldest
+		oldest := c.list.Back()
+		if oldest != nil {
+			c.list.Remove(oldest)
+			delete(c.cache, oldest.Value.(*lruEntry).key)
+		}
+	}
+
+	entry := &lruEntry{key: key, timeBucket: timeBucket}
+	elem := c.list.PushFront(entry)
+	c.cache[key] = elem
 }
 
 // HeaderSet holds HTTP headers in both protobuf and string map formats.
@@ -250,7 +308,17 @@ var (
 	DebugStrings = []string{}
 
 	EventChanBuffSize = 100000
+
+	// Body parsing optimization variables
+	lruCache            *LRUCache
+	bodyParsingInterval = 10 * time.Minute
+	lruCacheCapacity    = 100000
+	bloomFilterCapacity = 1000000
+	bloomFilterFPRate   = 0.01
+	timeBucketDuration  = 10 * time.Minute
 )
+
+var bloomFilter *bloomfilter.BloomFilter
 
 const ONE_MINUTE = 60
 
@@ -258,6 +326,11 @@ func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
 	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
+	utils.InitVar("BODY_PARSING_INTERVAL_MINUTES", &bodyParsingInterval)
+	utils.InitVar("LRU_CACHE_CAPACITY", &lruCacheCapacity)
+	utils.InitVar("BLOOM_FILTER_CAPACITY", &bloomFilterCapacity)
+	utils.InitVar("BLOOM_FILTER_FP_RATE", &bloomFilterFPRate)
+
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
@@ -268,6 +341,21 @@ func init() {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
+
+	// Initialize Bloom Filter
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+
+	// Initialize LRU Cache
+	lruCache = NewLRUCache(lruCacheCapacity)
+
+	// Reset Bloom filter every 24 hours to prevent permanent false positives
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			bloomFilter.ClearAll()
+		}
+	}()
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
@@ -376,6 +464,78 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
+// getTimeBucket converts current time to a uint8 bucket (0-255)
+// Each bucket represents a 10-minute interval
+// Wraps around every ~42 hours (256 * 10 min)
+func getTimeBucket() uint8 {
+	minutes := time.Now().Unix() / int64(timeBucketDuration.Seconds())
+	return uint8(minutes % 256)
+}
+
+// isTimeBucketExpired checks if a time bucket is older than the interval
+// Accounts for wrap-around (255 -> 0)
+func isTimeBucketExpired(storedBucket uint8) bool {
+	currentBucket := getTimeBucket()
+
+	// Calculate difference accounting for wrap-around
+	var diff int
+	if currentBucket >= storedBucket {
+		diff = int(currentBucket) - int(storedBucket)
+	} else {
+		// Wrapped around: e.g., stored=250, current=5
+		diff = (256 - int(storedBucket)) + int(currentBucket)
+	}
+
+	// If diff >= 1, it's been at least 10 minutes
+	return diff >= 1
+}
+
+// buildSignatureKey creates a unique key from method, host, and path.
+// Format: "METHOD|HOST|PATH"
+// Uses strings.Builder for efficient concatenation.
+func buildSignatureKey(method, host, path string) string {
+	var sb strings.Builder
+	// Pre-allocate capacity: method(4) + host(20) + path(20) + separators(2) ≈ 46
+	sb.Grow(len(method) + len(host) + len(path) + 2)
+	sb.WriteString(method)
+	sb.WriteByte('|')
+	sb.WriteString(host)
+	sb.WriteByte('|')
+	sb.WriteString(path)
+	return sb.String()
+}
+
+// shouldParseBody returns true if body should be parsed for this request.
+// Uses Bloom Filter + LRU Cache for memory-efficient tracking.
+func shouldParseBody(method, host, path string) bool {
+	key := buildSignatureKey(method, host, path)
+
+	// Step 1: Check Bloom Filter (fast, probabilistic)
+	if !bloomFilter.TestString(key) {
+		// Definitely first time seeing this signature
+		bloomFilter.AddString(key)
+		lruCache.Put(key, getTimeBucket())
+		return true
+	}
+
+	// Step 2: Bloom filter says "maybe seen before" - check LRU for precise tracking
+	if timeBucket, found := lruCache.Get(key); found {
+		// Check if time bucket has expired
+		if isTimeBucketExpired(timeBucket) {
+			// More than 10 minutes since last parse
+			lruCache.Put(key, getTimeBucket())
+			return true
+		}
+		// Recently parsed, skip body
+		return false
+	}
+
+	// Step 3: In Bloom but not in LRU (evicted or false positive)
+	// Treat as new - parse body and add to LRU
+	lruCache.Put(key, getTimeBucket())
+	return true
+}
+
 // parseHTTPTraffic parses HTTP requests and responses from raw byte buffers.
 // Returns nil if parsing fails (errors are logged).
 func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTraffic {
@@ -383,6 +543,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	reader := bufio.NewReader(bytes.NewReader(reqBuffer))
 	requests := []http.Request{}
 	requestBodies := []string{}
+	parseBodyFlags := []bool{} // track which requests should have body parsed
 
 	for {
 		req, err := http.ReadRequest(reader)
@@ -392,15 +553,29 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			return nil
 		}
-		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+
+		// Determine if we should parse body for this request
+		parseBody := shouldParseBody(req.Method, req.Host, req.URL.Path)
+
+		var body []byte
+		if parseBody {
+			body, err = io.ReadAll(req.Body)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+				body = []byte{}
+			}
+		} else {
+			// Skip body parsing - MUST drain from bufio.Reader to avoid corrupting next request
+			io.Copy(io.Discard, req.Body)
 			body = []byte{}
+			// Inject discovery-only header in REQUEST
+			req.Header.Set("x-akto-discovery-only", "true")
 		}
+		req.Body.Close()
 
 		requests = append(requests, *req)
 		requestBodies = append(requestBodies, string(body))
+		parseBodyFlags = append(parseBodyFlags, parseBody)
 	}
 
 	if shouldPrint {
@@ -416,7 +591,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	responses := []http.Response{}
 	responseBodies := []string{}
 
-	for {
+	for i := 0; ; i++ {
 		resp, err := http.ReadResponse(reader, nil)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
@@ -425,33 +600,44 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 			return nil
 		}
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
+		var body []byte
+		// Only parse response body if we parsed the corresponding request body
+		shouldParseRespBody := i < len(parseBodyFlags) && parseBodyFlags[i]
+
+		if shouldParseRespBody {
+			body, err = io.ReadAll(resp.Body)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
+				body = []byte{}
+			}
+
+			// Handle gzip/deflate decompression
+			encoding := resp.Header["Content-Encoding"]
+			var r io.Reader
+			r = bytes.NewBuffer(body)
+			if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
+				r, err = gzip.NewReader(r)
+				if err != nil {
+					utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
+					body = []byte{}
+				}
+			}
+			if err == nil {
+				body, err = io.ReadAll(r)
+				if err != nil {
+					utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
+					body = []byte{}
+				}
+				if _, ok := r.(*gzip.Reader); ok {
+					r.(*gzip.Reader).Close()
+				}
+			}
+		} else {
+			// Skip response body - MUST drain from bufio.Reader
+			io.Copy(io.Discard, resp.Body)
 			body = []byte{}
 		}
-
-		// Handle gzip/deflate decompression
-		encoding := resp.Header["Content-Encoding"]
-		var r io.Reader
-		r = bytes.NewBuffer(body)
-		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
-			r, err = gzip.NewReader(r)
-			if err != nil {
-				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				body = []byte{}
-			}
-		}
-		if err == nil {
-			body, err = io.ReadAll(r)
-			if err != nil {
-				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
-				body = []byte{}
-			}
-			if _, ok := r.(*gzip.Reader); ok {
-				r.(*gzip.Reader).Close()
-			}
-		}
+		resp.Body.Close()
 
 		responses = append(responses, *resp)
 		responseBodies = append(responseBodies, string(body))
