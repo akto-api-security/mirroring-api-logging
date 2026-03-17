@@ -70,6 +70,16 @@ spec:
             # value:
           - name: CAPTURE_SSL
             value: "true"
+          - name: AKTO_MEM_LIMIT
+            valueFrom:
+              resourceFieldRef:
+                containerName: akto-ebpf
+                resource: limits.memory
+          - name: AKTO_CPU_LIMIT
+            valueFrom:
+              resourceFieldRef:
+                containerName: akto-ebpf
+                resource: limits.cpu
         securityContext:
           capabilities:
             add:

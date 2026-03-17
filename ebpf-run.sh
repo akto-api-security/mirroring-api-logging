@@ -49,8 +49,8 @@ if [[ "${ENABLE_LOGS}" == "false" ]]; then
     done &
 fi
 
-# 1. Check if MEM_LIMIT is provided as env variable
-if [ -z "$MEM_LIMIT" ]; then
+# 1. Check if AKTO_MEM_LIMIT is provided as env variable
+if [ -z "$AKTO_MEM_LIMIT" ]; then
     # Not provided, detect and read cgroup memory limits
     if [ -f /sys/fs/cgroup/memory.max ]; then
         # cgroup v2
@@ -75,11 +75,11 @@ if [ -z "$MEM_LIMIT" ]; then
     # 3. Convert the memory limit from bytes to MB (integer division)
     MEM_LIMIT_MB=$((MEM_LIMIT_BYTES / 1024 / 1024))
 else
-    # MEM_LIMIT provided as env variable, treat as MB
-    echo "Using MEM_LIMIT from environment variable: ${MEM_LIMIT} MB"
-    MEM_LIMIT_MB=$MEM_LIMIT
-    # Convert MB to bytes for calculations
-    MEM_LIMIT_BYTES=$((MEM_LIMIT * 1024 * 1024))
+    # AKTO_MEM_LIMIT provided as env variable, treat as bytes
+    echo "Using AKTO_MEM_LIMIT from environment variable: ${AKTO_MEM_LIMIT} bytes"
+    MEM_LIMIT_BYTES=$AKTO_MEM_LIMIT
+    # Convert bytes to MB for calculations
+    MEM_LIMIT_MB=$((AKTO_MEM_LIMIT / 1024 / 1024))
 fi
 
 echo "Using container memory limit: ${MEM_LIMIT_MB} MB"
@@ -89,8 +89,18 @@ GOMEMLIMIT_MB=$((MEM_LIMIT_MB * GOMEMLIMIT_PERCENT / 100))
 export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
 echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
 
-# Set GOMAXPROCS based on CPU_LIMIT (default 0.5 CPU units = 1 GOMAXPROCS)
-CPU_LIMIT=${CPU_LIMIT:-0.5}
+# Set GOMAXPROCS based on AKTO_CPU_LIMIT (from Kubernetes resource limits)
+if [ -z "$AKTO_CPU_LIMIT" ]; then
+    # Fallback to default if not set
+    CPU_LIMIT=0.5
+    echo "AKTO_CPU_LIMIT not set, using default: ${CPU_LIMIT}"
+else
+    # AKTO_CPU_LIMIT comes in millicores (e.g., 500m), convert to CPU units
+    CPU_LIMIT=$(echo "$AKTO_CPU_LIMIT" | sed 's/m$//')
+    CPU_LIMIT=$(awk "BEGIN {printf \"%.3f\", $CPU_LIMIT / 1000}")
+    echo "Using AKTO_CPU_LIMIT from environment: ${AKTO_CPU_LIMIT} (${CPU_LIMIT} CPU units)"
+fi
+
 GOMAXPROCS=$(awk "BEGIN {printf \"%.0f\", $CPU_LIMIT + 0.5}")
 if [ "$GOMAXPROCS" -lt 1 ]; then
     GOMAXPROCS=1
