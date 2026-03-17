@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,62 +44,6 @@ type ParsedTraffic struct {
 	RequestBodies  []string
 	Responses      []http.Response
 	ResponseBodies []string
-}
-
-// LRUCache is a simple LRU cache for tracking recent request signatures
-type LRUCache struct {
-	capacity int
-	cache    map[string]*list.Element
-	list     *list.List
-	mu       sync.RWMutex
-}
-
-type lruEntry struct {
-	key        string
-	timeBucket uint8 // 0-255 representing time buckets
-}
-
-func NewLRUCache(capacity int) *LRUCache {
-	return &LRUCache{
-		capacity: capacity,
-		cache:    make(map[string]*list.Element),
-		list:     list.New(),
-	}
-}
-
-func (c *LRUCache) Get(key string) (uint8, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if elem, found := c.cache[key]; found {
-		c.list.MoveToFront(elem)
-		return elem.Value.(*lruEntry).timeBucket, true
-	}
-	return 0, false
-}
-
-func (c *LRUCache) Put(key string, timeBucket uint8) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if elem, found := c.cache[key]; found {
-		c.list.MoveToFront(elem)
-		elem.Value.(*lruEntry).timeBucket = timeBucket
-		return
-	}
-
-	if c.list.Len() >= c.capacity {
-		// Evict oldest
-		oldest := c.list.Back()
-		if oldest != nil {
-			c.list.Remove(oldest)
-			delete(c.cache, oldest.Value.(*lruEntry).key)
-		}
-	}
-
-	entry := &lruEntry{key: key, timeBucket: timeBucket}
-	elem := c.list.PushFront(entry)
-	c.cache[key] = elem
 }
 
 // HeaderSet holds HTTP headers in both protobuf and string map formats.
@@ -462,47 +405,6 @@ func checkAndUpdateBandwidthProcessed(sampleSize int) bool {
 func IsValidMethod(method string) bool {
 	_, ok := methodsMap[strings.ToUpper(method)]
 	return ok
-}
-
-// getTimeBucket converts current time to a uint8 bucket (0-255)
-// Each bucket represents a 10-minute interval
-// Wraps around every ~42 hours (256 * 10 min)
-func getTimeBucket() uint8 {
-	minutes := time.Now().Unix() / int64(timeBucketDuration.Seconds())
-	return uint8(minutes % 256)
-}
-
-// isTimeBucketExpired checks if a time bucket is older than the interval
-// Accounts for wrap-around (255 -> 0)
-func isTimeBucketExpired(storedBucket uint8) bool {
-	currentBucket := getTimeBucket()
-
-	// Calculate difference accounting for wrap-around
-	var diff int
-	if currentBucket >= storedBucket {
-		diff = int(currentBucket) - int(storedBucket)
-	} else {
-		// Wrapped around: e.g., stored=250, current=5
-		diff = (256 - int(storedBucket)) + int(currentBucket)
-	}
-
-	// If diff >= 1, it's been at least 10 minutes
-	return diff >= 1
-}
-
-// buildSignatureKey creates a unique key from method, host, and path.
-// Format: "METHOD|HOST|PATH"
-// Uses strings.Builder for efficient concatenation.
-func buildSignatureKey(method, host, path string) string {
-	var sb strings.Builder
-	// Pre-allocate capacity: method(4) + host(20) + path(20) + separators(2) ≈ 46
-	sb.Grow(len(method) + len(host) + len(path) + 2)
-	sb.WriteString(method)
-	sb.WriteByte('|')
-	sb.WriteString(host)
-	sb.WriteByte('|')
-	sb.WriteString(path)
-	return sb.String()
 }
 
 // shouldParseBody returns true if body should be parsed for this request.
