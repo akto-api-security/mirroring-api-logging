@@ -1,8 +1,8 @@
 module github.com/akto-api-security/mirroring-api-logging/ebpf
 
-go 1.24.0
+go 1.25.8
 
-toolchain go1.24.3
+toolchain go1.25.8
 
 require (
 	github.com/akto-api-security/mirroring-api-logging/trafficUtil v0.0.0-00010101000000-000000000000

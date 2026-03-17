@@ -89,27 +89,6 @@ GOMEMLIMIT_MB=$((MEM_LIMIT_MB * GOMEMLIMIT_PERCENT / 100))
 export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
 echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
 
-# Set GOMAXPROCS based on AKTO_CPU_LIMIT
-if [ -n "$AKTO_CPU_LIMIT" ]; then
-    # AKTO_CPU_LIMIT can be in millicores (e.g., "500m") or whole number (e.g., "1", "2")
-    if echo "$AKTO_CPU_LIMIT" | grep -q 'm$'; then
-        # Has 'm' suffix, it's in millicores - convert to CPU units
-        CPU_VALUE=$(echo "$AKTO_CPU_LIMIT" | sed 's/m$//')
-        GOMAXPROCS=$(awk "BEGIN {printf \"%.0f\", $CPU_VALUE / 1000}")
-    else
-        # No 'm' suffix, it's already in CPU units - use as is
-        GOMAXPROCS=$AKTO_CPU_LIMIT
-    fi
-    
-    # Ensure minimum of 1
-    if [ "$GOMAXPROCS" -lt 1 ]; then
-        GOMAXPROCS=1
-    fi
-    
-    export GOMAXPROCS
-    echo "Setting GOMAXPROCS to: ${GOMAXPROCS} (from AKTO_CPU_LIMIT=${AKTO_CPU_LIMIT})"
-fi
-
 # Start memory monitoring in the background
 
 while :
