@@ -91,10 +91,10 @@ func main() {
 }
 
 func run() {
-	slog.Info("=== Go CPU Benchmark Debug ===\n")
-	slog.Info("Go version: %s\n", runtime.Version())
-	slog.Info("runtime.NumCPU(): %d (physical CPUs visible to OS)\n", runtime.NumCPU())
-	slog.Info("runtime.GOMAXPROCS(0): %d \n", runtime.GOMAXPROCS(0))
+	slog.Debug("=== Go CPU Benchmark Debug ===\n")
+	slog.Debug("Go version: %s\n", runtime.Version())
+	slog.Debug("runtime.NumCPU(): %d (physical CPUs visible to OS)\n", runtime.NumCPU())
+	slog.Debug("runtime.GOMAXPROCS(0): %d \n", runtime.GOMAXPROCS(0))
 
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
