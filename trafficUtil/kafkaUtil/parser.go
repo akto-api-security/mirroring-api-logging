@@ -254,11 +254,11 @@ var (
 
 	// Body parsing optimization variables
 	lruCache            *LRUCache
-	bodyParsingInterval = 10 * time.Minute
 	lruCacheCapacity    = 100000
 	bloomFilterCapacity = 1000000
 	bloomFilterFPRate   = 0.01
 	timeBucketDuration  = 10 * time.Minute
+	memSamplingEnabled = false
 )
 
 var bloomFilter *bloomfilter.BloomFilter
@@ -269,10 +269,11 @@ func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
 	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
-	utils.InitVar("BODY_PARSING_INTERVAL_MINUTES", &bodyParsingInterval)
+	utils.InitVar("AKTO_MEM_SAMPLING_ENABLED", &memSamplingEnabled)
 	utils.InitVar("LRU_CACHE_CAPACITY", &lruCacheCapacity)
 	utils.InitVar("BLOOM_FILTER_CAPACITY", &bloomFilterCapacity)
 	utils.InitVar("BLOOM_FILTER_FP_RATE", &bloomFilterFPRate)
+	utils.InitVar("TIME_BUCKET_DURATION_MINUTES", &timeBucketDuration)
 
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
@@ -285,20 +286,22 @@ func init() {
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
 
-	// Initialize Bloom Filter
-	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	// Only initialize Bloom Filter and LRU Cache if memory sampling is enabled
+	if memSamplingEnabled {
+		bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
 
-	// Initialize LRU Cache
-	lruCache = NewLRUCache(lruCacheCapacity)
+		// Initialize LRU Cache
+		lruCache = NewLRUCache(lruCacheCapacity)
 
-	// Reset Bloom filter every 24 hours to prevent permanent false positives
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			bloomFilter.ClearAll()
-		}
-	}()
+		// Reset Bloom filter every 24 hours to prevent permanent false positives
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				bloomFilter.ClearAll()
+			}
+		}()
+	}
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
@@ -409,7 +412,13 @@ func IsValidMethod(method string) bool {
 
 // shouldParseBody returns true if body should be parsed for this request.
 // Uses Bloom Filter + LRU Cache for memory-efficient tracking.
+// Only applies optimization if memSamplingEnabled is true.
 func shouldParseBody(method, host, path string) bool {
+	// Only apply body parsing optimization if memory sampling is enabled
+	if !memSamplingEnabled {
+		return true 
+	}
+
 	key := buildSignatureKey(method, host, path)
 
 	// Step 1: Check Bloom Filter (fast, probabilistic)
