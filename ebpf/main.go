@@ -91,6 +91,10 @@ func main() {
 }
 
 func run() {
+	fmt.Printf("=== Go CPU Benchmark Debug ===\n")
+	fmt.Printf("Go version: %s\n", runtime.Version())
+	fmt.Printf("runtime.NumCPU(): %d (physical CPUs visible to OS)\n", runtime.NumCPU())
+	fmt.Printf("runtime.GOMAXPROCS(0): %d (container-aware, should respect k8s limits)\n", runtime.GOMAXPROCS(0))
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
 		slog.Error("failed to read kernel module", "error", err)
