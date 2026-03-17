@@ -480,7 +480,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 			io.Copy(io.Discard, req.Body)
 			body = []byte{}
 			// Inject discovery-only header in REQUEST
-			req.Header.Set("x-akto-discovery-only", "true")
+			req.Header.Set("x-akto-skip-sample-update", "true")
 		}
 		req.Body.Close()
 
