@@ -6,7 +6,7 @@ RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 FROM base AS builder
 
 # Install Go based on architecture
-ARG GO_VERSION=1.25.8
+ARG GO_VERSION=1.26.0
 ARG TARGETARCH
 
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
