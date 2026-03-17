@@ -89,6 +89,15 @@ GOMEMLIMIT_MB=$((MEM_LIMIT_MB * GOMEMLIMIT_PERCENT / 100))
 export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
 echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
 
+# Set GOMAXPROCS based on CPU_LIMIT (default 0.5 CPU units = 1 GOMAXPROCS)
+CPU_LIMIT=${CPU_LIMIT:-0.5}
+GOMAXPROCS=$(awk "BEGIN {printf \"%.0f\", $CPU_LIMIT + 0.5}")
+if [ "$GOMAXPROCS" -lt 1 ]; then
+    GOMAXPROCS=1
+fi
+export GOMAXPROCS
+echo "Setting GOMAXPROCS to: ${GOMAXPROCS} (based on CPU_LIMIT=${CPU_LIMIT})"
+
 # Start memory monitoring in the background
 
 while :
