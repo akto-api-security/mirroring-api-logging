@@ -6,9 +6,18 @@
  */
 
 #include "vmlinux.h"
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+
+/*
+ * Some vmlinux.h builds drag in kernel helper headers that define bpf_printk.
+ * Undefine it so bpf_helpers.h can install its modern variadic version cleanly.
+ */
+#ifdef bpf_printk
+#undef bpf_printk
+#endif
 
 /* AF_INET / AF_INET6 are preprocessor constants not captured by BTF. */
 #ifndef AF_INET
@@ -17,6 +26,13 @@
 #ifndef AF_INET6
 #define AF_INET6 10
 #endif
+
+
+#define bpf_printk(fmt, ...) \
+({ \
+    char ____fmt[] = fmt; \
+    bpf_trace_printk(____fmt, sizeof(____fmt), ##__VA_ARGS__); \
+})
 
 /*
  * Map bpf2go target defines to the custom arch macros used throughout this file.
@@ -97,10 +113,64 @@ struct conn_info_t {
     u32 writeEventsCount;
 };
 
-union sockaddr_t {
-    struct sockaddr sa;
-    struct sockaddr_in in4;
-    struct sockaddr_in6 in6;
+/*
+ * Plain-C mirrors of the sockaddr family structs.
+ *
+ * These are intentionally NOT from vmlinux.h so they carry no
+ * preserve_access_index attribute and generate zero CO-RE relocations.
+ * All sockaddr data arrives from user space and is read with
+ * bpf_probe_read_user(), so we never need CO-RE portability for these.
+ */
+struct akto_sockaddr {
+    unsigned short sa_family;
+    char           sa_data[14];
+};
+
+struct akto_sockaddr_in {
+    unsigned short sin_family;
+    unsigned short sin_port;    /* big-endian */
+    unsigned int   sin_addr;    /* s_addr, big-endian */
+    unsigned char  _pad[8];
+};
+
+struct akto_sockaddr_in6 {
+    unsigned short sin6_family;
+    unsigned short sin6_port;   /* big-endian */
+    unsigned int   sin6_flowinfo;
+    unsigned char  sin6_addr[16];
+    unsigned int   sin6_scope_id;
+};
+
+/*
+ * Plain-C mirror of the first fields of struct socket (no preserve_access_index).
+ *
+ * CO-RE relocations for struct socket::sk consistently fail at load time with
+ * 0xbad2310 ("bad relo") on the target kernel even though bpf_core_field_exists()
+ * returns 1 for the same field.  This is the same class of issue described in
+ * cilium/ebpf#1031: the FIELD_EXISTS and FIELD_BYTE_OFFSET relocation types are
+ * resolved from different BTF scopes (vmlinux vs. module BTF), producing an
+ * inconsistent result.
+ *
+ * The fix follows the same pattern used for akto_sockaddr*: define a plain C
+ * struct that mirrors the kernel layout and use bpf_probe_read_kernel — no CO-RE
+ * relocation is generated, the compile-time offsetof() is correct because
+ * vmlinux.h is regenerated from the *running* kernel by `make generate`.
+ *
+ * Layout of struct socket (stable across all 64-bit kernels we support):
+ *   offset  0: state (socket_state enum, 4 bytes)
+ *   offset  4: type  (short, 2 bytes)
+ *   offset  6: _pad  (2 bytes)
+ *   offset  8: flags (unsigned long, 8 bytes)
+ *   offset 16: file  (struct file *, 8 bytes)
+ *   offset 24: sk    (struct sock  *, 8 bytes)  ← what we need
+ */
+struct akto_socket {
+    __u32  state;
+    __u16  type;
+    __u16  _pad;
+    __u64  flags;
+    __u64  file;
+    __u64  sk;    /* struct sock * stored as u64 to avoid CO-RE on the pointer type */
 };
 
 struct accept_args_t {
@@ -372,11 +442,11 @@ struct {
  * Helper functions
  * =================================================================== */
 
-static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
+static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
-static __inline void process_syscall_accept(struct pt_regs* ctx,
+static __always_inline void process_syscall_accept(struct pt_regs* ctx,
                                              const struct accept_args_t* args,
                                              u64 id, bool isConnect) {
     int ret_fd = PT_REGS_RC(ctx);
@@ -385,7 +455,6 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
         return;
     }
 
-    union sockaddr_t* addr = NULL;
     struct conn_info_t conn_info = {};
     bool socketConn = false;
 
@@ -394,52 +463,77 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
 
     if (args->addr != NULL) {
         if (print_bpf_logs) {
-            bpf_trace_printk("sock addr found, processing");
+            bpf_printk("sock addr found, processing");
         }
-        addr = (union sockaddr_t*)args->addr;
     }
 
     if (args->sock_alloc_socket != NULL) {
         if (print_bpf_logs) {
-            bpf_trace_printk("sock alloc found, processing");
+            bpf_printk("sock alloc found, processing");
         }
         socketConn = true;
-        /* CO-RE: resolve sock pointer and all sock_common fields from BTF. */
-        struct sock* sk = BPF_CORE_READ(args->sock_alloc_socket, sk);
+
+        /*
+         * Read struct sock* from struct socket without CO-RE.
+         * BPF_CORE_READ on struct socket::sk fails with 0xbad2310 on this
+         * kernel even though bpf_core_field_exists() says the field exists —
+         * the two relocation types use different BTF resolution paths (cilium/ebpf#1031).
+         * akto_socket mirrors the stable first-field layout; no CO-RE is generated.
+         */
+        struct akto_socket sock_hdr = {};
+        if (bpf_probe_read_kernel(&sock_hdr, sizeof(sock_hdr),
+                                  args->sock_alloc_socket) != 0)
+            return;
+        struct sock* sk = (struct sock *)(unsigned long)sock_hdr.sk;
+
+        if (sk == NULL)
+            return;
+
+        /* struct sock CO-RE relocations succeed normally on this kernel. */
         uint16_t family = BPF_CORE_READ(sk, __sk_common.skc_family);
-        uint16_t rport  = BPF_CORE_READ(sk, __sk_common.skc_dport);
-        lport = BPF_CORE_READ(sk, __sk_common.skc_num);
-        conn_info.port = rport;
+        conn_info.port  = BPF_CORE_READ(sk, __sk_common.skc_dport);
+        lport           = BPF_CORE_READ(sk, __sk_common.skc_num);
+
         if (family == AF_INET) {
             if (print_bpf_logs) {
-                bpf_trace_printk("sock alloc found ipv4, processing");
+                bpf_printk("sock alloc found ipv4, processing");
             }
             conn_info.ip = BPF_CORE_READ(sk, __sk_common.skc_daddr);
             srcIp        = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
         } else if (family == AF_INET6) {
             if (print_bpf_logs) {
-                bpf_trace_printk("sock alloc found ipv6, processing");
+                bpf_printk("sock alloc found ipv6, processing");
             }
-            struct in6_addr in_addr   = {};
-            struct in6_addr in_addr_2 = {};
-            BPF_CORE_READ_INTO(&in_addr,   sk, __sk_common.skc_v6_daddr);
-            BPF_CORE_READ_INTO(&in_addr_2, sk, __sk_common.skc_v6_rcv_saddr);
-            conn_info.ip = (in_addr.s6_addr32)[3];
-            srcIp        = (in_addr_2.s6_addr32)[3];
+            __u8 v6_dst[16] = {};
+            __u8 v6_src[16] = {};
+            if (bpf_core_field_exists(sk->__sk_common.skc_v6_daddr)) {
+                bpf_core_read(v6_dst, sizeof(v6_dst),
+                              &sk->__sk_common.skc_v6_daddr);
+                bpf_core_read(v6_src, sizeof(v6_src),
+                              &sk->__sk_common.skc_v6_rcv_saddr);
+            }
+            conn_info.ip = ((__u32 *)v6_dst)[3];
+            srcIp        = ((__u32 *)v6_src)[3];
         } else {
             return;
         }
         if (print_bpf_logs) {
-            bpf_trace_printk("sock alloc found, processed: id: %llu ip: %llu port: %d",
+            bpf_printk("sock alloc found, processed: id: %llu ip: %llu port: %d",
                              id, conn_info.ip, conn_info.port);
-            bpf_trace_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d",
+            bpf_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d",
                              id, srcIp, lport);
         }
     }
 
     if (!socketConn) {
-        if (addr == NULL ||
-            (addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6)) {
+        if (args->addr == NULL) {
+            return;
+        }
+        struct akto_sockaddr sa_hdr = {};
+        if (bpf_probe_read_user(&sa_hdr, sizeof(sa_hdr), args->addr) != 0) {
+            return;
+        }
+        if (sa_hdr.sa_family != AF_INET && sa_hdr.sa_family != AF_INET6) {
             return;
         }
     }
@@ -453,16 +547,20 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
     conn_info.conn_start_ns = bpf_ktime_get_ns();
 
     if (!socketConn) {
-        if (addr->sa.sa_family == AF_INET) {
-            struct sockaddr_in* sock_in = (struct sockaddr_in*)addr;
-            conn_info.port = sock_in->sin_port;
-            struct in_addr* in_addr_ptr = &(sock_in->sin_addr);
-            conn_info.ip = in_addr_ptr->s_addr;
+        struct akto_sockaddr sa_hdr = {};
+        bpf_probe_read_user(&sa_hdr, sizeof(sa_hdr), args->addr);
+        if (sa_hdr.sa_family == AF_INET) {
+            struct akto_sockaddr_in sin = {};
+            if (bpf_probe_read_user(&sin, sizeof(sin), args->addr) == 0) {
+                conn_info.port = sin.sin_port;
+                conn_info.ip   = sin.sin_addr;
+            }
         } else {
-            struct sockaddr_in6* sock_in = (struct sockaddr_in6*)addr;
-            conn_info.port = sock_in->sin6_port;
-            struct in6_addr* in_addr_ptr = &(sock_in->sin6_addr);
-            conn_info.ip = (in_addr_ptr->s6_addr32)[3];
+            struct akto_sockaddr_in6 sin6 = {};
+            if (bpf_probe_read_user(&sin6, sizeof(sin6), args->addr) == 0) {
+                conn_info.port = sin6.sin6_port;
+                conn_info.ip   = ((__u32 *)sin6.sin6_addr)[3];
+            }
         }
     }
 
@@ -487,14 +585,14 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
             int reset = 0;
             bpf_map_update_elem(&conn_counter, &idx, &reset, BPF_ANY);
             if (print_bpf_logs) {
-                bpf_trace_printk("conn_info_counter reset: %d", *counter);
+                bpf_printk("conn_info_counter reset: %d", *counter);
             }
         }
         (*counter)++;
         val     = *counter;
         val_key = (u32)val;
         if (print_bpf_logs) {
-            bpf_trace_printk("conn_info_counter found: %d", val);
+            bpf_printk("conn_info_counter found: %d", val);
         }
         u64* curr = bpf_map_lookup_elem(&conn_info_map_keys, &val_key);
         if (curr != NULL) {
@@ -503,7 +601,7 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
             if (old_conn_info != NULL) {
                 bpf_map_delete_elem(&conn_info_map, &curVal);
                 if (print_bpf_logs) {
-                    bpf_trace_printk("conn_info_counter deleting: %d", curVal);
+                    bpf_printk("conn_info_counter deleting: %d", curVal);
                 }
             }
         }
@@ -522,11 +620,11 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
     socket_open_event.src_port      = lport;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("accept call: %llu %d %d",
+        bpf_printk("accept call: %llu %d %d",
                          socket_open_event.id, socket_open_event.fd, isConnect);
-        bpf_trace_printk("accept call 2: %llu %d %d",
+        bpf_printk("accept call 2: %llu %d %d",
                          socket_open_event.ip, socket_open_event.port, isConnect);
-        bpf_trace_printk("accept call 3: %llu %d %d",
+        bpf_printk("accept call 3: %llu %d %d",
                          socket_open_event.src_ip, socket_open_event.src_port, isConnect);
     }
 
@@ -535,7 +633,7 @@ static __inline void process_syscall_accept(struct pt_regs* ctx,
                           &socket_open_event, sizeof(struct socket_open_event_t));
 }
 
-static __inline void process_syscall_close(struct pt_regs* ctx,
+static __always_inline void process_syscall_close(struct pt_regs* ctx,
                                             const struct close_args_t* args,
                                             u64 id) {
     int ret_val = PT_REGS_RC(ctx);
@@ -568,7 +666,7 @@ static __inline void process_syscall_close(struct pt_regs* ctx,
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
-static __inline void process_syscall_data(struct pt_regs* ctx,
+static __always_inline void process_syscall_data(struct pt_regs* ctx,
                                            const struct data_args_t* args,
                                            u64 id, bool is_send, bool ssl) {
     int bytes_exchanged = PT_REGS_RC(ctx);
@@ -582,7 +680,7 @@ static __inline void process_syscall_data(struct pt_regs* ctx,
     }
 
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL data 1 %d", id);
+        bpf_printk("SSL data 1 %d", id);
     }
     if (args->fd < 0) {
         return;
@@ -591,14 +689,14 @@ static __inline void process_syscall_data(struct pt_regs* ctx,
     u32 tgid = id >> 32;
     u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
+        bpf_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
     }
     struct conn_info_t* conn_info = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
     if (conn_info == NULL) {
         return;
     }
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
+        bpf_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
     }
 
     if (conn_info->ssl != ssl) {
@@ -606,7 +704,7 @@ static __inline void process_syscall_data(struct pt_regs* ctx,
     }
 
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
+        bpf_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
     }
 
     u32 kZero = 0;
@@ -634,24 +732,16 @@ static __inline void process_syscall_data(struct pt_regs* ctx,
             break;
         }
         size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1))
-                              ? MAX_MSG_SIZE : bytes_remaining;
-
-        size_t current_size_minus_1 = current_size - 1;
-        asm volatile("" : "+r"(current_size_minus_1) :);
-        current_size = current_size_minus_1 + 1;
+                              ? MAX_MSG_SIZE : (size_t)bytes_remaining;
 
         if (current_size > MAX_MSG_SIZE) {
             current_size = MAX_MSG_SIZE;
         }
 
-        if (current_size_minus_1 < MAX_MSG_SIZE) {
+        if (current_size > 0 && current_size <= MAX_MSG_SIZE) {
             bpf_probe_read(&socket_data_event->msg, current_size,
                            args->buf + bytes_sent);
             size_to_save = current_size;
-        } else if (current_size_minus_1 < 0x7fffffff) {
-            bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE,
-                           args->buf + bytes_sent);
-            size_to_save = MAX_MSG_SIZE;
         }
 
         if (is_send) {
@@ -664,12 +754,11 @@ static __inline void process_syscall_data(struct pt_regs* ctx,
         socket_data_event->readEventsCount  = conn_info->readEventsCount;
 
         if (print_bpf_logs) {
-            bpf_trace_printk("pid: %d conn-id:%d, fd: %d",
+            bpf_printk("pid: %d conn-id:%d, fd: %d",
                              id, conn_info->id, conn_info->fd);
-            bpf_trace_printk("current_size: %d i:%d, bytes_exchanged: %d",
+            bpf_printk("current_size: %d i:%d, bytes_exchanged: %d",
                              current_size, i, bytes_exchanged);
-            unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
-            bpf_trace_printk("rwc: %d tdfd: %llu data: %s",
+            bpf_printk("rwc: %d tdfd: %llu data: %s",
                              (socket_data_event->readEventsCount * 10000 +
                               socket_data_event->writeEventsCount % 10000),
                              tgid_fd, socket_data_event->msg);
@@ -685,7 +774,7 @@ static __inline void process_syscall_data(struct pt_regs* ctx,
     }
 }
 
-static __inline void process_syscall_data_vecs(struct pt_regs* ctx,
+static __always_inline void process_syscall_data_vecs(struct pt_regs* ctx,
                                                 struct data_args_t* args,
                                                 u64 id, bool is_send) {
     int bytes_sent  = 0;
@@ -718,7 +807,7 @@ int syscall__probe_entry_accept(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_accept: pid: %d", id);
+        bpf_printk("syscall__probe_entry_accept: pid: %d", id);
     }
 
     struct sockaddr* addr = (struct sockaddr*)PT_REGS_PARM2_CORE_SYSCALL(ctx);
@@ -735,7 +824,7 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_accept: pid: %d", id);
+        bpf_printk("syscall__probe_ret_accept: pid: %d", id);
     }
 
     struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
@@ -753,7 +842,7 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
     uint64_t id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_ret_sock_alloc: pid: %d", id);
+        bpf_printk("probe_ret_sock_alloc: pid: %d", id);
     }
 
     struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
@@ -773,7 +862,7 @@ int probe_entry_tcp_connect(struct pt_regs* ctx) {
     uint64_t id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tcp_connect: pid: %d", id);
+        bpf_printk("probe_entry_tcp_connect: pid: %d", id);
     }
 
     struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
@@ -793,7 +882,7 @@ int syscall__probe_entry_connect(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_connect: pid: %d", id);
+        bpf_printk("syscall__probe_entry_connect: pid: %d", id);
     }
 
     int sockfd          = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -812,7 +901,7 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_connect: pid: %d", id);
+        bpf_printk("syscall__probe_ret_connect: pid: %d", id);
     }
 
     struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
@@ -820,7 +909,6 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
     if (accept_args != NULL) {
         if (accept_args->sock != NULL) {
             struct sock* sock = accept_args->sock;
-            /* CO-RE: resolve sk_socket offset from BTF. */
             accept_args->sock_alloc_socket = BPF_CORE_READ(sock, sk_socket);
         }
         process_syscall_accept(ctx, accept_args, id, true);
@@ -835,7 +923,7 @@ int syscall__probe_entry_close(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_close: pid: %d", id);
+        bpf_printk("syscall__probe_entry_close: pid: %d", id);
     }
 
     int fd = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -852,7 +940,7 @@ int syscall__probe_ret_close(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_close: pid: %d", id);
+        bpf_printk("syscall__probe_ret_close: pid: %d", id);
     }
 
     struct close_args_t* close_args = bpf_map_lookup_elem(&active_close_args_map, &id);
@@ -870,7 +958,7 @@ int syscall__probe_entry_writev(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_writev: pid: %d", id);
+        bpf_printk("syscall__probe_entry_writev: pid: %d", id);
     }
 
     int fd                  = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -898,13 +986,13 @@ int syscall__probe_ret_writev(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_writev: pid: %d", id);
+        bpf_printk("syscall__probe_ret_writev: pid: %d", id);
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
     if (write_args != NULL && write_args->sock_event) {
         if (print_bpf_logs) {
-            bpf_trace_printk("syscall__probe_ret_writev data process: pid: %d", id);
+            bpf_printk("syscall__probe_ret_writev data process: pid: %d", id);
         }
         process_syscall_data_vecs(ctx, write_args, id, true);
     }
@@ -922,13 +1010,18 @@ int syscall__probe_entry_sendmsg(struct pt_regs* ctx) {
 
     if (msghdr != NULL) {
         if (print_bpf_logs) {
-            bpf_trace_printk("syscall__probe_entry_sendmsg: pid: %d", id);
+            bpf_printk("syscall__probe_entry_sendmsg: pid: %d", id);
+        }
+
+        struct user_msghdr msghdr_copy = {};
+        if (bpf_probe_read_user(&msghdr_copy, sizeof(msghdr_copy), msghdr) != 0) {
+            return 0;
         }
 
         struct data_args_t write_args = {};
         write_args.fd        = fd;
-        write_args.iov       = msghdr->msg_iov;
-        write_args.iovlen    = msghdr->msg_iovlen;
+        write_args.iov       = msghdr_copy.msg_iov;
+        write_args.iovlen    = msghdr_copy.msg_iovlen;
         write_args.source_fn = kSyscallSendMsg;
         bpf_map_update_elem(&active_write_args_map, &id, &write_args, BPF_ANY);
     }
@@ -941,7 +1034,7 @@ int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_sendmsg: pid: %d", id);
+        bpf_printk("syscall__probe_ret_sendmsg: pid: %d", id);
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
@@ -958,7 +1051,7 @@ int syscall__probe_entry_readv(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_readv: pid: %d", id);
+        bpf_printk("syscall__probe_entry_readv: pid: %d", id);
     }
 
     int fd             = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -986,7 +1079,7 @@ int syscall__probe_ret_readv(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_readv: pid: %d", id);
+        bpf_printk("syscall__probe_ret_readv: pid: %d", id);
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1008,10 +1101,10 @@ int syscall__probe_entry_recvfrom(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* read_args_1 = bpf_map_lookup_elem(&active_read_args_map, &id);
         if (read_args_1 != NULL) {
-            bpf_trace_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : %d",
+            bpf_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : %d",
                              id, fd, read_args_1->fd);
         } else {
-            bpf_trace_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : NULL",
+            bpf_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : NULL",
                              id, fd);
         }
     }
@@ -1030,7 +1123,7 @@ int syscall__probe_ret_recvfrom(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_recvfrom: pid: %d", id);
+        bpf_printk("syscall__probe_ret_recvfrom: pid: %d", id);
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1053,10 +1146,10 @@ int syscall__probe_entry_sendto(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* write_args_1 = bpf_map_lookup_elem(&active_write_args_map, &id);
         if (write_args_1 != NULL) {
-            bpf_trace_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : %d",
+            bpf_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : %d",
                              id, fd, write_args_1->fd);
         } else {
-            bpf_trace_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : NULL",
+            bpf_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : NULL",
                              id, fd);
         }
     }
@@ -1075,7 +1168,7 @@ int syscall__probe_ret_sendto(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_sendto: pid: %d", id);
+        bpf_printk("syscall__probe_ret_sendto: pid: %d", id);
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
@@ -1093,7 +1186,7 @@ int syscall__probe_entry_recv(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_recv: pid: %d", id);
+        bpf_printk("syscall__probe_entry_recv: pid: %d", id);
     }
 
     int fd    = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -1113,7 +1206,7 @@ int syscall__probe_ret_recv(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_recv: pid: %d", id);
+        bpf_printk("syscall__probe_ret_recv: pid: %d", id);
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1136,10 +1229,10 @@ int syscall__probe_entry_read(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* read_args_1 = bpf_map_lookup_elem(&active_read_args_map, &id);
         if (read_args_1 != NULL) {
-            bpf_trace_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : %d",
+            bpf_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : %d",
                              id, fd, read_args_1->fd);
         } else {
-            bpf_trace_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : NULL",
+            bpf_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : NULL",
                              id, fd);
         }
     }
@@ -1164,7 +1257,7 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_read: pid: %d", id);
+        bpf_printk("syscall__probe_ret_read: pid: %d", id);
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1186,13 +1279,18 @@ int syscall__probe_entry_recvmsg(struct pt_regs* ctx) {
 
     if (msghdr != NULL) {
         if (print_bpf_logs) {
-            bpf_trace_printk("syscall__probe_entry_recvmsg: pid: %d", id);
+            bpf_printk("syscall__probe_entry_recvmsg: pid: %d", id);
+        }
+
+        struct user_msghdr msghdr_copy = {};
+        if (bpf_probe_read_user(&msghdr_copy, sizeof(msghdr_copy), msghdr) != 0) {
+            return 0;
         }
 
         struct data_args_t read_args = {};
         read_args.fd        = fd;
-        read_args.iov       = msghdr->msg_iov;
-        read_args.iovlen    = msghdr->msg_iovlen;
+        read_args.iov       = msghdr_copy.msg_iov;
+        read_args.iovlen    = msghdr_copy.msg_iovlen;
         read_args.source_fn = kSyscallRecvMsg;
         bpf_map_update_elem(&active_read_args_map, &id, &read_args, BPF_ANY);
     }
@@ -1205,7 +1303,7 @@ int syscall__probe_ret_recvmsg(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_recvmsg: pid: %d", id);
+        bpf_printk("syscall__probe_ret_recvmsg: pid: %d", id);
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1223,7 +1321,7 @@ int syscall__probe_entry_send(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_send: pid: %d", id);
+        bpf_printk("syscall__probe_entry_send: pid: %d", id);
     }
 
     int fd    = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -1243,7 +1341,7 @@ int syscall__probe_ret_send(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_ret_send: pid: %d", id);
+        bpf_printk("syscall__probe_ret_send: pid: %d", id);
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
@@ -1261,7 +1359,7 @@ int syscall__probe_entry_write(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("syscall__probe_entry_write: pid: %d", id);
+        bpf_printk("syscall__probe_entry_write: pid: %d", id);
     }
 
     int fd    = (int)PT_REGS_PARM1_CORE_SYSCALL(ctx);
@@ -1288,10 +1386,10 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* write_args_1 = bpf_map_lookup_elem(&active_write_args_map, &id);
         if (write_args_1 != NULL) {
-            bpf_trace_printk("syscall__probe_ret_write: pid: %llu write args : %d",
+            bpf_printk("syscall__probe_ret_write: pid: %llu write args : %d",
                              id, write_args_1->fd);
         } else {
-            bpf_trace_printk("syscall__probe_ret_write: pid: %llu write args : NULL", id);
+            bpf_printk("syscall__probe_ret_write: pid: %llu write args : NULL", id);
         }
     }
 
@@ -1299,7 +1397,7 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
 
     if (write_args != NULL && write_args->sock_event) {
         if (print_bpf_logs) {
-            bpf_trace_printk("syscall__probe_ret_write data process: pid: %d", id);
+            bpf_printk("syscall__probe_ret_write data process: pid: %d", id);
         }
         process_syscall_data(ctx, write_args, id, true, false);
     }
@@ -1313,7 +1411,7 @@ int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_security_socket_sendmsg: pid: %d", id);
+        bpf_printk("probe_entry_security_socket_sendmsg: pid: %d", id);
     }
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
     if (write_args != NULL) {
@@ -1327,7 +1425,7 @@ int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_security_socket_recvmsg: pid: %d", id);
+        bpf_printk("probe_entry_security_socket_recvmsg: pid: %d", id);
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1342,7 +1440,7 @@ int probe_entry_setsockopt(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_setsockopt: pid: %d", id);
+        bpf_printk("probe_entry_setsockopt: pid: %d", id);
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
@@ -1363,7 +1461,7 @@ int probe_entry_setsockopt(struct pt_regs* ctx) {
 
 static u32 get_fd(void* ssl, int sslVersion, bool rw) {
     int32_t SSL_rbio_offset;
-    int32_t RBIO_num_offset;
+    int32_t RBIO_num_offset = 0;
 
     SSL_rbio_offset = 16;
     switch (sslVersion) {
@@ -1390,7 +1488,7 @@ static u32 get_fd(void* ssl, int sslVersion, bool rw) {
     bpf_probe_read_user(&rbio_num, sizeof(rbio_num), rbio_ptr + RBIO_num_offset);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL fd offset: %d %d %d", rbio_num,
+        bpf_printk("SSL fd offset: %d %d %d", rbio_num,
                          SSL_rbio_offset, RBIO_num_offset);
     }
     return rbio_num;
@@ -1399,14 +1497,14 @@ static u32 get_fd(void* ssl, int sslVersion, bool rw) {
 static void set_conn_as_ssl(u32 tgid, u32 fd) {
     u64 tgid_fd = gen_tgid_fd(tgid, fd);
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL tgid: %d", tgid_fd);
+        bpf_printk("SSL tgid: %d", tgid_fd);
     }
     struct conn_info_t* conn_info = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
     if (conn_info == NULL) {
         return;
     }
     if (print_bpf_logs) {
-        bpf_trace_printk("SSL marking ssl tgid: %d", tgid_fd);
+        bpf_printk("SSL marking ssl tgid: %d", tgid_fd);
     }
     conn_info->ssl = true;
 }
@@ -1421,7 +1519,7 @@ static void probe_entry_SSL_write_core(struct pt_regs* ctx, void* ssl, void* buf
     u32 tgid = id >> 32;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_write_core: pid: %d %d %d", id, tgid, fd);
+        bpf_printk("probe_entry_SSL_write_core: pid: %d %d %d", id, tgid, fd);
     }
 
     char* bufc = (char*)buf;
@@ -1438,7 +1536,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_write_1_0, void* ssl, void* buf, int num) {
     u32 fd = get_fd(ssl, 1, false);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_write_1_0: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_write_1_0: fd: %d", fd);
     }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1448,7 +1546,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_write_1_1, void* ssl, void* buf, int num) {
     u32 fd = get_fd(ssl, 2, false);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_write_1_1: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_write_1_1: fd: %d", fd);
     }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1458,7 +1556,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_write_3_0, void* ssl, void* buf, int num) {
     u32 fd = get_fd(ssl, 3, false);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_write_3_0: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_write_3_0: fd: %d", fd);
     }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1503,7 +1601,7 @@ int BPF_UPROBE(probe_entry_SSL_write, void* ssl, void* buf, int num) {
         }
     }
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_write: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_write: fd: %d", fd);
     }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1513,7 +1611,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_write_boring, void* ssl, void* buf, int num) {
     u32 fd = get_fd(ssl, 4, false);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_write_boring: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_write_boring: fd: %d", fd);
     }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1524,7 +1622,7 @@ int probe_ret_SSL_write(struct pt_regs* ctx) {
     uint64_t id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_ret_SSL_write: pid: %d", id);
+        bpf_printk("probe_ret_SSL_write: pid: %d", id);
     }
 
     const struct data_args_t* write_args = bpf_map_lookup_elem(&active_ssl_write_args_map, &id);
@@ -1542,7 +1640,7 @@ static void probe_entry_SSL_read_core(struct pt_regs* ctx, void* ssl, void* buf,
     u32 tgid = id >> 32;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_read_core: pid: %d %d %d", id, tgid, fd);
+        bpf_printk("probe_entry_SSL_read_core: pid: %d %d %d", id, tgid, fd);
     }
 
     char* bufc = (char*)buf;
@@ -1559,7 +1657,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_read_1_0, void* ssl, void* buf, int num) {
     int32_t fd = get_fd(ssl, 1, true);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_read_1_0: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_read_1_0: fd: %d", fd);
     }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1569,7 +1667,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_read_1_1, void* ssl, void* buf, int num) {
     int32_t fd = get_fd(ssl, 2, true);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_read_1_1: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_read_1_1: fd: %d", fd);
     }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1579,7 +1677,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_read_3_0, void* ssl, void* buf, int num) {
     int32_t fd = get_fd(ssl, 3, true);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_read_3_0: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_read_3_0: fd: %d", fd);
     }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1623,7 +1721,7 @@ int BPF_UPROBE(probe_entry_SSL_read, void* ssl, void* buf, int num) {
         }
     }
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_read: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_read: fd: %d", fd);
     }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1633,7 +1731,7 @@ SEC("uprobe")
 int BPF_UPROBE(probe_entry_SSL_read_boring, void* ssl, void* buf, int num) {
     int32_t fd = get_fd(ssl, 4, true);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_SSL_read_boring: fd: %d", fd);
+        bpf_printk("probe_entry_SSL_read_boring: fd: %d", fd);
     }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
     return 0;
@@ -1644,7 +1742,7 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
     uint64_t id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_ret_SSL_read: pid: %d", id);
+        bpf_printk("probe_ret_SSL_read: pid: %d", id);
     }
 
     const struct data_args_t* read_args = bpf_map_lookup_elem(&active_ssl_read_args_map, &id);
@@ -1660,7 +1758,7 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
  * Go TLS probes
  * =================================================================== */
 
-static __inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
+static __always_inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
     uint32_t kZero = 0;
     struct go_regabi_regs* regs_heap_var = bpf_map_lookup_elem(&regs_heap, &kZero);
     if (regs_heap_var == NULL) {
@@ -1720,7 +1818,7 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
     return goid;
 }
 
-static __inline void assign_arg(void* arg, size_t arg_size, struct location_t loc,
+static __always_inline void assign_arg(void* arg, size_t arg_size, struct location_t loc,
                                  const void* sp, uint64_t* regs) {
     if (loc.type == kLocationTypeStack) {
         bpf_probe_read_user(arg, arg_size, sp + loc.offset);
@@ -1731,7 +1829,7 @@ static __inline void assign_arg(void* arg, size_t arg_size, struct location_t lo
     }
 }
 
-static __inline int32_t get_fd_from_conn_intf_core(struct go_interface conn_intf,
+static __always_inline int32_t get_fd_from_conn_intf_core(struct go_interface conn_intf,
                                                     const struct go_symaddrs_t* symaddrs) {
     bpf_probe_read(&conn_intf, sizeof(conn_intf),
                    conn_intf.ptr + symaddrs->TLSConnOffset);
@@ -1761,7 +1859,7 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tls_conn_write 1 %lu %llu",
+        bpf_printk("probe_entry_tls_conn_write 1 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -1777,7 +1875,7 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tls_conn_write 2 %lu %llu",
+        bpf_printk("probe_entry_tls_conn_write 2 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -1790,13 +1888,13 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
     bpf_map_update_elem(&active_tls_conn_op_map, &tgid_goid, &args, BPF_ANY);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tls_conn_write 3 %lu %llu",
+        bpf_printk("probe_entry_tls_conn_write 3 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
     return 0;
 }
 
-static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64_t id,
+static __always_inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64_t id,
                                                       uint32_t tgid,
                                                       struct go_tls_conn_args* args) {
     struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
@@ -1817,7 +1915,7 @@ static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64
     assign_arg(&retval1, sizeof(retval1), symaddrs->WriteRet1Loc, sp, regs);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_write 2.1 %llu %lu", id, tgid);
+        bpf_printk("probe_return_tls_conn_write 2.1 %llu %lu", id, tgid);
     }
 
     if (retval1.ptr != 0) {
@@ -1831,12 +1929,12 @@ static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64
     u32 fdu = (u32)fd;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("TLS : %lu", fdu);
+        bpf_printk("TLS : %lu", fdu);
     }
 
     set_conn_as_ssl(tgid, fdu);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_write 2.2 %llu %lu", id, tgid);
+        bpf_printk("probe_return_tls_conn_write 2.2 %llu %lu", id, tgid);
     }
 
     struct data_args_t data_args;
@@ -1847,7 +1945,7 @@ static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64
     process_syscall_data(ctx, &data_args, id, true, true);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_write 2.3 %llu %lu", id, tgid);
+        bpf_printk("probe_return_tls_conn_write 2.3 %llu %lu", id, tgid);
     }
 
     return 0;
@@ -1867,7 +1965,7 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_write 1 %lu %llu",
+        bpf_printk("probe_return_tls_conn_write 1 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -1877,7 +1975,7 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_write 2 %lu %llu",
+        bpf_printk("probe_return_tls_conn_write 2 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -1886,7 +1984,7 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
     bpf_map_delete_elem(&active_tls_conn_op_map, &tgid_goid);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_write 3 %lu %llu",
+        bpf_printk("probe_return_tls_conn_write 3 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
     return 0;
@@ -1906,7 +2004,7 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tls_conn_read 1 %lu %llu",
+        bpf_printk("probe_entry_tls_conn_read 1 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -1922,7 +2020,7 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tls_conn_read 2 %lu %llu",
+        bpf_printk("probe_entry_tls_conn_read 2 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -1935,14 +2033,14 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
     bpf_map_update_elem(&active_tls_conn_op_map, &tgid_goid, &args, BPF_ANY);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_entry_tls_conn_read 3 %lu %llu",
+        bpf_printk("probe_entry_tls_conn_read 3 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
     return 0;
 }
 
-static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_t id,
+static __always_inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_t id,
                                                      uint32_t tgid,
                                                      struct go_tls_conn_args* args) {
     struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
@@ -1963,7 +2061,7 @@ static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_
     assign_arg(&retval1, sizeof(retval1), symaddrs->ReadRet1Loc, sp, regs);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_read 2.1 %llu %lu", id, tgid);
+        bpf_printk("probe_return_tls_conn_read 2.1 %llu %lu", id, tgid);
     }
 
     if (retval1.ptr != 0) {
@@ -1977,12 +2075,12 @@ static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_
     u32 fdu = (u32)fd;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("TLS : %lu", fdu);
+        bpf_printk("TLS : %lu", fdu);
     }
 
     set_conn_as_ssl(tgid, fdu);
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_read 2.2 %llu %lu", id, tgid);
+        bpf_printk("probe_return_tls_conn_read 2.2 %llu %lu", id, tgid);
     }
 
     struct data_args_t data_args;
@@ -1993,7 +2091,7 @@ static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_
     process_syscall_data(ctx, &data_args, id, false, true);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_read 2.3 %llu %lu", id, tgid);
+        bpf_printk("probe_return_tls_conn_read 2.3 %llu %lu", id, tgid);
     }
 
     return 0;
@@ -2013,7 +2111,7 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_read 1 %lu %llu",
+        bpf_printk("probe_return_tls_conn_read 1 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -2023,7 +2121,7 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_read 2 %lu %llu",
+        bpf_printk("probe_return_tls_conn_read 2 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
@@ -2032,7 +2130,7 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
     bpf_map_delete_elem(&active_tls_conn_op_map, &tgid_goid);
 
     if (print_bpf_logs) {
-        bpf_trace_printk("probe_return_tls_conn_read 3 %lu %llu",
+        bpf_printk("probe_return_tls_conn_read 3 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
     return 0;
