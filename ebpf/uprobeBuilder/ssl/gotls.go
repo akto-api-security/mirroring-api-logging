@@ -8,7 +8,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/elf"
-	"github.com/iovisor/gobpf/bcc"
+	"github.com/cilium/ebpf"
 )
 
 var (
@@ -23,7 +23,7 @@ var (
 	goTLSRuntimeG        = "runtime.g"
 )
 
-func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, error) {
+func TryGoTLSProbes(pid int32, m map[string]bool, coll *ebpf.Collection) (bool, error) {
 
 	symLinkHostPath, err := GetExeSymLinkHostPath(pid)
 	if err != nil {
@@ -88,10 +88,10 @@ func TryGoTLSProbes(pid int32, m map[string]bool, bpfModule *bcc.Module) (bool, 
 	}
 
 	slog.Debug("Attaching on", "path", symLinkHostPath)
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.GoTlsHooks); err != nil {
+	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsHooks); err != nil {
 		slog.Error("failed to attach Go TLS uprobe", "error", err)
 	}
-	if err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, bpfModule, bpfwrapper.GoTlsRetHooks); err != nil {
+	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsRetHooks); err != nil {
 		slog.Error("failed to attach Go TLS uretprobe", "error", err)
 	}
 	return true, nil

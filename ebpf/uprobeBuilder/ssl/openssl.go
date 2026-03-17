@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/iovisor/gobpf/bcc"
+	"github.com/cilium/ebpf"
 )
 
 var (
@@ -21,7 +21,7 @@ var (
 	openSSLVersionRegex = regexp.MustCompile(`^OpenSSL\s+(?P<Major>\d)\.(?P<Minor>\d)\.(?P<Fix>\d+)\w?`)
 )
 
-func TryOpensslProbes(m map[string]bool, bpfModule *bcc.Module) (bool, error) {
+func TryOpensslProbes(m map[string]bool, coll *ebpf.Collection) (bool, error) {
 
 	var libCryptoPath, libSslPath string
 	modules, err := FindModules(m, LibCryptoName, LibSslName)
@@ -55,23 +55,20 @@ func TryOpensslProbes(m map[string]bool, bpfModule *bcc.Module) (bool, error) {
 	slog.Debug("Attaching on", "path", libSslPath)
 	switch addresses.version {
 	case V_1_0:
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_1_0); err != nil {
+		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_1_0); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
-		break
 	case V_1_1:
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_1_1); err != nil {
+		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_1_1); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
-		break
 	case V_3_0:
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_3_0); err != nil {
+		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_3_0); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
-		if err := bpfwrapper.AttachUprobes(libSslPath, -1, bpfModule, bpfwrapper.SslHooks_3_0_ex); err != nil {
+		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_3_0_ex); err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
-		break
 	}
 
 	return true, nil

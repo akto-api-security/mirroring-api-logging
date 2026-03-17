@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/host"
-	"github.com/iovisor/gobpf/bcc"
+	"github.com/cilium/ebpf"
 )
 
 func FindModules(modules map[string]bool, names ...string) (map[string]string, error) {
@@ -54,65 +54,64 @@ const (
 )
 
 var (
-	goSymAddrsTable   = &bcc.Table{}
-	nodeSymAddrsTable = &bcc.Table{}
+	goSymAddrsMap   *ebpf.Map
+	nodeSymAddrsMap *ebpf.Map
 )
 
-func InitMaps(bpfModule *bcc.Module) {
-	goSymAddrsTable = bcc.NewTable(bpfModule.TableId("go_symaddrs_table"), bpfModule)
-	nodeSymAddrsTable = bcc.NewTable(bpfModule.TableId("node_tlswrap_symaddrs_map"), bpfModule)
+// InitMaps retrieves the BPF maps needed for symbol address tables from the loaded collection.
+func InitMaps(coll *ebpf.Collection) {
+	goSymAddrsMap = coll.Maps["go_symaddrs_table"]
+	nodeSymAddrsMap = coll.Maps["node_tlswrap_symaddrs_map"]
 }
 
-func getBccTable(addrType ProbeType) (*bcc.Table, error) {
+func getEbpfMap(addrType ProbeType) (*ebpf.Map, error) {
 	switch addrType {
 	case GoTLS:
-		return goSymAddrsTable, nil
+		return goSymAddrsMap, nil
 	case Node:
-		return nodeSymAddrsTable, nil
+		return nodeSymAddrsMap, nil
 	}
-	return nil, fmt.Errorf("no table found")
+	return nil, fmt.Errorf("no map found for probe type %d", addrType)
 }
 
 func updateBpfMap(addrType ProbeType, pid int32, symAddrsGo *GoTLSSymbolAddress, symAddrsNode *NodeTLSSymbolAddress) error {
-	var asByteSlice []byte = make([]byte, 0)
+	m, err := getEbpfMap(addrType)
+	if err != nil {
+		return fmt.Errorf("updateBpfMap: %v", err)
+	}
+	if m == nil {
+		return fmt.Errorf("updateBpfMap: map is nil for probe type %d", addrType)
+	}
+
+	key := uint32(pid)
+
 	switch addrType {
 	case GoTLS:
-		asByteSlice = (*(*[szGoTls]byte)(unsafe.Pointer(symAddrsGo)))[:]
+		slog.Debug("byte arr", "byteSlice", (*(*[szGoTls]byte)(unsafe.Pointer(symAddrsGo)))[:])
+		if err := m.Put(key, symAddrsGo); err != nil {
+			return fmt.Errorf("updateBpfMap Put key %v failed: %v", pid, err)
+		}
 	case Node:
-		asByteSlice = (*(*[szNodeTls]byte)(unsafe.Pointer(symAddrsNode)))[:]
-	}
-	slog.Debug("byte arr", "byteSlice", asByteSlice)
-
-	table, err := getBccTable(addrType)
-	if err != nil {
-		return fmt.Errorf("updateBpfMap table error key %v failed: %v", pid, err)
-	}
-	key := fmt.Sprint(uint32(pid))
-	keyByte, err := table.KeyStrToBytes(key)
-	if err != nil {
-		return fmt.Errorf("updateBpfMap KeyStrToBytes error key %v failed: %v", pid, err)
-	}
-
-	slog.Debug("key arr", "key", key, "keyByte", keyByte)
-
-	if err := table.Set(keyByte, asByteSlice); err != nil {
-		return fmt.Errorf("table.Set key %v failed: %v", pid, err)
+		slog.Debug("byte arr", "byteSlice", (*(*[szNodeTls]byte)(unsafe.Pointer(symAddrsNode)))[:])
+		if err := m.Put(key, symAddrsNode); err != nil {
+			return fmt.Errorf("updateBpfMap Put key %v failed: %v", pid, err)
+		}
 	}
 	return nil
 }
 
 func DeletePidFromBPFMap(addrType ProbeType, pid int32) error {
-	table, err := getBccTable(addrType)
+	m, err := getEbpfMap(addrType)
 	if err != nil {
-		return fmt.Errorf("DeletePidFromBPFMap table error key %v failed: %v", pid, err)
+		return fmt.Errorf("DeletePidFromBPFMap: %v", err)
 	}
-	key := fmt.Sprint(uint32(pid))
-	keyByte, err := table.KeyStrToBytes(key)
-	if err != nil {
-		return fmt.Errorf("DeletePidFromBPFMap KeyStrToBytes error key %v failed: %v", pid, err)
+	if m == nil {
+		return fmt.Errorf("DeletePidFromBPFMap: map is nil for probe type %d", addrType)
 	}
-	if err := table.Delete(keyByte); err != nil {
-		return fmt.Errorf("DeletePidFromBPFMap table.Delete key %v failed: %v", pid, err)
+
+	key := uint32(pid)
+	if err := m.Delete(key); err != nil {
+		return fmt.Errorf("DeletePidFromBPFMap Delete key %v failed: %v", pid, err)
 	}
 	return nil
 }

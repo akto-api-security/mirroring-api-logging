@@ -4,22 +4,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"runtime/pprof"
-	"strconv"
-	"sync"
-
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
-	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
-
-	"github.com/iovisor/gobpf/bcc"
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -34,78 +28,26 @@ import (
 
 var source string = ""
 
-func replaceBpfChunkSizeMacros() {
-	chunkSizeLimit := 4
-	trafficUtils.InitVar("BPF_CHUNK_SIZE_LIMIT", &chunkSizeLimit)
-	source = strings.Replace(source, "CHUNK_SIZE_LIMIT", strconv.Itoa(chunkSizeLimit), -1)
-}
-
-func replaceBpfLogsMacros() {
-
-	printBpfLogsEnv := os.Getenv("PRINT_BPF_LOGS")
-	printBpfLogs := "false"
-	if len(printBpfLogsEnv) > 0 && strings.EqualFold(printBpfLogsEnv, "true") {
-		printBpfLogs = "true"
+func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
+	printBpfLogs := false
+	if v := os.Getenv("PRINT_BPF_LOGS"); strings.EqualFold(v, "true") {
+		printBpfLogs = true
 	}
-
-	source = strings.Replace(source, "PRINT_BPF_LOGS", printBpfLogs, -1)
+	if v, ok := spec.Variables["print_bpf_logs"]; ok {
+		if err := v.Set(printBpfLogs); err != nil {
+			slog.Warn("failed to set print_bpf_logs variable", "error", err)
+		}
+	}
 }
 
-func replaceMaxConnectionMapSize() {
+func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 	maxConnectionSizeMapSize := 131072
 	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
-	maxConnectionSizeMapSizeStr := strconv.Itoa(maxConnectionSizeMapSize)
-	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
-}
-
-func replaceArchType() {
-	archStr := "TARGET_ARCH_X86_64"
-	if isArmArch() {
-		archStr = "TARGET_ARCH_AARCH64"
+	for _, mapName := range []string{"conn_info_map", "conn_info_map_keys"} {
+		if m, ok := spec.Maps[mapName]; ok {
+			m.MaxEntries = uint32(maxConnectionSizeMapSize)
+		}
 	}
-	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
-}
-
-func isArmArch() bool {
-	arch := runtime.GOARCH
-	trafficUtils.PrintLog("arch type detected", "arch", arch)
-	if strings.Contains(arch, "arm") {
-		return true
-	}
-	return false
-}
-
-func isAmdArch() bool {
-	arch := runtime.GOARCH
-	trafficUtils.PrintLog("arch type detected", "arch", arch)
-	if strings.Contains(arch, "amd") {
-		return true
-	}
-	return false
-}
-
-// generateVmlinuxHeader uses bpftool to dump the running kernel's BTF type information
-// into a vmlinux.h file that the BCC/Clang compiler can consume via CO-RE.
-// The kernel must be built with CONFIG_DEBUG_INFO_BTF=y (standard on all major distros ≥5.4).
-func generateVmlinuxHeader(kernelDir string) error {
-	const btfPath = "/sys/kernel/btf/vmlinux"
-	if _, err := os.Stat(btfPath); os.IsNotExist(err) {
-		return fmt.Errorf("BTF file not found at %s (kernel needs CONFIG_DEBUG_INFO_BTF=y): %w", btfPath, err)
-	}
-
-	vmlinuxPath := filepath.Join(kernelDir, "vmlinux.h")
-	cmd := exec.Command("bpftool", "btf", "dump", "file", btfPath, "format", "c")
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("bpftool failed to generate vmlinux.h: %w", err)
-	}
-
-	if err := os.WriteFile(vmlinuxPath, output, 0644); err != nil {
-		return fmt.Errorf("failed to write vmlinux.h to %s: %w", vmlinuxPath, err)
-	}
-
-	slog.Info("vmlinux.h generated from running kernel BTF", "path", vmlinuxPath)
-	return nil
 }
 
 func main() {
@@ -117,45 +59,53 @@ func main() {
 }
 
 func run() {
-	byteString, err := os.ReadFile("./kernel/module.cc")
-	if err != nil {
-		slog.Error("failed to read kernel module", "error", err)
-		panic(err)
-	}
-	source = string(byteString)
-
-	replaceBpfLogsMacros()
-	replaceBpfChunkSizeMacros()
-	replaceMaxConnectionMapSize()
-	replaceArchType()
-
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
-	// Resolve the kernel source directory as an absolute path so that the -I flag
-	// passed to BCC/Clang is unambiguous regardless of the compiler's working directory.
-	kernelDir, err := filepath.Abs("./kernel")
+	// -----------------------------------------------------------------------
+	// Load the pre-compiled BPF object.
+	//
+	// The object file is produced by `make generate` (bpftool + clang) and must
+	// exist before the Go binary is started.  Its path can be overridden via the
+	// BPF_OBJ_PATH environment variable for packaging / testing convenience.
+	// -----------------------------------------------------------------------
+	bpfObjPath := "./kernel/module.bpf.o"
+	if v := os.Getenv("BPF_OBJ_PATH"); v != "" {
+		bpfObjPath = v
+	}
+	// Resolve to an absolute path so error messages are unambiguous.
+	if abs, err := filepath.Abs(bpfObjPath); err == nil {
+		bpfObjPath = abs
+	}
+
+	spec, err := ebpf.LoadCollectionSpec(bpfObjPath)
 	if err != nil {
-		slog.Error("failed to resolve kernel dir", "error", err)
+		slog.Error("failed to load BPF collection spec", "path", bpfObjPath, "error", err)
 		panic(err)
 	}
 
-	// Generate vmlinux.h from the running kernel's BTF data before BCC compiles module.cc.
-	// This is the CO-RE step: BCC/Clang uses the header for type-aware field relocations.
-	if err = generateVmlinuxHeader(kernelDir); err != nil {
-		slog.Error("failed to generate vmlinux.h", "error", err)
+	// Configure runtime parameters on the spec before loading into the kernel.
+	replaceBpfLogsMacros(spec)
+	replaceMaxConnectionMapSize(spec)
+
+	// Load all programs and maps into the kernel.
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		slog.Error("failed to load BPF collection", "error", err)
 		panic(err)
 	}
+	defer coll.Close()
 
-	// Pass -I<kernelDir> so that `#include "vmlinux.h"` in module.cc resolves correctly.
-	// BCC compiles from a source string (no file path context), so the include directory
-	// must be supplied explicitly.
-	bpfModule := bcc.NewModule(source, []string{"-I" + kernelDir})
-	if bpfModule == nil {
-		slog.Error("failed to create BPF module", "error", "module is nil")
-		panic("bpf module is nil")
-	}
-	defer bpfModule.Close()
+	// Track all links for deferred cleanup.
+	var allLinks []link.Link
+	defer func() {
+		for _, l := range allLinks {
+			l.Close()
+		}
+	}()
 
+	// -----------------------------------------------------------------------
+	// Application-level initialisation.
+	// -----------------------------------------------------------------------
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
 
@@ -175,21 +125,32 @@ func run() {
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
 
-	callbacks := make([]*bpfwrapper.ProbeChannel, 0)
+	// -----------------------------------------------------------------------
+	// Perf-buffer consumers — launched before kprobes so buffers are ready.
+	// -----------------------------------------------------------------------
+	callbacks := []*bpfwrapper.ProbeChannel{
+		bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback),
+		bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback),
+		bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback),
+	}
+	if err := bpfwrapper.LaunchPerfBufferConsumers(coll, connectionFactory, callbacks); err != nil {
+		slog.Error("failed to launch perf buffer consumers", "error", err)
+		panic(err)
+	}
 
+	// -----------------------------------------------------------------------
+	// Kprobe attachment.
+	// -----------------------------------------------------------------------
 	captureSsl := os.Getenv("CAPTURE_SSL")
 	captureEgress := os.Getenv("CAPTURE_EGRESS")
 	captureAll := "true"
-	captureAllEnv := os.Getenv("CAPTURE_ALL")
-	if len(captureAllEnv) != 0 {
-		captureAll = captureAllEnv
+	if v := os.Getenv("CAPTURE_ALL"); len(v) != 0 {
+		captureAll = v
 	}
 
 	hooks := make([]bpfwrapper.Kprobe, 0)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
@@ -200,52 +161,49 @@ func run() {
 
 		}
 	}
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback))
 	hooks = append(hooks, bpfwrapper.Level4hooks...)
 
-	if err := bpfwrapper.LaunchPerfBufferConsumers(bpfModule, connectionFactory, callbacks); err != nil {
-		slog.Error("failed to launch perf buffer consumers", "error", err)
-		panic(err)
+	kprobeLinks, err := bpfwrapper.AttachKprobes(coll, hooks)
+	if err != nil {
+		fmt.Printf("Error attaching kprobes: %v\n", err)
 	}
+	allLinks = append(allLinks, kprobeLinks...)
 
-	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
-		fmt.Errorf("Error in attaching kprobes %v", err)
-	}
-
+	// -----------------------------------------------------------------------
+	// Uprobe attachment (SSL / GoTLS / Node).
+	// -----------------------------------------------------------------------
 	processFactory := process.NewFactory()
 
-	var isRunning_2 bool
-	var mu_2 = &sync.Mutex{}
+	var isRunning bool
+	var mu sync.Mutex
 
 	pollInterval := 20 * time.Minute
-
 	trafficUtils.InitVar("UPROBE_POLL_INTERVAL", &pollInterval)
 
-	ssl.InitMaps(bpfModule)
+	ssl.InitMaps(coll)
 
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
-			slog.Debug("Starting to attach to processes in ticker start")
-			ticker := time.NewTicker(pollInterval) // Create a ticker to trigger every minute
+			slog.Debug("Starting uprobe process ticker")
+			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()
 			for range ticker.C {
 				slog.Debug("Starting to attach to processes in ticker")
-				if !isRunning_2 {
-					mu_2.Lock()
-					if isRunning_2 {
-						mu_2.Unlock()
-						return
-					}
-					isRunning_2 = true
-					mu_2.Unlock()
-
-					slog.Info("Starting to attach to processes")
-					processFactory.AddNewProcessesToProbe(bpfModule)
-					slog.Debug("Ended attaching to processes")
-					mu_2.Lock()
-					isRunning_2 = false
-					mu_2.Unlock()
+				mu.Lock()
+				if isRunning {
+					mu.Unlock()
+					return
 				}
+				isRunning = true
+				mu.Unlock()
+
+				slog.Info("Starting to attach to processes")
+				processFactory.AddNewProcessesToProbe(coll)
+				slog.Debug("Ended attaching to processes")
+
+				mu.Lock()
+				isRunning = false
+				mu.Unlock()
 				slog.Debug("Ended attaching to processes in ticker")
 			}
 			slog.Debug("Ended attaching to processes in ticker end")

@@ -8,7 +8,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/iovisor/gobpf/bcc"
+	"github.com/cilium/ebpf"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -51,7 +51,7 @@ func init() {
 	utils.InitVar("PROBE_ALL_PID", &probeAllPid)
 }
 
-func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Module) {
+func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collection) {
 
 	pidList, err := process.Pids()
 	if err != nil {
@@ -116,7 +116,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 
 			slog.Debug("Attempting for process", "pid", pid, "libraries", len(libraries))
 			// openssl probes here are being attached on dynamically linked SSL libraries only.
-			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
+			attached, err := ssl.TryOpensslProbes(libraries, coll)
 
 			if len(containers) == 0 {
 				containers = append(containers, "unknown")
@@ -135,7 +135,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				slog.Error("openSSL probing error", "pid", pid, "error", err)
 			}
 
-			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
+			attached, err = ssl.TryGoTLSProbes(pid, libraries, coll)
 			if attached {
 				p := Process{
 					pid:         pid,
@@ -149,7 +149,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 				slog.Error("GoTLS probing error", "pid", pid, "error", err)
 			}
 
-			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
+			attached, err = ssl.TryNodeProbes(pid, libraries, coll)
 			if attached {
 				p := Process{
 					pid:         pid,

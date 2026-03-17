@@ -12,7 +12,6 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/iovisor/gobpf/bcc"
 )
 
 func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
@@ -32,7 +31,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+			return binary.Read(globalReader, binary.NativeEndian, &event)
 		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket open", "error", err)
@@ -60,7 +59,7 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+			return binary.Read(globalReader, binary.NativeEndian, &event)
 		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket close", "error", err)
@@ -131,7 +130,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
+			return binary.Read(globalReader, binary.NativeEndian, &event.Attr)
 		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
 			continue

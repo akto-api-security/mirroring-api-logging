@@ -1,33 +1,29 @@
 package bpfwrapper
 
 import (
+	"errors"
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"log"
-
-	"github.com/iovisor/gobpf/bcc"
+	"os"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/perf"
 )
 
-// ProbeEventLoop is the signature for the callback functions to extract the events from the input channel.
+// ProbeEventLoop is the signature for callbacks that drain perf event channels.
 type ProbeEventLoop func(inputChan chan []byte, connectionFactory *connections.Factory)
 
-// ProbeChannel represents a single handler to a channel of events in the BPF.
+// ProbeChannel links a named BPF perf-event array to a Go channel and event loop.
 type ProbeChannel struct {
-	// Name of the BPF channel.
-	name string
-	// Event loop handler, a method which receive a channel for the input events from the implementation, and parse them.
-	eventLoop ProbeEventLoop
-	// A go channel which holds the messages from the BPF module.
+	name         string
+	eventLoop    ProbeEventLoop
 	eventChannel chan []byte
-	// A go channel for lost events.
-	lostEventsChannel chan uint64
-	// The bpf perf map that links our user mode channel to the BPF module.
-	perfMap *bcc.PerfMap
+	reader       *perf.Reader
 }
 
-// NewProbeChannel creates a new probe channel with the given handle for the given bpf channel name.
+// NewProbeChannel creates a new probe channel for the given BPF perf-event array name.
 func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 	return &ProbeChannel{
 		name:      name,
@@ -35,38 +31,59 @@ func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 	}
 }
 
-// Start initiate a goroutine for the event loop handler, for a lost events messages and the perf map.
-func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *connections.Factory) error {
-	probeChannel.eventChannel = make(chan []byte, kafkaUtil.EventChanBuffSize)
-	probeChannel.lostEventsChannel = make(chan uint64)
-
-	table := bcc.NewTable(module.TableId(probeChannel.name), module)
-
-	var err error
-	probeChannel.perfMap, err = bcc.InitPerfMapWithPageCnt(table, probeChannel.eventChannel, probeChannel.lostEventsChannel, 8192)
-	if err != nil {
-		return fmt.Errorf("failed to init perf mapping for %q due to: %v", probeChannel.name, err)
+// Start opens the perf reader, launches the event loop goroutine and starts draining.
+func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connections.Factory) error {
+	m, ok := coll.Maps[pc.name]
+	if !ok {
+		return fmt.Errorf("BPF map %q not found in collection", pc.name)
 	}
 
-	go probeChannel.eventLoop(probeChannel.eventChannel, connectionFactory)
+	pc.eventChannel = make(chan []byte, kafkaUtil.EventChanBuffSize)
+
+	var err error
+	pc.reader, err = perf.NewReader(m, os.Getpagesize()*8192)
+	if err != nil {
+		return fmt.Errorf("failed to open perf reader for %q: %v", pc.name, err)
+	}
+
+	go pc.eventLoop(pc.eventChannel, connectionFactory)
+
 	go func() {
-		log.Printf("⚠️ Lost events on channel, starting to listen for lost events on channel %s", probeChannel.name)
-		for lost := range probeChannel.lostEventsChannel {
-			log.Printf("⚠️ Lost %d events on channel %s", lost, probeChannel.name)
+		log.Printf("perf reader started for channel %s", pc.name)
+		for {
+			record, err := pc.reader.Read()
+			if err != nil {
+				if errors.Is(err, perf.ErrClosed) {
+					close(pc.eventChannel)
+					return
+				}
+				log.Printf("error reading perf event on %s: %v", pc.name, err)
+				continue
+			}
+			if record.LostSamples > 0 {
+				log.Printf("⚠️ Lost %d events on channel %s", record.LostSamples, pc.name)
+				continue
+			}
+			pc.eventChannel <- record.RawSample
 		}
 	}()
 
-	probeChannel.perfMap.Start()
 	return nil
 }
 
-// LaunchPerfBufferConsumers launches all probe channels.
-func LaunchPerfBufferConsumers(module *bcc.Module, connectionFactory *connections.Factory, probeList []*ProbeChannel) error {
-	for _, probeChannel := range probeList {
-		if err := probeChannel.Start(module, connectionFactory); err != nil {
+// Stop closes the underlying perf reader, which will unblock the drain goroutine.
+func (pc *ProbeChannel) Stop() {
+	if pc.reader != nil {
+		pc.reader.Close()
+	}
+}
+
+// LaunchPerfBufferConsumers starts all probe channels.
+func LaunchPerfBufferConsumers(coll *ebpf.Collection, connectionFactory *connections.Factory, probeList []*ProbeChannel) error {
+	for _, pc := range probeList {
+		if err := pc.Start(coll, connectionFactory); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }

@@ -5,7 +5,8 @@ import (
 	"runtime"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/iovisor/gobpf/bcc"
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 )
 
 const (
@@ -69,37 +70,46 @@ func PlatformPrefix() string {
 	}
 }
 
-// AttachKprobes attaches the given Kprobe list.
-func AttachKprobes(bpfModule *bcc.Module, kprobeList []Kprobe) error {
+// AttachKprobes attaches the given kprobe list using cilium/ebpf's link package.
+// The returned links must be closed by the caller when done.
+func AttachKprobes(coll *ebpf.Collection, kprobeList []Kprobe) ([]link.Link, error) {
+	var links []link.Link
+
 	for _, probe := range kprobeList {
 		functionToHook := probe.FunctionToHook
 		if probe.IsSyscall {
 			functionToHook = PlatformPrefix() + "sys_" + probe.FunctionToHook
 		}
 
-		probeFD, err := bpfModule.LoadKprobe(probe.HookName)
-		if err != nil {
-			slog.Error("failed to load kprobe", "hook", probe.HookName, "error", err)
+		prog, ok := coll.Programs[probe.HookName]
+		if !ok {
+			slog.Error("BPF program not found in collection", "hook", probe.HookName)
 			continue
 		}
 
 		switch probe.Type {
 		case EntryType:
-			utils.PrintLog("Loading kprobe", "hook", probe.HookName, "as kprobe", functionToHook)
-			if err = bpfModule.AttachKprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
+			utils.PrintLog("Attaching kprobe", "hook", probe.HookName, "function", functionToHook)
+			l, err := link.Kprobe(functionToHook, prog, nil)
+			if err != nil {
 				slog.Error("failed to attach kprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
+				continue
 			}
-			continue
+			links = append(links, l)
+
 		case ReturnType:
-			utils.PrintLog("Loading kretprobe", "hook", probe.HookName, "as kretprobe", functionToHook)
-			if err = bpfModule.AttachKretprobe(functionToHook, probeFD, maxActiveConnections); err != nil {
+			utils.PrintLog("Attaching kretprobe", "hook", probe.HookName, "function", functionToHook)
+			l, err := link.Kretprobe(functionToHook, prog, nil)
+			if err != nil {
 				slog.Error("failed to attach kretprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
+				continue
 			}
-			continue
+			links = append(links, l)
+
 		default:
-			slog.Error("unknown Kprobe type given for hook", "type", probe.Type, "hook", probe.HookName)
-			continue
+			slog.Error("unknown Kprobe type", "type", probe.Type, "hook", probe.HookName)
 		}
 	}
-	return nil
+
+	return links, nil
 }
