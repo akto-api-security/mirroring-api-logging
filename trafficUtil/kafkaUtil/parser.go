@@ -155,15 +155,11 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 	}
 
 	value["tag"] = podLabels
-	slog.Debug("[TAGS] Pod labels resolved", "url", url, "host", host, "hostName", ctx.HostName, "podLabelsJSON", podLabels, "direction", ctx.Direction)
 	checkDebugUrlAndPrint(url, host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+ctx.HostName)
 }
 
 func mergeInjectTags(value map[string]string) {
-	slog.Debug("[TAGS] mergeInjectTags called", "hasInjectTags", len(injectTagsMap) > 0, "injectTagsMap", injectTagsMap, "existingTag", value["tag"])
-
 	if len(injectTagsMap) == 0 {
-		slog.Debug("[TAGS] No inject tags to merge, skipping")
 		return
 	}
 
@@ -171,30 +167,19 @@ func mergeInjectTags(value map[string]string) {
 	for k, v := range injectTagsMap {
 		merged[k] = v
 	}
-	slog.Debug("[TAGS] Starting merge with env tags", "envTags", merged)
 
 	// Parse and merge any existing tag JSON (e.g. from pod labels)
 	if existing, ok := value["tag"]; ok && existing != "" {
-		slog.Debug("[TAGS] Found existing pod labels JSON", "podLabelsJSON", existing)
 		podLabelMap := map[string]string{}
 		if err := json.Unmarshal([]byte(existing), &podLabelMap); err == nil {
-			slog.Debug("[TAGS] Unmarshaled pod labels", "podLabels", podLabelMap)
 			for k, v := range podLabelMap {
 				merged[k] = v // pod labels overwrite inject tags on conflict
 			}
-			slog.Debug("[TAGS] After merging pod labels", "merged", merged)
-		} else {
-			slog.Error("[TAGS] Failed to unmarshal pod labels JSON", "error", err, "json", existing)
 		}
-	} else {
-		slog.Debug("[TAGS] No existing pod labels to merge")
 	}
 
 	if b, err := json.Marshal(merged); err == nil {
 		value["tag"] = string(b)
-		slog.Debug("[TAGS] Final merged tags JSON", "finalTagsJSON", string(b), "merged", merged)
-	} else {
-		slog.Error("[TAGS] Failed to marshal merged tags", "error", err, "merged", merged)
 	}
 }
 
@@ -720,10 +705,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
 			return
 		}
-
-		// Log final payload tag being sent to Kafka
-		slog.Debug("[TAGS] Final payload before Kafka send", "url", url, "host", req.Host, "method", req.Method, "direction", ctx.Direction, "processId", ctx.ProcessID, "hostName", ctx.HostName, "finalTagValue", value["tag"])
-		checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("Final tag value being sent to Kafka: %s", value["tag"]))
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		// this number is the closest (slightly higher) to the actual connection transfer bytes.
