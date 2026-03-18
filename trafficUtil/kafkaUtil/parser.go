@@ -711,6 +711,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		// Resolve pod labels for inbound traffic
 		resolvePodLabels(value, ctx, url, req.Host)
 
+		mergeInjectTags(value)
+
 		checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
 		out, err := json.Marshal(value)
 		if err != nil {
@@ -718,7 +720,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
 			return
 		}
-		mergeInjectTags(value)
 
 		// Log final payload tag being sent to Kafka
 		slog.Debug("[TAGS] Final payload before Kafka send", "url", url, "host", req.Host, "method", req.Method, "direction", ctx.Direction, "processId", ctx.ProcessID, "hostName", ctx.HostName, "finalTagValue", value["tag"])
