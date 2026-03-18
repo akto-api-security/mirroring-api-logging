@@ -158,6 +158,31 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 	slog.Debug("Pod labels", "podName", ctx.HostName, "labels", podLabels)
 }
 
+func mergeInjectTags(value map[string]string) {
+	if len(injectTagsMap) == 0 {
+		return
+	}
+
+	merged := map[string]string{}
+	for k, v := range injectTagsMap {
+		merged[k] = v
+	}
+
+	// Parse and merge any existing tag JSON (e.g. from pod labels)
+	if existing, ok := value["tag"]; ok && existing != "" {
+		podLabelMap := map[string]string{}
+		if err := json.Unmarshal([]byte(existing), &podLabelMap); err == nil {
+			for k, v := range podLabelMap {
+				merged[k] = v // pod labels overwrite inject tags on conflict
+			}
+		}
+	}
+
+	if b, err := json.Marshal(merged); err == nil {
+		value["tag"] = string(b)
+	}
+}
+
 // convertHeaders converts HTTP headers to both protobuf and string map formats in a single pass.
 func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) ConvertedHeaders {
 	result := ConvertedHeaders{
@@ -237,6 +262,7 @@ var (
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
+	injectTagsMap              = map[string]string{}
 	methodsMap                 = map[string]bool{
 		"GET":     true,
 		"HEAD":    true,
@@ -269,6 +295,22 @@ func init() {
 		DebugStrings = strings.Split(debugStringsEnv, ",")
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
+
+	injectTagsEnv := ""
+	utils.InitVar("AKTO_INJECT_TAGS", &injectTagsEnv)
+	if injectTagsEnv != "" {
+		for _, pair := range strings.Split(injectTagsEnv, ";") {
+			pair = strings.TrimSpace(pair)
+			if idx := strings.IndexByte(pair, '='); idx > 0 {
+				k := strings.TrimSpace(pair[:idx])
+				v := strings.TrimSpace(pair[idx+1:])
+				if k != "" {
+					injectTagsMap[k] = v
+				}
+			}
+		}
+		slog.Info("AKTO_INJECT_TAGS loaded", "tags", injectTagsMap)
+	}
 
 	// Start ticker to read debug URLs from file every 30 seconds
 	go func() {
@@ -557,6 +599,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 		// Resolve pod labels for inbound traffic
 		resolvePodLabels(value, ctx, url, req.Host)
+
+		mergeInjectTags(value)
 
 		out, _ := json.Marshal(value)
 
