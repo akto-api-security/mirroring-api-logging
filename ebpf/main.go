@@ -14,8 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	_ "net/http/pprof"
-	"net/http"
+	 "github.com/grafana/pyroscope-go"
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -89,10 +88,28 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
-
-	go func() {
-        http.ListenAndServe("localhost:6060", nil)
-    }()
+	pyroscope.Start(pyroscope.Config{
+		ApplicationName: "akto-k8s",
+		ServerAddress:   os.Getenv("PYROSCOPE_URL"),
+		BasicAuthUser:   os.Getenv("PYROSCOPE_USER"),
+		BasicAuthPassword: os.Getenv("PYROSCOPE_PASSWORD"),
+		Tags: map[string]string{
+			"cluster":   "threat-cluster",
+			"node_name": os.Getenv("NODE_NAME"),
+		},
+		ProfileTypes: []pyroscope.ProfileType{
+			pyroscope.ProfileCPU,
+			pyroscope.ProfileAllocObjects,
+			pyroscope.ProfileAllocSpace,
+			pyroscope.ProfileInuseObjects,
+			pyroscope.ProfileInuseSpace,
+			pyroscope.ProfileGoroutines,
+			pyroscope.ProfileMutexCount,
+			pyroscope.ProfileMutexDuration,
+			pyroscope.ProfileBlockCount,
+			pyroscope.ProfileBlockDuration,
+		},
+	})
 
 	run()
 }
