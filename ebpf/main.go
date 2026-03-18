@@ -93,6 +93,10 @@ func main() {
 }
 
 func run() {
+	slog.Debug("Go version", "version", runtime.Version())
+	slog.Debug("runtime.NumCPU()", "count", runtime.NumCPU())
+	slog.Debug("runtime.GOMAXPROCS(0)", "procs", runtime.GOMAXPROCS(0))
+
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
 		slog.Error("failed to read kernel module", "error", err)

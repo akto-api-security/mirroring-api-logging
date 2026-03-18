@@ -43,6 +43,9 @@ var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()
 var moduleType = "TRAFFIC_COLLECTOR"
 
+var globalTransport *kafka.Transport
+var transportOnce sync.Once
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -115,6 +118,9 @@ func InitKafka() {
 			kafkaWriterMutex.Lock()
 			kafkaWriter.Close()
 			kafkaWriterMutex.Unlock()
+			if globalTransport != nil {
+				globalTransport.CloseIdleConnections()
+			}
 			time.Sleep(time.Second * 2)
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
@@ -496,6 +502,19 @@ func getKafkaDialer() *kafka.Dialer {
 	return dialer
 }
 
+func getGlobalTransport() *kafka.Transport {
+	transportOnce.Do(func() {
+		dialer := getKafkaDialer()
+		globalTransport = &kafka.Transport{
+			TLS:         dialer.TLS,
+			SASL:        dialer.SASLMechanism,
+			IdleTimeout: 30 * time.Second,
+			MetadataTTL: 60 * time.Second,
+		}
+	})
+	return globalTransport
+}
+
 func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
@@ -509,12 +528,6 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
-	dialer := getKafkaDialer()
-	transport := &kafka.Transport{
-		TLS:  dialer.TLS,
-		SASL: dialer.SASLMechanism,
-	}
-
-	kafkaWriter.Transport = transport
+	kafkaWriter.Transport = getGlobalTransport()
 	return &kafkaWriter
 }
