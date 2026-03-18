@@ -14,7 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
+	_ "net/http/pprof"
+	"net/http"
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -88,6 +89,10 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
+
+	go func() {
+        http.ListenAndServe("localhost:6060", nil)
+    }()
 
 	run()
 }
@@ -223,7 +228,7 @@ func run() {
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
 	if doProfiling {
-		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
+		ticker := time.NewTicker(30 * time.Second) // Create a ticker to trigger every 30 seconds
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -300,10 +305,17 @@ func setupTracePids(bpfModule *bcc.Module) []uint32 {
 }
 
 func captureMemoryProfile() {
-	f, _ := os.Create("mem.prof") // Create memory profile file
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("mem_%s.prof", timestamp)
+	f, err := os.Create(fileName)
+	if err != nil {
+		slog.Error("failed to create memory profile", "error", err)
+		return
+	}
 	defer f.Close()
 
-	pprof.WriteHeapProfile(f) // Write memory profile
+	pprof.WriteHeapProfile(f)
+	slog.Info("memory profile captured", "filename", fileName)
 }
 
 func captureCpuProfile() {
