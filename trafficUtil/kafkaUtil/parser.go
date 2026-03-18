@@ -327,6 +327,8 @@ func init() {
 				bloomFilter.ClearAll()
 			}
 		}()
+	}
+
 	injectTagsEnv := ""
 	utils.InitVar("AKTO_INJECT_TAGS", &injectTagsEnv)
 	if injectTagsEnv != "" {
@@ -702,8 +704,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			return
 		}
 		mergeInjectTags(value)
-
-		out, _ := json.Marshal(value)
 
 		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
 		// this number is the closest (slightly higher) to the actual connection transfer bytes.
