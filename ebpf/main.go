@@ -14,8 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	_ "net/http/pprof"
-	"net/http"
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -89,10 +87,6 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
-
-	go func() {
-        http.ListenAndServe("localhost:6060", nil)
-    }()
 
 	run()
 }
