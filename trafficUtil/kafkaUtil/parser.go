@@ -748,7 +748,7 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 			badRequests++
 		}
 
-		if goodRequests%100 == 0 || badRequests%100 == 0 {
+		if goodRequests%10 == 0 || badRequests%10 == 0 {
 			slog.Debug("Good requests", "count", goodRequests, "badRequests", badRequests)
 		}
 	}
