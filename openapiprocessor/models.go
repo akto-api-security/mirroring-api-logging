@@ -1,6 +1,7 @@
 package openapiprocessor
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -18,8 +19,8 @@ const (
 
 // ClientSet holds both API Gateway client types (v1 and v2)
 type ClientSet struct {
-	RestClient *apigateway.Client    // For REST APIs (v1)
-	HttpClient *apigatewayv2.Client  // For HTTP APIs (v2)
+	RestClient *apigateway.Client   // For REST APIs (v1)
+	HttpClient *apigatewayv2.Client // For HTTP APIs (v2)
 }
 
 // DiscoveredAPI tracks discovered endpoints for deduplication
@@ -46,4 +47,12 @@ var globalDiscoveryTracker = &DiscoveryTracker{
 // GetTracker returns the global discovery tracker instance
 func GetTracker() *DiscoveryTracker {
 	return globalDiscoveryTracker
+}
+
+// RemoveDiscoveredAPI drops the cache entry for this API/stage so a failed upload can be retried on the next poll.
+func (t *DiscoveryTracker) RemoveDiscoveredAPI(roleArn, apiID, stage string) {
+	key := fmt.Sprintf("%s|%s|%s", roleArn, apiID, stage)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.discoveredAPIs, key)
 }

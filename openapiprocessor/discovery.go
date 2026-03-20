@@ -127,6 +127,7 @@ func discoverRESTAPIs(
 					// Upload to dashboard
 					if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.Id, roleArn, region, *stage.StageName, authToken); err != nil {
 						utils.LogToCyborg("error", "Error uploading spec for API "+*api.Id+" stage "+*stage.StageName+": "+err.Error())
+						GetTracker().RemoveDiscoveredAPI(roleArn, *api.Id, *stage.StageName)
 					}
 				} else {
 					utils.DebugLog("Spec unchanged for API %s stage %s, skipping", *api.Id, *stage.StageName)
@@ -200,6 +201,7 @@ func discoverHTTPAPIs(
 				// Upload to dashboard
 				if err := uploadOpenAPISpecToCyborg(spec.Body, *api.Name, *api.ApiId, roleArn, region, "", authToken); err != nil {
 					utils.LogToCyborg("error", "Error uploading spec for HTTP API "+*api.ApiId+": "+err.Error())
+					GetTracker().RemoveDiscoveredAPI(roleArn, *api.ApiId, "")
 				}
 			} else {
 				utils.DebugLog("Spec unchanged for HTTP API %s, skipping", *api.ApiId)
