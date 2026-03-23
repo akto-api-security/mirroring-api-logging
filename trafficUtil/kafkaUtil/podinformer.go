@@ -136,8 +136,18 @@ func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
 	if info, ok := w.pidHostNameMap[pid]; ok {
 		return info.ProcessName
 	}
-	slog.Debug("Process name not found for", "processId", pid)
+	// slog.Debug("Process name not found for", "processId", pid)
 	return ""
+}
+
+func (w *PodInformer) GetAllKubePids() []uint32 {
+	// TODO: should we ignore envoy pids ?
+	pids := make([]uint32, 0, len(w.pidHostNameMap))
+	for pid := range w.pidHostNameMap {
+		pids = append(pids, uint32(pid))
+	}
+	slog.Debug("No of kube/docker pids", "found: ", len(pids))
+	return pids
 }
 
 func (w *PodInformer) BuildPidHostNameMap() {
@@ -148,7 +158,7 @@ func (w *PodInformer) BuildPidHostNameMap() {
 		slog.Error("Failed to execute shell command", "error", err)
 		return
 	}
-	slog.Debug("Shell command output for PID to Hostname mapping", "output", string(output))
+	// slog.Debug("Shell command output for PID to Hostname mapping", "output", string(output))
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		parts := strings.Fields(line)
@@ -162,7 +172,7 @@ func (w *PodInformer) BuildPidHostNameMap() {
 			}
 		}
 	}
-	slog.Debug("PID to Hostname map built successfully", "map", w.pidHostNameMap)
+	// slog.Debug("PID to Hostname map built successfully", "map", w.pidHostNameMap)
 	w.logPidHostNameMap()
 }
 
@@ -198,7 +208,7 @@ func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (str
 }
 
 func (w *PodInformer) logPidHostNameMap() {
-	slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
+	// slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 
@@ -207,7 +217,7 @@ func (w *PodInformer) logPidHostNameMap() {
 	}
 	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
-	slog.Debug("PID to Hostname Map logged", "map", w.pidHostNameMap)
+	// slog.Debug("PID to Hostname Map logged", "map", w.pidHostNameMap)
 }
 
 func (w *PodInformer) logPodLabelsMapFile() {
@@ -236,7 +246,7 @@ func (w *PodInformer) logPodNameLabelsMap() {
 		result += fmt.Sprintf("Name: %s, Labels: %s; ", key, value)
 		return true
 	})
-	slog.Debug("Pod Name Labels Map", "map", result)
+	// slog.Debug("Pod Name Labels Map", "map", result)
 	w.logPodLabelsMapFile()
 }
 

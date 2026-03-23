@@ -437,6 +437,7 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 
 func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
 	topic := "akto.api.logs"
+	checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 
 	msg := kafka.Message{
 		Topic:   topic,
@@ -452,6 +453,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost, method string
 
 	if err != nil {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
+		checkDebugUrlAndPrint(url, reqHost, fmt.Sprintf("Kafka write failed: %v", err))
 		return err
 	}
 	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")

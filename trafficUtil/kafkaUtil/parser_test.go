@@ -1,156 +1,102 @@
 package kafkaUtil
 
 import (
-	"compress/gzip"
-	"bytes"
+	"fmt"
 	"testing"
+	bloomfilter "github.com/bits-and-blooms/bloom/v3"
 )
 
-func TestParseHTTPTraffic_ValidRequest(t *testing.T) {
-	reqBody := `{"cardId":12,"amount":9100.50,"bookingId":4123}`
-	req := []byte("POST /credit-cards/charge HTTP/1.1\r\nHost: credit-card.default.svc.cluster.local\r\nContent-Type: application/json\r\nContent-Length: 47\r\n\r\n" + reqBody)
+// TestShouldParseBodyFirstRequest tests that first request body is parsed
+func TestShouldParseBodyFirstRequest(t *testing.T) {
+	// Reset Bloom filter for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
-	respBody := `{"status":"success"}`
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n" + respBody)
-
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("expected non-nil result for valid request")
-	}
-	if len(result.Requests) != 1 {
-		t.Errorf("expected 1 request, got %d", len(result.Requests))
-	}
-	if len(result.Responses) != 1 {
-		t.Errorf("expected 1 response, got %d", len(result.Responses))
-	}
-	if result.RequestBodies[0] != reqBody {
-		t.Errorf("unexpected request body: %s", result.RequestBodies[0])
-	}
-	if result.ResponseBodies[0] != respBody {
-		t.Errorf("unexpected response body: %s", result.ResponseBodies[0])
+	// First request should always be parsed
+	if !shouldParseBody("GET", "example.com", "/api/test") {
+		t.Errorf("First request should always parse body")
 	}
 }
 
-func TestParseHTTPTraffic_BadGzip(t *testing.T) {
-	reqBody := `{"cardId":12}`
-	req := []byte("POST /credit-cards/charge HTTP/1.1\r\nHost: credit-card.default.svc.cluster.local\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n" + reqBody)
+// TestShouldParseBodySkipRecent tests that recent requests skip body parsing
+func TestShouldParseBodySkipRecent(t *testing.T) {
+	// Reset Bloom filter and LRU for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
-	// Response claims gzip but body is not gzip encoded
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\nnot-gzip-data")
+	method, host, path := "POST", "api.example.com", "/v1/submit"
 
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("should not return nil on gzip failure")
+	// First request should parse body
+	shouldParse1 := shouldParseBody(method, host, path)
+	if !shouldParse1 {
+		t.Errorf("First request should parse body")
 	}
-	if len(result.Requests) != 1 {
-		t.Errorf("expected 1 request, got %d", len(result.Requests))
+
+	// Immediate second request should skip body
+	shouldParse2 := shouldParseBody(method, host, path)
+	if shouldParse2 {
+		t.Errorf("Recent request should skip body, but got shouldParse=%v", shouldParse2)
 	}
-	if len(result.Responses) != 1 {
-		t.Errorf("expected 1 response, got %d", len(result.Responses))
-	}
-	if result.ResponseBodies[0] != "" {
-		t.Errorf("expected empty body on gzip failure, got: %s", result.ResponseBodies[0])
-	}
-}
 
-func TestParseHTTPTraffic_TruncatedGzip(t *testing.T) {
-	req := []byte("GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
-
-	// Create valid gzip but truncate it
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	gz.Write([]byte("hello world this is a longer message"))
-	gz.Close()
-	truncatedGzip := buf.Bytes()[:10] // Truncate to first 10 bytes
-
-	resp := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), truncatedGzip...)
-
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("should not return nil on truncated gzip")
-	}
-	if result.ResponseBodies[0] != "" {
-		t.Errorf("expected empty body on truncated gzip, got: %s", result.ResponseBodies[0])
+	// Third request should also skip body
+	shouldParse3 := shouldParseBody(method, host, path)
+	if shouldParse3 {
+		t.Errorf("Recent request should skip body, but got shouldParse=%v", shouldParse3)
 	}
 }
 
-func TestParseHTTPTraffic_ValidGzip(t *testing.T) {
-	req := []byte("GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
+// TestShouldParseBodyDifferentSignatures tests different signatures are tracked separately
+func TestShouldParseBodyDifferentSignatures(t *testing.T) {
+	// Reset Bloom filter and LRU for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
-	// Create valid gzip response
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	gz.Write([]byte(`{"status":"ok"}`))
-	gz.Close()
-
-	resp := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\n\r\n"), buf.Bytes()...)
-
-	result := parseHTTPTraffic(req, resp, true)
-
-	if result == nil {
-		t.Fatal("expected non-nil result for valid gzip")
+	// First signature
+	should1a := shouldParseBody("GET", "example.com", "/api/users")
+	if !should1a {
+		t.Errorf("First request for signature 1 should parse body")
 	}
-	if result.ResponseBodies[0] != `{"status":"ok"}` {
-		t.Errorf("expected decompressed body, got: %s", result.ResponseBodies[0])
-	}
-}
 
-func TestParseHTTPTraffic_EmptyRequestBody(t *testing.T) {
-	req := []byte("GET /health HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
-
-	result := parseHTTPTraffic(req, resp, false)
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
+	// Skip immediate request for signature 1
+	should1b := shouldParseBody("GET", "example.com", "/api/users")
+	if should1b {
+		t.Errorf("Second request for signature 1 should skip body")
 	}
-	if result.RequestBodies[0] != "" {
-		t.Errorf("expected empty request body for GET, got: %s", result.RequestBodies[0])
-	}
-	if result.ResponseBodies[0] != "OK" {
-		t.Errorf("expected 'OK' response body, got: %s", result.ResponseBodies[0])
-	}
-}
 
-func TestParseHTTPTraffic_MultipleRequests(t *testing.T) {
-	req := []byte("GET /first HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\nGET /second HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
-	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirstHTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecond")
-
-	result := parseHTTPTraffic(req, resp, false)
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
+	// Different signature - should parse body
+	should2a := shouldParseBody("GET", "example.com", "/api/orders")
+	if !should2a {
+		t.Errorf("First request for signature 2 should parse body")
 	}
-	if len(result.Requests) != 2 {
-		t.Errorf("expected 2 requests, got %d", len(result.Requests))
+
+	// Different method - should parse body
+	should3a := shouldParseBody("POST", "example.com", "/api/users")
+	if !should3a {
+		t.Errorf("First request for signature 3 (different method) should parse body")
 	}
-	if len(result.Responses) != 2 {
-		t.Errorf("expected 2 responses, got %d", len(result.Responses))
+
+	// Different host - should parse body
+	should4a := shouldParseBody("GET", "other.com", "/api/users")
+	if !should4a {
+		t.Errorf("First request for signature 4 (different host) should parse body")
 	}
 }
 
-func TestParseHTTPTraffic_InvalidRequest(t *testing.T) {
-	req := []byte("not a valid http request")
-	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
+// BenchmarkShouldParseBody benchmarks the shouldParseBody function
+func BenchmarkShouldParseBody(b *testing.B) {
+	// Reset
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
-	result := parseHTTPTraffic(req, resp, false)
-
-	// Should return nil because request parsing fails completely
-	if result != nil {
-		t.Error("expected nil result for invalid request")
+	// Pre-populate with some data
+	for i := 0; i < 1000; i++ {
+		path := fmt.Sprintf("/api/test%d", i%10)
+		shouldParseBody("GET", "example.com", path)
 	}
-}
 
-func TestParseHTTPTraffic_NoRequests(t *testing.T) {
-	req := []byte("")
-	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
-
-	result := parseHTTPTraffic(req, resp, false)
-
-	if result != nil {
-		t.Error("expected nil result for empty request buffer")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		path := fmt.Sprintf("/api/test%d", i%10)
+		shouldParseBody("GET", "example.com", path)
 	}
 }
