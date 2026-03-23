@@ -18,6 +18,12 @@ import (
 
 var httpBytes = []byte("HTTP")
 
+var sequenceCheckSkip = false
+
+func init() {
+	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
+}
+
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
 	processor   map[structs.ConnID]chan interface{}
@@ -57,10 +63,10 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
-			// if k != 1 {
-				// utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
-				// break
-			// }
+			if !sequenceCheckSkip && k != 1 {
+				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
+				break
+			}
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
