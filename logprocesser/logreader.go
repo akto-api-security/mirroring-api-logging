@@ -2,12 +2,9 @@ package logprocesser
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
-	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
@@ -16,367 +13,185 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 )
 
-// StreamTracker tracks the progress and state of a log stream.
-type StreamTracker struct {
-	NextToken   *string
-	LastChecked time.Time
-	Active      bool
-	logs        map[string]*LogEntry
+var globalTimestampTracker = NewTimestampTracker()
+
+const (
+	POLL_DURATION         = 180000  // 3 minute in milliseconds
+	LOG_STREAM_FETCH_TIME = 5400000 // 1.5 hours in milliseconds
+	MAX_STREAM_MAP_SIZE   = 20000   // max entries in lastReadTimestamps map
+)
+
+// TimestampTracker tracks last read timestamp per log group + stream (same structure as temp_cred).
+type TimestampTracker struct {
+	mu                 sync.RWMutex
+	lastReadTimestamps map[string]int64 // "logGroupName|streamName" -> last read timestamp ms
 }
 
-var cloudwatchReadBatchSize = 5
-
-func init() {
-	utils.InitVar("CLOUDWATCH_READ_BATCH_SIZE", &cloudwatchReadBatchSize)
-}
-
-// Helper function to get minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
+func NewTimestampTracker() *TimestampTracker {
+	return &TimestampTracker{
+		lastReadTimestamps: make(map[string]int64),
 	}
-	return b
 }
 
-// MonitorLogGroup monitors a CloudWatch log group and processes events from its streams.
-func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
-	activeStreams := make(map[string]*StreamTracker)
+func (t *TimestampTracker) GetLastReadTimestamp(logGroupName, streamName string) int64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.lastReadTimestamps[logGroupName+"|"+streamName]
+}
 
-	var nextLogStreamsToken *string
+func (t *TimestampTracker) UpdateLastReadTimestamp(logGroupName, streamName string, timestamp int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastReadTimestamps[logGroupName+"|"+streamName] = timestamp
+	if len(t.lastReadTimestamps) > MAX_STREAM_MAP_SIZE {
+		t.cleanupStaleEntries()
+	}
+}
+
+func (t *TimestampTracker) cleanupStaleEntries() {
+	cutoffTime := time.Now().UnixMilli() - LOG_STREAM_FETCH_TIME
+	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup started at: %d and cutoffTime: %d", time.Now().UnixMilli(), cutoffTime))
+	cleanedEntries := 0
+	for key, ts := range t.lastReadTimestamps {
+		if ts < cutoffTime {
+			delete(t.lastReadTimestamps, key)
+			cleanedEntries++
+		}
+	}
+	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup completed, cleanedEntries: %d, entries: %d", cleanedEntries, len(t.lastReadTimestamps)))
+}
+
+// MonitorLogGroup monitors a CloudWatch log group (same structure as temp_cred; single-account).
+func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
+	utils.DebugLog("MonitorLogGroup() - Starting log processor for log group: %s", logGroupName)
 
 	for {
-		// Step 1: Fetch log streams with pagination using nextToken
-		logStreams, newNextToken, err := fetchLogStreams(ctx, client, logGroupName, nextLogStreamsToken)
+		cycleStartTime := time.Now().UnixMilli()
+		utils.DebugLog("MonitorLogGroup() - Starting new monitoring cycle at: %d for logGroup: %s", cycleStartTime, logGroupName)
+
+		lookBackTime := cycleStartTime - LOG_STREAM_FETCH_TIME
+		logStreams, err := FetchLogStreams(ctx, client, logGroupName, lookBackTime)
 		if err != nil {
-			log.Printf("Error fetching log streams: %v", err)
-			time.Sleep(2 * time.Second)
+			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
+			time.Sleep(10 * time.Second)
 			continue
 		}
 
-		// Update the next token for log streams pagination
-		if newNextToken != nil {
-			log.Printf("DEBUG New streams token found: %s", *newNextToken)
-			nextLogStreamsToken = newNextToken
-		} else {
-			// if newNextToken is nil,
-			// means there are no new messages, these are old messages, we've processed
-			// so clear the log stream
-			// or there are less than stream batch size messages.
-			// so to avoid recalculating later, skip them for now
-			log.Printf("DEBUG No new streams token (pagination complete), clearing stream list")
-			logStreams = []types.LogStream{}
-		}
+		utils.DebugLog("MonitorLogGroup() - Found %d log streams to process for logGroup: %s", len(logStreams), logGroupName)
 
-		// Step 2: Add new log streams to the active list
-		log.Printf("DEBUG Processing %d log streams from batch", len(logStreams))
 		for _, stream := range logStreams {
-			if _, exists := activeStreams[*stream.LogStreamName]; !exists {
-				log.Printf("Discovered new log stream: %s (lastEventTimestamp: %v)", *stream.LogStreamName, stream.LastEventTimestamp)
-				activeStreams[*stream.LogStreamName] = &StreamTracker{
-					NextToken:   nil,
-					LastChecked: time.Now(),
-					Active:      true,
-					logs:        make(map[string]*LogEntry),
+			streamName := *stream.LogStreamName
+			lastReadTime := globalTimestampTracker.GetLastReadTimestamp(logGroupName, streamName)
+			if lastReadTime == 0 {
+				lastEventTs := "n/a"
+				if stream.LastEventTimestamp != nil {
+					lastEventTs = fmt.Sprint(*stream.LastEventTimestamp)
 				}
-			}
-		}
-		log.Printf("DEBUG Total active streams: %d", len(activeStreams))
-
-		// Step 3: Process logs from active streams
-		for streamName, tracker := range activeStreams {
-			if !tracker.Active {
-				continue // Skip inactive streams
+				utils.LogToCyborg("info", fmt.Sprintf("Discovered new log stream: %s (lastEventTimestamp: %s); logGroup: %s", streamName, lastEventTs, logGroupName))
+				// Limit to last 1 hour for new streams to avoid processing old data.
+				lastReadTime = cycleStartTime - LOG_STREAM_FETCH_TIME
 			}
 
-			err := processLogStream(ctx, client, logGroupName, streamName, tracker)
+			utils.DebugLog("MonitorLogGroup() - Processing stream: %s, reading from: %d for logGroup: %s", streamName, lastReadTime, logGroupName)
+
+			eventCount, maxTimestamp, err := getLogEvents(ctx, client, logGroupName, streamName, lastReadTime)
 			if err != nil {
-				log.Printf("Error processing stream %s: %v", streamName, err)
-			} else {
-				tracker.LastChecked = time.Now()
+				utils.LogToCyborg("error", "Error fetching log events for stream "+streamName+": "+err.Error())
+				continue
 			}
 
-			// Mark the stream as inactive if no new logs are found and a new stream exists
-			if tracker.NextToken == nil || time.Since(tracker.LastChecked) > 10*time.Second {
-				tracker.Active = false
-				log.Printf("Marking stream as inactive, time interval exceeded: %s", streamName)
+			if eventCount > 0 {
+				globalTimestampTracker.UpdateLastReadTimestamp(logGroupName, streamName, maxTimestamp+1)
+				utils.DebugLog("MonitorLogGroup() - Processed %d events from stream: %s, updated timestamp to: %d for logGroup: %s", eventCount, streamName, maxTimestamp+1, logGroupName)
 			}
 		}
 
-		// Step 4: Clean up inactive streams
-		for streamName, tracker := range activeStreams {
-			if !tracker.Active {
-
-				for logId, log := range tracker.logs {
-					fmt.Printf("logId: %s\n", logId)
-					fmt.Printf("log: %v\n", log)
-					ParseAndProduce(*log)
-				}
-
-				delete(activeStreams, streamName)
-				log.Printf("Removed inactive stream: %s", streamName)
-			}
+		elapsed := time.Now().UnixMilli() - cycleStartTime
+		log.Printf("MonitorLogGroup() - Cycle completed in %d ms, sleeping for %d ms for logGroup: %s", elapsed, POLL_DURATION-elapsed, logGroupName)
+		if elapsed < POLL_DURATION {
+			sleepTime := POLL_DURATION - elapsed
+			time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 		}
-
-		// Step 5: Delay between iterations to minimize API throttling
-		time.Sleep(1 * time.Second)
+		time.Sleep(10 * time.Second)
 	}
 }
 
-// fetchLogStreams retrieves log streams with pagination using nextToken.
-func fetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, nextToken *string) ([]types.LogStream, *string, error) {
-	// starting from the oldest logs
-	output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
-		LogGroupIdentifier: aws.String(logGroupName),
-		OrderBy:      types.OrderByLastEventTime,
-		Descending:   aws.Bool(false),
-		Limit:        aws.Int32(int32(cloudwatchReadBatchSize)), // Adjust based on expected stream count
-		NextToken:    nextToken,
-	})
-	if err != nil {
-		return nil, nil, err
+// FetchLogStreams returns all streams with LastEventTimestamp > lastProcessedEventTime (temp_cred structure).
+func FetchLogStreams(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, lastProcessedEventTime int64) ([]types.LogStream, error) {
+	var logStreams []types.LogStream
+	var nextToken *string
+
+	for {
+		output, err := client.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
+			LogGroupIdentifier: aws.String(logGroupName),
+			OrderBy:            types.OrderByLastEventTime,
+			Descending:         aws.Bool(true),
+			NextToken:          nextToken,
+		})
+		if err != nil {
+			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
+			return nil, err
+		}
+
+		foundOldStream := false
+		for _, stream := range output.LogStreams {
+			if stream.LastEventTimestamp == nil || *stream.LastEventTimestamp <= lastProcessedEventTime {
+				foundOldStream = true
+				break
+			}
+			logStreams = append(logStreams, stream)
+		}
+
+		if foundOldStream || output.NextToken == nil {
+			break
+		}
+		nextToken = output.NextToken
 	}
 
-	return output.LogStreams, output.NextToken, nil
+	return logStreams, nil
 }
 
-// processLogStream reads and processes logs from a specific log stream using nextToken for pagination.
-func processLogStream(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, tracker *StreamTracker) error {
-	output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
-		LogGroupIdentifier:  aws.String(logGroupName),
-		LogStreamName: aws.String(streamName),
-		NextToken:     tracker.NextToken,
-		StartFromHead: aws.Bool(true),
-	})
-	if err != nil {
-		log.Printf("Error getting log events from stream %s: %v", streamName, err)
-		return err
+// getLogEvents fetches events from startTime to now, assembles by requestID using the original parsing logic, produces, returns event count and max timestamp (temp_cred structure).
+func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupName, streamName string, startTime int64) (eventCount int, maxTimestamp int64, err error) {
+	maxTimestamp = startTime
+	logEntries := make(map[string]*LogEntry)
+	var nextToken *string
+
+	for {
+		output, err := client.GetLogEvents(ctx, &cloudwatchlogs.GetLogEventsInput{
+			LogGroupIdentifier: aws.String(logGroupName),
+			LogStreamName:      aws.String(streamName),
+			StartTime:          aws.Int64(startTime),
+			EndTime:            aws.Int64(time.Now().UnixMilli()),
+			NextToken:          nextToken,
+			StartFromHead:      aws.Bool(true),
+		})
+		if err != nil {
+			utils.LogToCyborg("error", "Error getting log events from stream "+streamName+": "+err.Error())
+			return 0, maxTimestamp, err
+		}
+
+		if len(output.Events) == 0 {
+			break
+		}
+
+		batchMax := ProcessEventsIntoLogEntries(output.Events, logGroupName, streamName, logEntries)
+		if batchMax > maxTimestamp {
+			maxTimestamp = batchMax
+		}
+		eventCount += len(output.Events)
+
+		if output.NextForwardToken == nil {
+			break
+		}
+		if nextToken != nil && *nextToken == *output.NextForwardToken {
+			break
+		}
+		nextToken = output.NextForwardToken
 	}
 
-	log.Printf("DEBUG [%s] Got %d events. NextToken: %v → NextForwardToken: %v",
-		streamName, len(output.Events), tracker.NextToken, output.NextForwardToken)
-
-	// Try to parse JSON format first (API Gateway access logs)
-	// Fall back to regex for execution logs
-	eventsWithReqID := 0
-	eventsWithoutReqID := 0
-
-	for _, event := range output.Events {
-		message := *event.Message
-
-		// Try parsing as JSON first
-		var logEntry map[string]interface{}
-		isJSON := false
-		err := json.Unmarshal([]byte(message), &logEntry)
-
-		var reqID string
-
-		if err == nil {
-			isJSON = true
-			// Successfully parsed as JSON - look for requestId field
-			if reqIDVal, exists := logEntry["requestId"]; exists {
-				if reqIDStr, ok := reqIDVal.(string); ok {
-					reqID = reqIDStr
-					log.Printf("DEBUG [%s] Parsed JSON format - requestId: %s", streamName, reqID)
-				}
-			} else if extReqIDVal, exists := logEntry["extendedRequestId"]; exists {
-				// Fallback to extendedRequestId if requestId not found
-				if extReqIDStr, ok := extReqIDVal.(string); ok {
-					reqID = extReqIDStr
-					log.Printf("DEBUG [%s] Parsed JSON format - extendedRequestId: %s", streamName, reqID)
-				}
-			}
-		} else {
-			// Fall back to regex for execution log format
-			isJSON = false
-			reqIDRegex := regexp.MustCompile(`\(([^)]+)\)`)
-			matches := reqIDRegex.FindStringSubmatch(message)
-			if len(matches) >= 2 {
-				reqID = matches[1]
-			}
-		}
-
-		if reqID == "" {
-			eventsWithoutReqID++
-			// Log first few messages to see what we're getting
-			if eventsWithoutReqID <= 3 {
-				log.Printf("DEBUG [%s] Could not parse request ID (sample %d): %s", streamName, eventsWithoutReqID, message[:min(200, len(message))])
-			}
-			continue // Skip if no request ID found
-		}
-		eventsWithReqID++
-
-		// fmt.Printf("reqId: %s\n", reqID)
-
-		// Initialize a LogEntry for this req-id if it doesn't exist
-		if _, exists := tracker.logs[reqID]; !exists {
-			tracker.logs[reqID] = &LogEntry{
-				RequestID:       reqID,
-				QueryParams:     make(map[string]string),
-				RequestHeaders:  make(map[string]string),
-				ResponseHeaders: make(map[string]string),
-			}
-		}
-
-		entry := tracker.logs[reqID]
-
-		// If JSON format, extract data from JSON fields
-		if isJSON && err == nil {
-			// Extract HTTP method (try multiple field names)
-			if httpMethod, exists := logEntry["httpMethod"]; exists {
-				if httpMethodStr, ok := httpMethod.(string); ok {
-					entry.HTTPMethod = httpMethodStr
-				}
-			} else if method, exists := logEntry["method"]; exists {
-				if methodStr, ok := method.(string); ok {
-					entry.HTTPMethod = methodStr
-				}
-			}
-
-			// Extract resource path (try multiple field names)
-			if resourcePath, exists := logEntry["resourcePath"]; exists {
-				if resourcePathStr, ok := resourcePath.(string); ok {
-					entry.ResourcePath = resourcePathStr
-				}
-			} else if path, exists := logEntry["path"]; exists {
-				if pathStr, ok := path.(string); ok {
-					entry.ResourcePath = pathStr
-				}
-			}
-
-			// Extract status code (try multiple field names and types)
-			if status, exists := logEntry["status"]; exists {
-				switch v := status.(type) {
-				case float64:
-					entry.StatusCode = int(v)
-				case string:
-					if code, err := strconv.Atoi(v); err == nil {
-						entry.StatusCode = code
-					}
-				}
-			} else if statusCode, exists := logEntry["statusCode"]; exists {
-				switch v := statusCode.(type) {
-				case float64:
-					entry.StatusCode = int(v)
-				case string:
-					if code, err := strconv.Atoi(v); err == nil {
-						entry.StatusCode = code
-					}
-				}
-			}
-
-			// Extract request headers
-			if headers, exists := logEntry["headers"]; exists {
-				if headersMap, ok := headers.(map[string]interface{}); ok {
-					for k, v := range headersMap {
-						if vStr, ok := v.(string); ok {
-							entry.RequestHeaders[k] = vStr
-						}
-					}
-				}
-			}
-
-			// Extract response headers
-			if responseHeaders, exists := logEntry["responseHeaders"]; exists {
-				if headersMap, ok := responseHeaders.(map[string]interface{}); ok {
-					for k, v := range headersMap {
-						if vStr, ok := v.(string); ok {
-							entry.ResponseHeaders[k] = vStr
-						}
-					}
-				}
-			}
-
-			// Extract request payload/body
-			if requestPayload, exists := logEntry["requestPayload"]; exists {
-				if payloadStr, ok := requestPayload.(string); ok {
-					entry.RequestBody = payloadStr
-				}
-			}
-
-			// Extract response payload/body
-			if responsePayload, exists := logEntry["responsePayload"]; exists {
-				if payloadStr, ok := responsePayload.(string); ok {
-					entry.ResponseBody = payloadStr
-				}
-			}
-
-			if entry.HTTPMethod != "" {
-				log.Printf("DEBUG [%s] Extracted from JSON: %s %s (status: %d)", streamName, entry.HTTPMethod, entry.ResourcePath, entry.StatusCode)
-			// Debug: Show what headers/payloads were extracted
-			if len(entry.RequestHeaders) > 0 {
-				log.Printf("DEBUG [%s]   RequestHeaders: %v", streamName, entry.RequestHeaders)
-			}
-			if len(entry.ResponseHeaders) > 0 {
-				log.Printf("DEBUG [%s]   ResponseHeaders: %v", streamName, entry.ResponseHeaders)
-			}
-			if entry.RequestBody != "" {
-				log.Printf("DEBUG [%s]   RequestBody: %s", streamName, entry.RequestBody[:min(100, len(entry.RequestBody))])
-			}
-			if entry.ResponseBody != "" {
-				log.Printf("DEBUG [%s]   ResponseBody: %s", streamName, entry.ResponseBody[:min(100, len(entry.ResponseBody))])
-			}
-			}
-		} else {
-			// Fall back to regex pattern matching for execution logs
-			httpMethodRegex := regexp.MustCompile(`HTTP Method:\s*(\S+),\s*Resource Path:\s*(\S+)`)
-
-			if !strings.Contains(message, "TRUNCATED") {
-				if strings.Contains(message, "HTTP Method:") && strings.Contains(message, "Resource Path:") {
-				// fmt.Printf("scanning method: %s\n", message)
-
-				// Use regex to extract HTTP Method and Resource Path
-				matches := httpMethodRegex.FindStringSubmatch(message)
-				if len(matches) == 3 { // First match is the full string, then two capture groups
-					entry.HTTPMethod = matches[1]
-					entry.ResourcePath = matches[2]
-					// fmt.Printf("scanned method: %s %s\n", entry.HTTPMethod, entry.ResourcePath)
-				} else {
-					fmt.Println("Error: Could not extract HTTP Method and Resource Path")
-				}
-			} else if strings.Contains(message, "Method request query string:") {
-				entry.QueryParams = extractMap(message, "Method request query string:")
-			} else if strings.Contains(message, "Method request headers:") {
-				entry.RequestHeaders = extractMap(message, "Method request headers:")
-			} else if strings.Contains(message, "Method request body before transformations:") {
-				entry.RequestBody = extractBody(message, "Method request body before transformations:")
-			} else if strings.Contains(message, "Method response headers:") {
-				entry.ResponseHeaders = extractMap(message, "Method response headers:")
-			} else if strings.Contains(message, "Method response body after transformations:") {
-				entry.ResponseBody = extractBody(message, "Method response body after transformations:")
-			} else if strings.Contains(message, "Method completed with status:") {
-				// Split the message into parts and extract the status code
-				parts := strings.Split(message, "Method completed with status:")
-				if len(parts) > 1 {
-					statusCodeStr := strings.TrimSpace(parts[1]) // Extract the part after "status:"
-					statusCode, err := strconv.Atoi(statusCodeStr)
-					if err == nil {
-						entry.StatusCode = statusCode
-						// fmt.Printf("Parsed status code: %d\n", entry.StatusCode)
-					} else {
-						fmt.Printf("Error converting status code to integer: %v\n", err)
-					}
-				} else {
-					fmt.Println("Error: Could not find status code in the message")
-				}
-			}
-		}
-		}
-
-		// fmt.Printf("Stream: %s, Timestamp: %d, Message: %s\n", streamName, *event.Timestamp, *event.Message)
+	for _, entry := range logEntries {
+		ParseAndProduce(*entry)
 	}
-
-	log.Printf("DEBUG [%s] Summary: %d events with request IDs, %d without", streamName, eventsWithReqID, eventsWithoutReqID)
-
-	// Update the next token for the stream
-	if tracker.NextToken == nil || *tracker.NextToken != *output.NextForwardToken {
-		log.Printf("DEBUG [%s] Token changed or initial read. Updating token from %v to %v", streamName, tracker.NextToken, output.NextForwardToken)
-		tracker.NextToken = output.NextForwardToken
-	} else {
-		// If no new logs, consider the stream inactive
-		log.Printf("DEBUG [%s] Token unchanged (%v == %v), marking as inactive", streamName, *tracker.NextToken, *output.NextForwardToken)
-		tracker.Active = false
-		log.Printf("Marking stream as inactive, no new logs: %s", streamName)
-	}
-
-	return nil
+	return eventCount, maxTimestamp, nil
 }

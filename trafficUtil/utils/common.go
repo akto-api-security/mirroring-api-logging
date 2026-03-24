@@ -44,12 +44,18 @@ func InitVar(envVarName string, targetVar interface{}) {
 			if err == nil {
 				*v = temp
 				log.Printf("%s: %v\n", envVarName, *v)
+			} else {
+				log.Printf("%s: failed to parse duration %q: %v, using default\n", envVarName, envVar, err)
+				LogToCyborg("error", envVarName+": failed to parse duration "+envVar+": "+err.Error())
 			}
 		case *int:
 			temp, err := strconv.Atoi(envVar)
 			if err == nil {
 				*v = temp
 				log.Printf("%s: %v\n", envVarName, *v)
+			} else {
+				log.Printf("%s: failed to parse int %q: %v, using default\n", envVarName, envVar, err)
+				LogToCyborg("error", envVarName+": failed to parse int "+envVar+": "+err.Error())
 			}
 		default:
 			log.Printf("Unsupported type for targetVar: %T\n", v)
