@@ -395,7 +395,18 @@ func hasHostHeader(headers map[string]string) bool {
 	return false
 }
 
+func normalizePathTrailingSlash(p string) string {
+	if p == "" {
+		return p
+	}
+	if trimmed := strings.TrimRight(p, "/"); trimmed != "" {
+		return trimmed
+	}
+	return "/"
+}
+
 func ParseAndProduce(entry LogEntry) {
+	entry.ResourcePath = normalizePathTrailingSlash(entry.ResourcePath)
 	utils.LogToCyborg("info", "Processing traffic: "+entry.HTTPMethod+" "+entry.ResourcePath+" (status: "+fmt.Sprint(entry.StatusCode)+")")
 	// Initialize header maps if nil to avoid nil map assignment panic
 	if entry.RequestHeaders == nil {
