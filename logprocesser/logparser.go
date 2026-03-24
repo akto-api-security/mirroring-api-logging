@@ -406,9 +406,7 @@ func normalizePathTrailingSlash(p string) string {
 }
 
 func ParseAndProduce(entry LogEntry) {
-	log.Printf("DEBUG [%s] Normalizing path: %s", entry.RequestID, entry.ResourcePath)
 	entry.ResourcePath = normalizePathTrailingSlash(entry.ResourcePath)
-	log.Printf("DEBUG [%s] Normalized path: %s", entry.RequestID, entry.ResourcePath)
 	utils.LogToCyborg("info", "Processing traffic: "+entry.HTTPMethod+" "+entry.ResourcePath+" (status: "+fmt.Sprint(entry.StatusCode)+")")
 	// Initialize header maps if nil to avoid nil map assignment panic
 	if entry.RequestHeaders == nil {
