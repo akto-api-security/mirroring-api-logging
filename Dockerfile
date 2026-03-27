@@ -23,6 +23,7 @@ WORKDIR /app
 
 COPY go.mod ./
 COPY go.sum ./
+COPY accountconfig ./accountconfig
 COPY logprocesser ./logprocesser
 COPY loggroupdiscovery ./loggroupdiscovery
 COPY openapiprocessor ./openapiprocessor
