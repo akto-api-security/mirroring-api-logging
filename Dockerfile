@@ -42,4 +42,4 @@ COPY --from=builder /app/api-gateway-logging /app/api-gateway-logging
 COPY run.sh /app/run.sh
 RUN chmod +x /app/run.sh
 
-CMD "./run.sh"
+CMD ["./run.sh"]

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/akto-api-security/api-gateway-logging/accountconfig"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
