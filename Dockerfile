@@ -29,7 +29,6 @@ COPY openapiprocessor ./openapiprocessor
 COPY trafficUtil ./trafficUtil
 COPY *.go ./
 
-RUN go get
 RUN go mod download
 
 RUN go build -o api-gateway-logging
@@ -41,4 +40,4 @@ COPY --from=builder /app/api-gateway-logging /app/api-gateway-logging
 COPY run.sh /app/run.sh
 RUN chmod +x /app/run.sh
 
-CMD "./run.sh"
+CMD ["./run.sh"]
