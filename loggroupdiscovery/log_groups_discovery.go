@@ -49,6 +49,7 @@ func GetExecutionLogGroupNames(
 			for _, apiID := range apiIDs {
 				if strings.Contains(name, apiID) {
 					names = append(names, name)
+					utils.LogToCyborg("info", "Discovered API Gateway log group: "+name+" (ARN pattern will contain AWS account ID)")
 					break
 				}
 			}

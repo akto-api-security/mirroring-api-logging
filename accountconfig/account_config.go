@@ -65,7 +65,9 @@ func (m *AccountMappingManager) FetchMappings() {
 	client := &http.Client{Timeout: 10 * time.Second}
 	url := strings.TrimRight(m.cyborgBaseURL, "/") + "/api/fetchAwsAccountIdMappings"
 
-	req, err := http.NewRequest("GET", url, nil)
+	// Send POST request with empty JSON body (Akto convention)
+	body := strings.NewReader("{}")
+	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
 		utils.LogToCyborg("error", fmt.Sprintf("Error creating request for account mappings: %v", err))
 		return
@@ -101,6 +103,7 @@ func (m *AccountMappingManager) FetchMappings() {
 	for _, mapping := range mappings {
 		if mapping.Type == "AWS-ACCOUNTS" {
 			m.awsToAktoMapping[mapping.AwsAccountId] = mapping.AktoAccountId
+			utils.LogToCyborg("info", fmt.Sprintf("Mapped AWS account %s → Akto account %d", mapping.AwsAccountId, mapping.AktoAccountId))
 		}
 	}
 	m.lastFetchTime = time.Now()
@@ -122,6 +125,10 @@ func GetAktoAccountId(awsAccountId string) int {
 		return aktoAccountId
 	}
 
+	// Log when AWS account is not found in mappings (uses default)
+	if awsAccountId != "" {
+		utils.LogToCyborg("warn", fmt.Sprintf("AWS account ID %s not found in mappings, using default account 1000000", awsAccountId))
+	}
 	return 1000000
 }
 

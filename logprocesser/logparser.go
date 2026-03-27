@@ -232,7 +232,7 @@ func ProcessEventsIntoLogEntries(events []types.OutputLogEvent, logGroupName, st
 				RequestHeaders:     make(map[string]string),
 				ResponseHeaders:    make(map[string]string),
 				LogGroupIdentifier: logGroupName,
-				AwsAccountId:       accountconfig.ExtractAwsAccountIdFromLogGroupArn(logGroupName),
+				AwsAccountId:       func() string { awsId := accountconfig.ExtractAwsAccountIdFromLogGroupArn(logGroupName); if awsId != "" { log.Printf("DEBUG [%s] Extracted AWS account %s from log group %s", streamName, awsId, logGroupName) }; return awsId }(),
 			}
 		}
 
@@ -436,6 +436,7 @@ func ParseAndProduce(entry LogEntry) {
 
 	// Look up Akto account ID from AWS account ID
 	aktoAccountId := accountconfig.GetAktoAccountId(entry.AwsAccountId)
+	log.Printf("DEBUG Account mapping: AWS account %s → Akto account %d", entry.AwsAccountId, aktoAccountId)
 
 	reqHeaderString, _ := json.Marshal(entry.RequestHeaders)
 	respHeaderString, _ := json.Marshal(entry.ResponseHeaders)
