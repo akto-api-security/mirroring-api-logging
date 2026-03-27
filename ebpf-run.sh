@@ -1,11 +1,13 @@
 #!/bin/sh
 
-LOG_FILE="/tmp/dump.log"
+LOG_FILE=${LOG_FILE:-/tmp/dump.log}
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 10 * 1024 * 1024 bytes)
 CHECK_INTERVAL=${CHECK_INTERVAL:-60}
 CHECK_INTERVAL_MEM=${CHECK_INTERVAL_MEM:-10}     # Check interval in seconds (configurable via env)
 MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-80} # Kill process at this % memory usage (configurable via env)
 GOMEMLIMIT_PERCENT=${GOMEMLIMIT_PERCENT:-60} # GOMEMLIMIT as % of container memory limit (configurable via env)
+AKTO_SUPPRESS_TRACE=${AKTO_SUPPRESS_TRACE:-true}
+CRASH_RESTART_BACKOFF_SECONDS=${CRASH_RESTART_BACKOFF_SECONDS:-10}
 
 # Function to rotate the log file
 rotate_log() {
@@ -89,6 +91,64 @@ GOMEMLIMIT_MB=$((MEM_LIMIT_MB * GOMEMLIMIT_PERCENT / 100))
 export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
 echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
 
+# ENABLE_LOGS (same intent as always):
+#   false -> append ebpf stdout+stderr to LOG_FILE (2>&1), not primary container streams.
+#   true  (or anything else) -> ebpf inherits container stdout/stderr (kubectl logs).
+# AKTO_SUPPRESS_TRACE=true -> optional stderr-only SIGSEGV/cgo filter; when off, file mode matches legacy exactly.
+run_ebpf_once() {
+	log_to_file=false
+	[[ "${ENABLE_LOGS}" == "false" ]] && log_to_file=true
+
+	# Legacy path: single merged stream, no FIFO.
+	if [ "${AKTO_SUPPRESS_TRACE}" != "true" ]; then
+		if [ "$log_to_file" = "true" ]; then
+			./ebpf-logging >> "$LOG_FILE" 2>&1
+		else
+			./ebpf-logging
+		fi
+		return $?
+	fi
+
+	# Filter path: stderr only through awk; stdout unchanged. FIFO connects ebpf stderr -> awk reader.
+	ERRPIPE="/tmp/ebpf-stderr-$$"
+	rm -f "$ERRPIPE"
+	if ! mkfifo "$ERRPIPE"; then
+		return 1
+	fi
+
+	to_logfile=0
+	[ "$log_to_file" = "true" ] && to_logfile=1
+
+	awk -v to_logfile="$to_logfile" -v logf="$LOG_FILE" '
+	BEGIN { quiet = 0 }
+	/^SIGSEGV:/ || /^signal arrived during cgo execution/ {
+		if (!quiet) {
+			msg = "SIGSEGV/cgo crash (multi-line trace suppressed; set AKTO_SUPPRESS_TRACE=false for full output)"
+			if (to_logfile) print msg >> logf
+			else print msg > "/dev/stderr"
+		}
+		quiet = 1
+		next
+	}
+	quiet { next }
+	{
+		if (to_logfile) print >> logf
+		else print > "/dev/stderr"
+	}
+	' < "$ERRPIPE" &
+	AWKPID=$!
+
+	if [ "$log_to_file" = "true" ]; then
+		./ebpf-logging >> "$LOG_FILE" 2>"$ERRPIPE"
+	else
+		./ebpf-logging 2>"$ERRPIPE"
+	fi
+	ebpf_exit=$?
+	wait "$AWKPID" 2>/dev/null
+	rm -f "$ERRPIPE"
+	return "$ebpf_exit"
+}
+
 # Start memory monitoring in the background
 
 while :
@@ -100,10 +160,8 @@ do
 		set +a
 	fi
 
-	if [[ "${ENABLE_LOGS}" == "false" ]]; then
-		./ebpf-logging >> "$LOG_FILE" 2>&1
-	else
-		./ebpf-logging
-	fi
-	sleep 2
+	run_ebpf_once
+	ebpf_exit=$?
+
+	sleep "${CRASH_RESTART_BACKOFF_SECONDS}"
 done
