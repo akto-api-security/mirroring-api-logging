@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akto-api-security/api-gateway-logging/accountconfig"
 	"github.com/akto-api-security/api-gateway-logging/loggroupdiscovery"
 	"github.com/akto-api-security/api-gateway-logging/logprocesser"
 	"github.com/akto-api-security/api-gateway-logging/openapiprocessor"
@@ -68,6 +69,15 @@ func main() {
 		utils.LogToCyborg("warn", "DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
 		discoverOpenAPISpec = false
 	}
+
+	// Initialize account mapping manager for AWS→Akto account ID mapping
+	cyborgBaseURL := os.Getenv("CYBORG_BASE_URL")
+	if cyborgBaseURL == "" {
+		cyborgBaseURL = "https://ultron.akto.io"
+	}
+	accountMappingRefreshMinutes := 5
+	utils.InitVar("ACCOUNT_MAPPING_REFRESH_MINUTES", &accountMappingRefreshMinutes)
+	accountconfig.Initialize(cyborgBaseURL, databaseAbstractorToken, accountMappingRefreshMinutes)
 
 	for _, lgName := range logGroupNames {
 		go func(name string) {

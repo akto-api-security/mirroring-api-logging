@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akto-api-security/api-gateway-logging/accountconfig"
 	"github.com/akto-api-security/api-gateway-logging/loggroupdiscovery"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
@@ -30,6 +31,7 @@ type LogEntry struct {
 	RequestBodyTruncated  bool              `json:"request_body_truncated"`
 	ResponseBodyTruncated bool              `json:"response_body_truncated"`
 	LogGroupIdentifier    string            `json:"log_group_identifier"`
+	AwsAccountId          string            `json:"aws_account_id"`
 }
 
 // HostFromLogGroupIdentifier derives a host value from a log group ARN or name.
@@ -230,6 +232,7 @@ func ProcessEventsIntoLogEntries(events []types.OutputLogEvent, logGroupName, st
 				RequestHeaders:     make(map[string]string),
 				ResponseHeaders:    make(map[string]string),
 				LogGroupIdentifier: logGroupName,
+				AwsAccountId:       accountconfig.ExtractAwsAccountIdFromLogGroupArn(logGroupName),
 			}
 		}
 
@@ -431,6 +434,9 @@ func ParseAndProduce(entry LogEntry) {
 		entry.ResponseHeaders["x-akto-payload-truncated"] = "true"
 	}
 
+	// Look up Akto account ID from AWS account ID
+	aktoAccountId := accountconfig.GetAktoAccountId(entry.AwsAccountId)
+
 	reqHeaderString, _ := json.Marshal(entry.RequestHeaders)
 	respHeaderString, _ := json.Marshal(entry.ResponseHeaders)
 	trafficData := map[string]string{
@@ -446,7 +452,7 @@ func ParseAndProduce(entry LogEntry) {
 		"statusCode":      fmt.Sprint(entry.StatusCode),
 		"type":            "HTTP/1.1",
 		"status":          "OK",
-		"akto_account_id": fmt.Sprint(1000000),
+		"akto_account_id": fmt.Sprint(aktoAccountId),
 		"akto_vxlan_id":   fmt.Sprint(0),
 		"is_pending":      fmt.Sprint(false),
 		"source":          "MIRRORING",
