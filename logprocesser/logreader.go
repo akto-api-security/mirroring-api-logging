@@ -61,8 +61,9 @@ func (t *TimestampTracker) cleanupStaleEntries() {
 	utils.LogToCyborg("info", fmt.Sprintf("TimestampTracker cleanup completed, cleanedEntries: %d, entries: %d", cleanedEntries, len(t.lastReadTimestamps)))
 }
 
-// MonitorLogGroup monitors a CloudWatch log group (same structure as temp_cred; single-account).
-func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string) error {
+// MonitorLogGroup monitors a CloudWatch log group. In cross-account mode, awsAccountId identifies the customer account.
+// In single-account mode, awsAccountId can be empty string.
+func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, awsAccountId string) error {
 	utils.DebugLog("MonitorLogGroup() - Starting log processor for log group: %s", logGroupName)
 
 	for {
