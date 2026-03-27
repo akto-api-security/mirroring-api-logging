@@ -31,3 +31,4 @@ require (
 )
 
 replace github.com/akto-api-security/api-gateway-logging/trafficUtil => ./trafficUtil
+replace github.com/akto-api-security/api-gateway-logging/accountconfig => ./accountconfig
