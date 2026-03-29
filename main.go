@@ -74,6 +74,55 @@ func main() {
 		utils.LogToCyborg("info", "Cross-account mode disabled - using single-account mode")
 	}
 
+	// Get OpenAPI discovery configuration and token early (needed for accountconfig.Initialize)
+	fmt.Println("[STARTUP] Reading OpenAPI discovery configuration")
+	discoverOpenAPISpec := true
+	utils.InitVar("DISCOVER_OPENAPI_SPEC", &discoverOpenAPISpec)
+
+	openapiDiscoveryIntervalMinutes := 15
+	utils.InitVar("OPENAPI_DISCOVERY_INTERVAL_MINUTES", &openapiDiscoveryIntervalMinutes)
+	fmt.Printf("[STARTUP] DISCOVER_OPENAPI_SPEC=%v, interval=%d minutes\n", discoverOpenAPISpec, openapiDiscoveryIntervalMinutes)
+	os.Stdout.Sync()
+
+	fmt.Println("[STARTUP] Reading DATABASE_ABSTRACTOR_TOKEN")
+	databaseAbstractorToken := os.Getenv("DATABASE_ABSTRACTOR_TOKEN")
+	if databaseAbstractorToken == "" {
+		fmt.Println("[STARTUP] DATABASE_ABSTRACTOR_TOKEN is empty")
+	} else {
+		fmt.Println("[STARTUP] DATABASE_ABSTRACTOR_TOKEN is set")
+	}
+	os.Stdout.Sync()
+
+	// OpenAPI discovery requires DATABASE_ABSTRACTOR_TOKEN for cyborg auth
+	if discoverOpenAPISpec && databaseAbstractorToken == "" {
+		fmt.Println("[STARTUP] Disabling OpenAPI discovery (no token)")
+		os.Stdout.Sync()
+		utils.LogToCyborg("warn", "DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
+		discoverOpenAPISpec = false
+	}
+
+	// Initialize account mapping manager BEFORE discovering log groups (needed for cross-account mode)
+	fmt.Println("[STARTUP] Reading CYBORG_BASE_URL")
+	cyborgBaseURL := os.Getenv("CYBORG_BASE_URL")
+	if cyborgBaseURL == "" {
+		fmt.Println("[STARTUP] CYBORG_BASE_URL not set, using default: https://ultron.akto.io")
+		cyborgBaseURL = "https://ultron.akto.io"
+	} else {
+		fmt.Printf("[STARTUP] CYBORG_BASE_URL=%s\n", cyborgBaseURL)
+	}
+	os.Stdout.Sync()
+
+	accountMappingRefreshMinutes := 5
+	utils.InitVar("ACCOUNT_MAPPING_REFRESH_MINUTES", &accountMappingRefreshMinutes)
+	fmt.Printf("[STARTUP] About to call accountconfig.Initialize(url=%s, token=%s, refreshInterval=%d minutes)\n",
+		cyborgBaseURL,
+		map[bool]string{true: "SET", false: "EMPTY"}[databaseAbstractorToken != ""],
+		accountMappingRefreshMinutes)
+	os.Stdout.Sync()
+	accountconfig.Initialize(cyborgBaseURL, databaseAbstractorToken, accountMappingRefreshMinutes)
+	fmt.Println("[STARTUP] accountconfig.Initialize() completed")
+	os.Stdout.Sync()
+
 	fmt.Println("[STARTUP] Calling getLogGroupNames()")
 	os.Stdout.Sync()
 	discoveredLogGroups, err := getLogGroupNames(context.TODO(), cfg, client, stsClient, crossAccountMode)
@@ -104,55 +153,6 @@ func main() {
 	fmt.Println("[STARTUP] Starting Kafka initialization in background")
 	os.Stdout.Sync()
 	go kafkaUtil.InitKafka()
-
-	// Get OpenAPI discovery configuration
-	fmt.Println("[STARTUP] Reading OpenAPI discovery configuration")
-	discoverOpenAPISpec := true
-	utils.InitVar("DISCOVER_OPENAPI_SPEC", &discoverOpenAPISpec)
-
-	openapiDiscoveryIntervalMinutes := 15
-	utils.InitVar("OPENAPI_DISCOVERY_INTERVAL_MINUTES", &openapiDiscoveryIntervalMinutes)
-	fmt.Printf("[STARTUP] DISCOVER_OPENAPI_SPEC=%v, interval=%d minutes\n", discoverOpenAPISpec, openapiDiscoveryIntervalMinutes)
-	os.Stdout.Sync()
-
-	fmt.Println("[STARTUP] Reading DATABASE_ABSTRACTOR_TOKEN")
-	databaseAbstractorToken := os.Getenv("DATABASE_ABSTRACTOR_TOKEN")
-	if databaseAbstractorToken == "" {
-		fmt.Println("[STARTUP] DATABASE_ABSTRACTOR_TOKEN is empty")
-	} else {
-		fmt.Println("[STARTUP] DATABASE_ABSTRACTOR_TOKEN is set")
-	}
-	os.Stdout.Sync()
-
-	// OpenAPI discovery requires DATABASE_ABSTRACTOR_TOKEN for cyborg auth
-	if discoverOpenAPISpec && databaseAbstractorToken == "" {
-		fmt.Println("[STARTUP] Disabling OpenAPI discovery (no token)")
-		os.Stdout.Sync()
-		utils.LogToCyborg("warn", "DATABASE_ABSTRACTOR_TOKEN not set - disabling OpenAPI discovery")
-		discoverOpenAPISpec = false
-	}
-
-	// Initialize account mapping manager for AWS→Akto account ID mapping
-	fmt.Println("[STARTUP] Reading CYBORG_BASE_URL")
-	cyborgBaseURL := os.Getenv("CYBORG_BASE_URL")
-	if cyborgBaseURL == "" {
-		fmt.Println("[STARTUP] CYBORG_BASE_URL not set, using default: https://ultron.akto.io")
-		cyborgBaseURL = "https://ultron.akto.io"
-	} else {
-		fmt.Printf("[STARTUP] CYBORG_BASE_URL=%s\n", cyborgBaseURL)
-	}
-	os.Stdout.Sync()
-
-	accountMappingRefreshMinutes := 5
-	utils.InitVar("ACCOUNT_MAPPING_REFRESH_MINUTES", &accountMappingRefreshMinutes)
-	fmt.Printf("[STARTUP] About to call accountconfig.Initialize(url=%s, token=%s, refreshInterval=%d minutes)\n",
-		cyborgBaseURL,
-		map[bool]string{true: "SET", false: "EMPTY"}[databaseAbstractorToken != ""],
-		accountMappingRefreshMinutes)
-	os.Stdout.Sync()
-	accountconfig.Initialize(cyborgBaseURL, databaseAbstractorToken, accountMappingRefreshMinutes)
-	fmt.Println("[STARTUP] accountconfig.Initialize() completed")
-	os.Stdout.Sync()
 
 	for _, discoveredLg := range discoveredLogGroups {
 		go func(lg loggroupdiscovery.DiscoveredLogGroup) {
