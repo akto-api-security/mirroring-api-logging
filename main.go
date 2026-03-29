@@ -157,7 +157,7 @@ func main() {
 	for _, discoveredLg := range discoveredLogGroups {
 		go func(lg loggroupdiscovery.DiscoveredLogGroup) {
 			utils.LogToCyborg("info", "Starting CloudWatch monitor for log group: "+lg.Name)
-			if err := logprocesser.MonitorLogGroup(context.TODO(), client, lg.Name, lg.AwsAccountId); err != nil {
+			if err := logprocesser.MonitorLogGroup(context.TODO(), client, lg.Name, lg.AwsAccountId, stsClient, cfg, crossAccountMode); err != nil {
 				utils.LogToCyborg("error", "Error monitoring log group "+lg.Name+": "+err.Error())
 				log.Fatalf("Error monitoring log group %s: %v", lg.Name, err)
 			}

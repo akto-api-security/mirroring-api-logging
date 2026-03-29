@@ -7,10 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akto-api-security/api-gateway-logging/loggroupdiscovery"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 var globalTimestampTracker = NewTimestampTracker()
@@ -63,8 +65,33 @@ func (t *TimestampTracker) cleanupStaleEntries() {
 
 // MonitorLogGroup monitors a CloudWatch log group. In cross-account mode, awsAccountId identifies the customer account.
 // In single-account mode, awsAccountId can be empty string.
-func MonitorLogGroup(ctx context.Context, client *cloudwatchlogs.Client, logGroupName string, awsAccountId string) error {
-	utils.DebugLog("MonitorLogGroup() - Starting log processor for log group: %s", logGroupName)
+// If awsAccountId is provided and non-empty, a cross-account client will be created using STS AssumeRole.
+// In cross-account mode, failing to create a cross-account client is a fatal error.
+func MonitorLogGroup(ctx context.Context, defaultClient *cloudwatchlogs.Client, logGroupName string, awsAccountId string, stsClient *sts.Client, cfg aws.Config, crossAccountMode bool) error {
+	utils.DebugLog("MonitorLogGroup() - Starting log processor for log group: %s (AWS Account: %s)", logGroupName, awsAccountId)
+
+	// Determine which client to use
+	var client *cloudwatchlogs.Client = defaultClient
+
+	// If awsAccountId is provided, create a cross-account client
+	if awsAccountId != "" {
+		fmt.Printf("[MONITOR_LOG_GROUP] Creating cross-account client for AWS account: %s\n", awsAccountId)
+		crossAccountClient, err := loggroupdiscovery.AssumeRoleAndCreateLogsClient(ctx, stsClient, cfg, awsAccountId)
+		if err != nil {
+			errorMsg := fmt.Sprintf("Failed to create cross-account client for %s: %v", awsAccountId, err)
+			utils.LogToCyborg("error", errorMsg)
+			fmt.Printf("[MONITOR_LOG_GROUP] ERROR: %s\n", errorMsg)
+
+			// If cross-account mode is enabled, this is a fatal error
+			if crossAccountMode {
+				return fmt.Errorf("cross-account mode enabled but failed to create client for account %s: %v", awsAccountId, err)
+			}
+			// In single-account mode with awsAccountId set, still fail since we discovered this log group as cross-account
+			return fmt.Errorf("failed to create cross-account client for account %s: %v", awsAccountId, err)
+		}
+		fmt.Printf("[MONITOR_LOG_GROUP] Cross-account client created successfully for: %s\n", awsAccountId)
+		client = crossAccountClient
+	}
 
 	for {
 		cycleStartTime := time.Now().UnixMilli()
