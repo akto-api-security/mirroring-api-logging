@@ -103,13 +103,18 @@ func discoverLogGroupsCrossAccount(
 		awsAccountIds = append(awsAccountIds, awsAccountId)
 	}
 
-	utils.LogToCyborg("info", fmt.Sprintf("Discovering log groups from %d customer AWS accounts", len(awsAccountIds)))
+	utils.LogToCyborg("info", fmt.Sprintf("Starting cross-account log group discovery for %d customer AWS accounts: %v", len(awsAccountIds), awsAccountIds))
 
+	successCount := 0
+	failureCount := 0
 	for _, awsAccountId := range awsAccountIds {
+		utils.LogToCyborg("info", fmt.Sprintf("Processing AWS account: %s", awsAccountId))
+
 		// Assume role in customer account
 		crossAccountLogsClient, err := AssumeRoleAndCreateLogsClient(ctx, stsClient, cfg, awsAccountId)
 		if err != nil {
 			utils.LogToCyborg("error", fmt.Sprintf("Error assuming role for account %s, skipping: %v", awsAccountId, err))
+			failureCount++
 			continue
 		}
 
@@ -117,12 +122,20 @@ func discoverLogGroupsCrossAccount(
 		discovered, err := DiscoverLogGroupsFromAccount(ctx, nil, crossAccountLogsClient, awsAccountId)
 		if err != nil {
 			utils.LogToCyborg("error", fmt.Sprintf("Error discovering log groups in account %s: %v", awsAccountId, err))
+			failureCount++
 			continue
 		}
 
-		allDiscovered = append(allDiscovered, discovered...)
+		if len(discovered) == 0 {
+			utils.LogToCyborg("info", fmt.Sprintf("No API Gateway log groups found in account %s", awsAccountId))
+		} else {
+			successCount++
+			allDiscovered = append(allDiscovered, discovered...)
+			utils.LogToCyborg("info", fmt.Sprintf("Successfully discovered %d log groups from account %s", len(discovered), awsAccountId))
+		}
 	}
 
+	utils.LogToCyborg("info", fmt.Sprintf("Cross-account discovery complete: %d successful, %d failed, %d total log groups discovered", successCount, failureCount, len(allDiscovered)))
 	return allDiscovered, nil
 }
 

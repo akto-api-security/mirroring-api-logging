@@ -21,15 +21,18 @@ type DiscoveredLogGroup struct {
 // AssumeRoleAndCreateLogsClient assumes a role in the target AWS account and returns a CloudWatch Logs client
 func AssumeRoleAndCreateLogsClient(ctx context.Context, stsClient *sts.Client, cfg aws.Config, targetAwsAccountId string) (*cloudwatchlogs.Client, error) {
 	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/AktoLogReaderRole", targetAwsAccountId)
+	utils.LogToCyborg("info", fmt.Sprintf("Attempting to assume role: %s", roleArn))
 
 	assumeRoleOutput, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
 		RoleArn:         aws.String(roleArn),
 		RoleSessionName: aws.String("AktoLogReader"),
 	})
 	if err != nil {
-		utils.LogToCyborg("error", fmt.Sprintf("Error assuming role %s: %v", roleArn, err))
+		utils.LogToCyborg("error", fmt.Sprintf("Failed to assume role %s: %v (check if role exists, has correct permissions, and trusts this account)", roleArn, err))
 		return nil, err
 	}
+
+	utils.LogToCyborg("info", fmt.Sprintf("Successfully assumed role. Credentials valid until: %v", assumeRoleOutput.Credentials.Expiration))
 
 	// Create credentials from the assumed role
 	staticCreds := credentials.NewStaticCredentialsProvider(
@@ -45,7 +48,7 @@ func AssumeRoleAndCreateLogsClient(ctx context.Context, stsClient *sts.Client, c
 
 	// Create CloudWatch Logs client with cross-account credentials
 	logsClient := cloudwatchlogs.NewFromConfig(crossAccountCfg)
-	utils.LogToCyborg("info", fmt.Sprintf("Successfully assumed role in AWS account %s", targetAwsAccountId))
+	utils.LogToCyborg("info", fmt.Sprintf("Created CloudWatch Logs client for cross-account AWS account %s", targetAwsAccountId))
 	return logsClient, nil
 }
 
@@ -57,16 +60,24 @@ func DiscoverLogGroupsFromAccount(
 	awsAccountId string,
 ) ([]DiscoveredLogGroup, error) {
 	var discovered []DiscoveredLogGroup
+	utils.LogToCyborg("info", fmt.Sprintf("Starting DescribeLogGroups API call for account %s with prefix: %s", awsAccountId, ApiGatewayExecutionLogGroupPrefix))
+
 	paginator := cloudwatchlogs.NewDescribeLogGroupsPaginator(logsClient, &cloudwatchlogs.DescribeLogGroupsInput{
 		LogGroupNamePrefix: strPtr(ApiGatewayExecutionLogGroupPrefix),
 	})
 
+	pageCount := 0
+	totalLogGroups := 0
 	for paginator.HasMorePages() {
+		pageCount++
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			utils.LogToCyborg("error", fmt.Sprintf("Error describing log groups in account %s: %s", awsAccountId, err.Error()))
+			utils.LogToCyborg("error", fmt.Sprintf("Error describing log groups in account %s (page %d): %s", awsAccountId, pageCount, err.Error()))
 			return nil, err
 		}
+
+		totalLogGroups += len(page.LogGroups)
+		utils.LogToCyborg("info", fmt.Sprintf("Page %d: received %d log groups from account %s", pageCount, len(page.LogGroups), awsAccountId))
 
 		for _, lg := range page.LogGroups {
 			if lg.LogGroupName == nil {
@@ -83,5 +94,6 @@ func DiscoverLogGroupsFromAccount(
 		}
 	}
 
+	utils.LogToCyborg("info", fmt.Sprintf("DescribeLogGroups completed for account %s: %d pages, %d total log groups received, %d API Gateway logs found", awsAccountId, pageCount, totalLogGroups, len(discovered)))
 	return discovered, nil
 }

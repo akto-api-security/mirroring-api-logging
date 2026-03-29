@@ -64,6 +64,7 @@ func (m *AccountMappingManager) FetchMappings() {
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	url := strings.TrimRight(m.cyborgBaseURL, "/") + "/api/fetchAwsAccountIdMappings"
+	utils.LogToCyborg("info", fmt.Sprintf("Fetching account mappings from: %s", url))
 
 	// Send POST request with empty JSON body (Akto convention)
 	body := strings.NewReader("{}")
@@ -94,6 +95,8 @@ func (m *AccountMappingManager) FetchMappings() {
 		utils.LogToCyborg("error", fmt.Sprintf("Error decoding account mappings: %v", err))
 		return
 	}
+
+	utils.LogToCyborg("info", fmt.Sprintf("Received %d total mappings from Cyborg", len(mappings)))
 
 	// Update the mapping
 	m.mu.Lock()
