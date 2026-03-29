@@ -45,7 +45,7 @@ func CreateAPIGatewayClientsForAccount(
 	stsClient *sts.Client,
 	targetAwsAccountId string,
 ) (*ClientSet, error) {
-	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/AktoLogReaderRole", targetAwsAccountId)
+	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/AktoReadOnlyIntegrationRole", targetAwsAccountId)
 
 	assumeRoleOutput, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
 		RoleArn:         aws.String(roleArn),

@@ -24,7 +24,7 @@ func AssumeRoleAndCreateLogsClient(ctx context.Context, stsClient *sts.Client, c
 	fmt.Printf("[ASSUME_ROLE] Starting AssumeRoleAndCreateLogsClient for account: %s\n", targetAwsAccountId)
 	os.Stdout.Sync()
 
-	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/AktoLogReaderRole", targetAwsAccountId)
+	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/AktoReadOnlyIntegrationRole", targetAwsAccountId)
 	fmt.Printf("[ASSUME_ROLE] Role ARN: %s\n", roleArn)
 	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Attempting to assume role: %s", roleArn))
