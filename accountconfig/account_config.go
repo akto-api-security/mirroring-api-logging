@@ -87,65 +87,137 @@ func (m *AccountMappingManager) FetchMappings() {
 	utils.LogToCyborg("info", fmt.Sprintf("Fetching account mappings from: %s", url))
 
 	// Send POST request with empty JSON body (Akto convention)
+	fmt.Println("[ACCOUNT_CONFIG] Creating HTTP request")
+	os.Stdout.Sync()
+
 	body := strings.NewReader("{}")
 	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
-		fmt.Printf("[ACCOUNT_CONFIG] Error creating request: %v\n", err)
+		fmt.Printf("[ACCOUNT_CONFIG] ERROR: Failed to create request: %v\n", err)
+		os.Stdout.Sync()
 		utils.LogToCyborg("error", fmt.Sprintf("Error creating request for account mappings: %v", err))
 		return
 	}
+	fmt.Println("[ACCOUNT_CONFIG] HTTP request created successfully")
+	os.Stdout.Sync()
 
+	fmt.Println("[ACCOUNT_CONFIG] Setting request headers...")
+	os.Stdout.Sync()
 	req.Header.Set("Authorization", m.databaseAbstractorToken)
+	fmt.Println("[ACCOUNT_CONFIG] Authorization header set")
+	os.Stdout.Sync()
 	req.Header.Set("Content-Type", "application/json")
+	fmt.Println("[ACCOUNT_CONFIG] Content-Type header set to application/json")
+	os.Stdout.Sync()
 
+	fmt.Println("[ACCOUNT_CONFIG] Request details:")
+	fmt.Printf("[ACCOUNT_CONFIG]   Method: POST\n")
+	fmt.Printf("[ACCOUNT_CONFIG]   URL: %s\n", url)
+	fmt.Printf("[ACCOUNT_CONFIG]   Body: {}\n")
+	fmt.Printf("[ACCOUNT_CONFIG]   Headers: Authorization=<set>, Content-Type=application/json\n")
+	os.Stdout.Sync()
+
+	fmt.Println("[ACCOUNT_CONFIG] Sending HTTP request to Cyborg...")
+	os.Stdout.Sync()
+	startTime := time.Now()
 	resp, err := client.Do(req)
+	elapsed := time.Since(startTime)
+
 	if err != nil {
-		fmt.Printf("[ACCOUNT_CONFIG] Error fetching from %s: %v\n", url, err)
+		fmt.Printf("[ACCOUNT_CONFIG] ERROR: HTTP request failed after %v: %v\n", elapsed, err)
 		os.Stdout.Sync()
 		utils.LogToCyborg("error", fmt.Sprintf("Error fetching account mappings from %s: %v", url, err))
 		return
 	}
 	defer resp.Body.Close()
 
-	fmt.Printf("[ACCOUNT_CONFIG] Response status: %d\n", resp.StatusCode)
+	fmt.Printf("[ACCOUNT_CONFIG] HTTP request completed in %v\n", elapsed)
+	os.Stdout.Sync()
+	fmt.Printf("[ACCOUNT_CONFIG] Response Status Code: %d\n", resp.StatusCode)
+	os.Stdout.Sync()
+
+	fmt.Println("[ACCOUNT_CONFIG] Response Headers:")
+	for headerName, headerValues := range resp.Header {
+		for _, headerValue := range headerValues {
+			if headerName == "Authorization" {
+				fmt.Printf("[ACCOUNT_CONFIG]   %s: <redacted>\n", headerName)
+			} else {
+				fmt.Printf("[ACCOUNT_CONFIG]   %s: %s\n", headerName, headerValue)
+			}
+		}
+	}
 	os.Stdout.Sync()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("[ACCOUNT_CONFIG] Account mapping API returned %d: %s\n", resp.StatusCode, string(body))
+		respBody, _ := io.ReadAll(resp.Body)
+		respBodyStr := string(respBody)
+		fmt.Printf("[ACCOUNT_CONFIG] ERROR: Account mapping API returned status %d\n", resp.StatusCode)
 		os.Stdout.Sync()
-		utils.LogToCyborg("error", fmt.Sprintf("Account mapping API returned %d: %s", resp.StatusCode, string(body)))
+		fmt.Printf("[ACCOUNT_CONFIG] Response body: %s\n", respBodyStr)
+		os.Stdout.Sync()
+		utils.LogToCyborg("error", fmt.Sprintf("Account mapping API returned %d: %s", resp.StatusCode, respBodyStr))
 		return
 	}
 
+	fmt.Println("[ACCOUNT_CONFIG] Response status is 200 OK, parsing JSON...")
+	os.Stdout.Sync()
+
 	var mappings []AccountMapping
 	if err := json.NewDecoder(resp.Body).Decode(&mappings); err != nil {
-		fmt.Printf("[ACCOUNT_CONFIG] Error decoding mappings: %v\n", err)
+		fmt.Printf("[ACCOUNT_CONFIG] ERROR: Failed to decode JSON response: %v\n", err)
 		os.Stdout.Sync()
 		utils.LogToCyborg("error", fmt.Sprintf("Error decoding account mappings: %v", err))
 		return
 	}
+	fmt.Println("[ACCOUNT_CONFIG] JSON response decoded successfully")
+	os.Stdout.Sync()
 
 	fmt.Printf("[ACCOUNT_CONFIG] Received %d total mappings from Cyborg\n", len(mappings))
 	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Received %d total mappings from Cyborg", len(mappings)))
 
+	if len(mappings) == 0 {
+		fmt.Println("[ACCOUNT_CONFIG] WARNING: Response contained 0 mappings")
+		os.Stdout.Sync()
+	} else {
+		fmt.Println("[ACCOUNT_CONFIG] Response mappings:")
+		for i, m := range mappings {
+			fmt.Printf("[ACCOUNT_CONFIG]   [%d] awsAccountId=%s, aktoAccountId=%d, type=%s\n", i, m.AwsAccountId, m.AktoAccountId, m.Type)
+		}
+		os.Stdout.Sync()
+	}
+
 	// Update the mapping
+	fmt.Println("[ACCOUNT_CONFIG] Acquiring lock to update mappings...")
+	os.Stdout.Sync()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	fmt.Println("[ACCOUNT_CONFIG] Lock acquired, clearing old mappings")
+	os.Stdout.Sync()
 
 	m.awsToAktoMapping = make(map[string]int)
+	successCount := 0
 	for _, mapping := range mappings {
 		if mapping.Type == "AWS-ACCOUNTS" {
 			m.awsToAktoMapping[mapping.AwsAccountId] = mapping.AktoAccountId
-			fmt.Printf("[ACCOUNT_CONFIG] Mapped AWS account %s → Akto account %d\n", mapping.AwsAccountId, mapping.AktoAccountId)
+			successCount++
+			fmt.Printf("[ACCOUNT_CONFIG] [SUCCESS] Mapped AWS account %s → Akto account %d\n", mapping.AwsAccountId, mapping.AktoAccountId)
 			os.Stdout.Sync()
 			utils.LogToCyborg("info", fmt.Sprintf("Mapped AWS account %s → Akto account %d", mapping.AwsAccountId, mapping.AktoAccountId))
+		} else {
+			fmt.Printf("[ACCOUNT_CONFIG] [SKIP] Skipping mapping with type=%s (expected AWS-ACCOUNTS)\n", mapping.Type)
+			os.Stdout.Sync()
 		}
 	}
 	m.lastFetchTime = time.Now()
+	fmt.Printf("[ACCOUNT_CONFIG] Updated lastFetchTime to: %v\n", m.lastFetchTime)
+	os.Stdout.Sync()
 
-	fmt.Printf("[ACCOUNT_CONFIG] Successfully fetched %d AWS→Akto account mappings\n", len(m.awsToAktoMapping))
+	fmt.Printf("[ACCOUNT_CONFIG] ===== FETCH COMPLETE =====\n")
+	fmt.Printf("[ACCOUNT_CONFIG] Total mappings received: %d\n", len(mappings))
+	fmt.Printf("[ACCOUNT_CONFIG] Mappings processed: %d\n", successCount)
+	fmt.Printf("[ACCOUNT_CONFIG] Current awsToAktoMapping size: %d\n", len(m.awsToAktoMapping))
+	fmt.Println("[ACCOUNT_CONFIG] ===== END FETCH =====")
 	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Successfully fetched %d AWS→Akto account mappings", len(m.awsToAktoMapping)))
 }
