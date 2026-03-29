@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,16 +68,18 @@ func (t *TimestampTracker) cleanupStaleEntries() {
 // In single-account mode, awsAccountId can be empty string.
 // If awsAccountId is provided and non-empty, a cross-account client will be created using STS AssumeRole.
 // In cross-account mode, failing to create a cross-account client is a fatal error.
+// Credentials are automatically refreshed when they expire.
 func MonitorLogGroup(ctx context.Context, defaultClient *cloudwatchlogs.Client, logGroupName string, awsAccountId string, stsClient *sts.Client, cfg aws.Config, crossAccountMode bool) error {
 	utils.DebugLog("MonitorLogGroup() - Starting log processor for log group: %s (AWS Account: %s)", logGroupName, awsAccountId)
 
 	// Determine which client to use
 	var client *cloudwatchlogs.Client = defaultClient
+	var usesCrossAccount bool = false
 
 	// If awsAccountId is provided, create a cross-account client
 	if awsAccountId != "" {
-		fmt.Printf("[MONITOR_LOG_GROUP] Creating cross-account client for AWS account: %s\n", awsAccountId)
-		crossAccountClient, err := loggroupdiscovery.AssumeRoleAndCreateLogsClient(ctx, stsClient, cfg, awsAccountId)
+		usesCrossAccount = true
+		crossAccountClient, err := createCrossAccountClient(ctx, stsClient, cfg, awsAccountId)
 		if err != nil {
 			errorMsg := fmt.Sprintf("Failed to create cross-account client for %s: %v", awsAccountId, err)
 			utils.LogToCyborg("error", errorMsg)
@@ -89,7 +92,6 @@ func MonitorLogGroup(ctx context.Context, defaultClient *cloudwatchlogs.Client, 
 			// In single-account mode with awsAccountId set, still fail since we discovered this log group as cross-account
 			return fmt.Errorf("failed to create cross-account client for account %s: %v", awsAccountId, err)
 		}
-		fmt.Printf("[MONITOR_LOG_GROUP] Cross-account client created successfully for: %s\n", awsAccountId)
 		client = crossAccountClient
 	}
 
@@ -100,7 +102,23 @@ func MonitorLogGroup(ctx context.Context, defaultClient *cloudwatchlogs.Client, 
 		lookBackTime := cycleStartTime - LOG_STREAM_FETCH_TIME
 		logStreams, err := FetchLogStreams(ctx, client, logGroupName, lookBackTime)
 		if err != nil {
-			utils.LogToCyborg("error", "Error fetching log streams: "+err.Error())
+			errorMsg := err.Error()
+			utils.LogToCyborg("error", "Error fetching log streams: "+errorMsg)
+
+			// If we get an ExpiredTokenException and using cross-account mode, refresh the client
+			if usesCrossAccount && (contains(errorMsg, "ExpiredTokenException") || contains(errorMsg, "SecurityTokenServiceException")) {
+				fmt.Printf("[MONITOR_LOG_GROUP] Credentials expired for AWS account %s, refreshing...\n", awsAccountId)
+				refreshedClient, refreshErr := createCrossAccountClient(ctx, stsClient, cfg, awsAccountId)
+				if refreshErr != nil {
+					fmt.Printf("[MONITOR_LOG_GROUP] Failed to refresh credentials for %s: %v\n", awsAccountId, refreshErr)
+					utils.LogToCyborg("error", fmt.Sprintf("Failed to refresh credentials for %s: %v", awsAccountId, refreshErr))
+				} else {
+					client = refreshedClient
+					fmt.Printf("[MONITOR_LOG_GROUP] Credentials refreshed successfully for %s\n", awsAccountId)
+					utils.LogToCyborg("info", fmt.Sprintf("Credentials refreshed for AWS account %s", awsAccountId))
+					continue // Retry the fetch with fresh credentials
+				}
+			}
 			time.Sleep(10 * time.Second)
 			continue
 		}
@@ -124,8 +142,30 @@ func MonitorLogGroup(ctx context.Context, defaultClient *cloudwatchlogs.Client, 
 
 			eventCount, maxTimestamp, err := getLogEvents(ctx, client, logGroupName, streamName, lastReadTime)
 			if err != nil {
-				utils.LogToCyborg("error", "Error fetching log events for stream "+streamName+": "+err.Error())
-				continue
+				errorMsg := err.Error()
+				utils.LogToCyborg("error", "Error fetching log events for stream "+streamName+": "+errorMsg)
+
+				// If we get an ExpiredTokenException and using cross-account mode, refresh the client and retry
+				if usesCrossAccount && (contains(errorMsg, "ExpiredTokenException") || contains(errorMsg, "SecurityTokenServiceException")) {
+					fmt.Printf("[MONITOR_LOG_GROUP] Credentials expired for AWS account %s, refreshing...\n", awsAccountId)
+					refreshedClient, refreshErr := createCrossAccountClient(ctx, stsClient, cfg, awsAccountId)
+					if refreshErr != nil {
+						fmt.Printf("[MONITOR_LOG_GROUP] Failed to refresh credentials for %s: %v\n", awsAccountId, refreshErr)
+						utils.LogToCyborg("error", fmt.Sprintf("Failed to refresh credentials for %s: %v", awsAccountId, refreshErr))
+					} else {
+						client = refreshedClient
+						fmt.Printf("[MONITOR_LOG_GROUP] Credentials refreshed successfully for %s\n", awsAccountId)
+						utils.LogToCyborg("info", fmt.Sprintf("Credentials refreshed for AWS account %s", awsAccountId))
+						// Retry with fresh credentials
+						eventCount, maxTimestamp, err = getLogEvents(ctx, client, logGroupName, streamName, lastReadTime)
+						if err != nil {
+							utils.LogToCyborg("error", "Error fetching log events after refresh for stream "+streamName+": "+err.Error())
+							continue
+						}
+					}
+				} else {
+					continue
+				}
 			}
 
 			if eventCount > 0 {
@@ -222,4 +262,20 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupNa
 		ParseAndProduce(*entry)
 	}
 	return eventCount, maxTimestamp, nil
+}
+
+// createCrossAccountClient creates a new CloudWatch Logs client with cross-account credentials
+func createCrossAccountClient(ctx context.Context, stsClient *sts.Client, cfg aws.Config, targetAwsAccountId string) (*cloudwatchlogs.Client, error) {
+	fmt.Printf("[MONITOR_LOG_GROUP] Creating cross-account client for AWS account: %s\n", targetAwsAccountId)
+	crossAccountClient, err := loggroupdiscovery.AssumeRoleAndCreateLogsClient(ctx, stsClient, cfg, targetAwsAccountId)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("[MONITOR_LOG_GROUP] Cross-account client created successfully for: %s\n", targetAwsAccountId)
+	return crossAccountClient, nil
+}
+
+// contains checks if a string contains a substring
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }

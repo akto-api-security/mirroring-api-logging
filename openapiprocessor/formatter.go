@@ -27,13 +27,15 @@ func uploadOpenAPISpecToCyborg(
 	endpoint := utils.CyborgBaseURL + "/api/importOpenApiSpec"
 
 	// Create request payload
-	// Include API identification (apiId, stage) so Cyborg can properly identify the API
+	// Include API identification and context metadata for proper collection creation in Cyborg
 	payload := map[string]string{
 		"openApiSchema": string(specContent),
 		"importType":    "ALL_APIS",
 		"apiId":         apiId,
 		"stage":         stage,
 		"apiName":       apiName,
+		"region":        region,
+		"roleArn":       roleArn,
 	}
 
 	payloadJSON, err := json.Marshal(payload)

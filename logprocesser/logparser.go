@@ -226,13 +226,19 @@ func ProcessEventsIntoLogEntries(events []types.OutputLogEvent, logGroupName, st
 		eventsWithReqID++
 
 		if _, exists := logEntries[reqID]; !exists {
+			extractedAwsId := accountconfig.ExtractAwsAccountIdFromLogGroupArn(logGroupName)
+			if extractedAwsId != "" {
+				log.Printf("DEBUG [%s] Extracted AWS account %s from log group %s", streamName, extractedAwsId, logGroupName)
+			} else {
+				log.Printf("DEBUG [%s] WARNING: Could not extract AWS account ID from log group %s", streamName, logGroupName)
+			}
 			logEntries[reqID] = &LogEntry{
 				RequestID:          reqID,
 				QueryParams:        make(map[string]string),
 				RequestHeaders:     make(map[string]string),
 				ResponseHeaders:    make(map[string]string),
 				LogGroupIdentifier: logGroupName,
-				AwsAccountId:       func() string { awsId := accountconfig.ExtractAwsAccountIdFromLogGroupArn(logGroupName); if awsId != "" { log.Printf("DEBUG [%s] Extracted AWS account %s from log group %s", streamName, awsId, logGroupName) }; return awsId }(),
+				AwsAccountId:       extractedAwsId,
 			}
 		}
 
@@ -435,8 +441,9 @@ func ParseAndProduce(entry LogEntry) {
 	}
 
 	// Look up Akto account ID from AWS account ID
+	log.Printf("DEBUG ParseAndProduce: Processing traffic - AwsAccountId='%s', LogGroup='%s'", entry.AwsAccountId, entry.LogGroupIdentifier)
 	aktoAccountId := accountconfig.GetAktoAccountId(entry.AwsAccountId)
-	log.Printf("DEBUG Account mapping: AWS account %s → Akto account %d", entry.AwsAccountId, aktoAccountId)
+	log.Printf("DEBUG Account mapping: AWS account '%s' → Akto account %d", entry.AwsAccountId, aktoAccountId)
 
 	reqHeaderString, _ := json.Marshal(entry.RequestHeaders)
 	respHeaderString, _ := json.Marshal(entry.ResponseHeaders)
