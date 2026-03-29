@@ -23,6 +23,9 @@ import (
 )
 
 func main() {
+	fmt.Println("[STARTUP] Log Reader v2 with ACCOUNT_CONFIG debug logging - 2026-03-29")
+	fmt.Println("[STARTUP] Starting log reader with cross-account mapping support")
+
 	// Load AWS configuration
 	awsRegion := os.Getenv("AWS_REGION")
 	if awsRegion == "" {
