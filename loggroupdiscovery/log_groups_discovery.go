@@ -3,6 +3,7 @@ package loggroupdiscovery
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/akto-api-security/api-gateway-logging/accountconfig"
@@ -30,9 +31,17 @@ func GetExecutionLogGroupNames(
 	cfg aws.Config,
 	crossAccountMode bool,
 ) ([]DiscoveredLogGroup, error) {
+	fmt.Println("[LOG_DISCOVERY] GetExecutionLogGroupNames called")
+	fmt.Printf("[LOG_DISCOVERY] crossAccountMode=%v\n", crossAccountMode)
+	os.Stdout.Sync()
+
 	if crossAccountMode {
+		fmt.Println("[LOG_DISCOVERY] Calling discoverLogGroupsCrossAccount()")
+		os.Stdout.Sync()
 		return discoverLogGroupsCrossAccount(ctx, logsClient, stsClient, cfg)
 	}
+	fmt.Println("[LOG_DISCOVERY] Calling discoverLogGroupsSingleAccount()")
+	os.Stdout.Sync()
 	return discoverLogGroupsSingleAccount(ctx, restClient, logsClient)
 }
 
@@ -90,9 +99,19 @@ func discoverLogGroupsCrossAccount(
 	stsClient *sts.Client,
 	cfg aws.Config,
 ) ([]DiscoveredLogGroup, error) {
+	fmt.Println("[LOG_DISCOVERY_CROSS_ACCOUNT] Starting cross-account discovery")
+	os.Stdout.Sync()
+
 	// Get all AWS account IDs from account mappings
+	fmt.Println("[LOG_DISCOVERY_CROSS_ACCOUNT] Calling accountconfig.GetAllMappings()")
+	os.Stdout.Sync()
 	mappings := accountconfig.GetAllMappings()
+	fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] GetAllMappings returned %d mappings\n", len(mappings))
+	os.Stdout.Sync()
+
 	if len(mappings) == 0 {
+		fmt.Println("[LOG_DISCOVERY_CROSS_ACCOUNT] ERROR: No AWS account mappings found!")
+		os.Stdout.Sync()
 		utils.LogToCyborg("warn", "Cross-account mode enabled but no AWS account mappings found")
 		return nil, nil
 	}
@@ -103,38 +122,64 @@ func discoverLogGroupsCrossAccount(
 		awsAccountIds = append(awsAccountIds, awsAccountId)
 	}
 
+	fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] AWS Account IDs: %v\n", awsAccountIds)
+	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Starting cross-account log group discovery for %d customer AWS accounts: %v", len(awsAccountIds), awsAccountIds))
 
 	successCount := 0
 	failureCount := 0
 	for _, awsAccountId := range awsAccountIds {
+		fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] Processing AWS account: %s\n", awsAccountId)
+		os.Stdout.Sync()
 		utils.LogToCyborg("info", fmt.Sprintf("Processing AWS account: %s", awsAccountId))
 
 		// Assume role in customer account
+		fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] Calling AssumeRoleAndCreateLogsClient for %s\n", awsAccountId)
+		os.Stdout.Sync()
 		crossAccountLogsClient, err := AssumeRoleAndCreateLogsClient(ctx, stsClient, cfg, awsAccountId)
 		if err != nil {
+			fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] ERROR: AssumeRole failed for %s: %v\n", awsAccountId, err)
+			os.Stdout.Sync()
 			utils.LogToCyborg("error", fmt.Sprintf("Error assuming role for account %s, skipping: %v", awsAccountId, err))
 			failureCount++
 			continue
 		}
+		fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] AssumeRole succeeded for %s\n", awsAccountId)
+		os.Stdout.Sync()
 
 		// Discover log groups in customer account
+		fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] Calling DiscoverLogGroupsFromAccount for %s\n", awsAccountId)
+		os.Stdout.Sync()
 		discovered, err := DiscoverLogGroupsFromAccount(ctx, nil, crossAccountLogsClient, awsAccountId)
 		if err != nil {
+			fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] ERROR: DiscoverLogGroupsFromAccount failed for %s: %v\n", awsAccountId, err)
+			os.Stdout.Sync()
 			utils.LogToCyborg("error", fmt.Sprintf("Error discovering log groups in account %s: %v", awsAccountId, err))
 			failureCount++
 			continue
 		}
 
+		fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] DiscoverLogGroupsFromAccount returned %d groups for %s\n", len(discovered), awsAccountId)
+		os.Stdout.Sync()
+
 		if len(discovered) == 0 {
+			fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] No API Gateway log groups found in account %s\n", awsAccountId)
+			os.Stdout.Sync()
 			utils.LogToCyborg("info", fmt.Sprintf("No API Gateway log groups found in account %s", awsAccountId))
 		} else {
 			successCount++
 			allDiscovered = append(allDiscovered, discovered...)
+			fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] Successfully discovered %d log groups from account %s\n", len(discovered), awsAccountId)
+			for _, lg := range discovered {
+				fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT]   - %s\n", lg.Name)
+			}
+			os.Stdout.Sync()
 			utils.LogToCyborg("info", fmt.Sprintf("Successfully discovered %d log groups from account %s", len(discovered), awsAccountId))
 		}
 	}
 
+	fmt.Printf("[LOG_DISCOVERY_CROSS_ACCOUNT] Cross-account discovery complete: %d successful, %d failed, %d total log groups discovered\n", successCount, failureCount, len(allDiscovered))
+	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Cross-account discovery complete: %d successful, %d failed, %d total log groups discovered", successCount, failureCount, len(allDiscovered)))
 	return allDiscovered, nil
 }

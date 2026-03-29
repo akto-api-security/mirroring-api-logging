@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,9 @@ var globalAccountMappingManager *AccountMappingManager
 
 // Initialize initializes the global account mapping manager
 func Initialize(cyborgBaseURL, databaseAbstractorToken string, fetchIntervalMinutes int) {
+	fmt.Println("[ACCOUNT_CONFIG] Initialize() called - setting up account mapping manager")
+	os.Stdout.Sync()
+
 	globalAccountMappingManager = &AccountMappingManager{
 		awsToAktoMapping:        make(map[string]int),
 		cyborgBaseURL:           cyborgBaseURL,
@@ -41,8 +45,15 @@ func Initialize(cyborgBaseURL, databaseAbstractorToken string, fetchIntervalMinu
 		fetchIntervalMinutes:    fetchIntervalMinutes,
 	}
 
+	fmt.Println("[ACCOUNT_CONFIG] About to call FetchMappings() immediately")
+	os.Stdout.Sync()
+
 	// Fetch mappings immediately on startup
 	globalAccountMappingManager.FetchMappings()
+	os.Stdout.Sync()
+
+	fmt.Println("[ACCOUNT_CONFIG] FetchMappings() completed, starting background refresh")
+	os.Stdout.Sync()
 
 	// Start periodic refresh in background
 	go func() {
@@ -58,17 +69,21 @@ func Initialize(cyborgBaseURL, databaseAbstractorToken string, fetchIntervalMinu
 // FetchMappings fetches AWS→Akto account mappings from Cyborg
 func (m *AccountMappingManager) FetchMappings() {
 	fmt.Println("[ACCOUNT_CONFIG] FetchMappings() called")
+	os.Stdout.Sync()
 
 	if m.databaseAbstractorToken == "" {
 		fmt.Println("[ACCOUNT_CONFIG] DATABASE_ABSTRACTOR_TOKEN is empty, skipping")
+		os.Stdout.Sync()
 		utils.LogToCyborg("warn", "DATABASE_ABSTRACTOR_TOKEN not set, skipping account mapping fetch")
 		return
 	}
 	fmt.Println("[ACCOUNT_CONFIG] DATABASE_ABSTRACTOR_TOKEN is set")
+	os.Stdout.Sync()
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	url := strings.TrimRight(m.cyborgBaseURL, "/") + "/api/fetchAwsAccountIdMappings"
 	fmt.Printf("[ACCOUNT_CONFIG] Fetching account mappings from: %s\n", url)
+	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Fetching account mappings from: %s", url))
 
 	// Send POST request with empty JSON body (Akto convention)
@@ -86,16 +101,19 @@ func (m *AccountMappingManager) FetchMappings() {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("[ACCOUNT_CONFIG] Error fetching from %s: %v\n", url, err)
+		os.Stdout.Sync()
 		utils.LogToCyborg("error", fmt.Sprintf("Error fetching account mappings from %s: %v", url, err))
 		return
 	}
 	defer resp.Body.Close()
 
 	fmt.Printf("[ACCOUNT_CONFIG] Response status: %d\n", resp.StatusCode)
+	os.Stdout.Sync()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Printf("[ACCOUNT_CONFIG] Account mapping API returned %d: %s\n", resp.StatusCode, string(body))
+		os.Stdout.Sync()
 		utils.LogToCyborg("error", fmt.Sprintf("Account mapping API returned %d: %s", resp.StatusCode, string(body)))
 		return
 	}
@@ -103,11 +121,13 @@ func (m *AccountMappingManager) FetchMappings() {
 	var mappings []AccountMapping
 	if err := json.NewDecoder(resp.Body).Decode(&mappings); err != nil {
 		fmt.Printf("[ACCOUNT_CONFIG] Error decoding mappings: %v\n", err)
+		os.Stdout.Sync()
 		utils.LogToCyborg("error", fmt.Sprintf("Error decoding account mappings: %v", err))
 		return
 	}
 
 	fmt.Printf("[ACCOUNT_CONFIG] Received %d total mappings from Cyborg\n", len(mappings))
+	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Received %d total mappings from Cyborg", len(mappings)))
 
 	// Update the mapping
@@ -119,12 +139,14 @@ func (m *AccountMappingManager) FetchMappings() {
 		if mapping.Type == "AWS-ACCOUNTS" {
 			m.awsToAktoMapping[mapping.AwsAccountId] = mapping.AktoAccountId
 			fmt.Printf("[ACCOUNT_CONFIG] Mapped AWS account %s → Akto account %d\n", mapping.AwsAccountId, mapping.AktoAccountId)
+			os.Stdout.Sync()
 			utils.LogToCyborg("info", fmt.Sprintf("Mapped AWS account %s → Akto account %d", mapping.AwsAccountId, mapping.AktoAccountId))
 		}
 	}
 	m.lastFetchTime = time.Now()
 
 	fmt.Printf("[ACCOUNT_CONFIG] Successfully fetched %d AWS→Akto account mappings\n", len(m.awsToAktoMapping))
+	os.Stdout.Sync()
 	utils.LogToCyborg("info", fmt.Sprintf("Successfully fetched %d AWS→Akto account mappings", len(m.awsToAktoMapping)))
 }
 
