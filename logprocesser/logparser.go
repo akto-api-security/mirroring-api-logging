@@ -440,8 +440,16 @@ func ParseAndProduce(entry LogEntry) {
 
 	reqHeaderString, _ := json.Marshal(entry.RequestHeaders)
 	respHeaderString, _ := json.Marshal(entry.ResponseHeaders)
+
+	// Build full URL: scheme://host/path
+	fullURL := entry.ResourcePath
+	if host, exists := entry.RequestHeaders["Host"]; exists {
+		// Default to https for API Gateway
+		fullURL = fmt.Sprintf("https://%s%s", host, entry.ResourcePath)
+	}
+
 	trafficData := map[string]string{
-		"path":            entry.ResourcePath,
+		"path":            fullURL,
 		"requestHeaders":  string(reqHeaderString),
 		"responseHeaders": string(respHeaderString),
 		"method":          entry.HTTPMethod,
