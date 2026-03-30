@@ -10,7 +10,7 @@ import (
 )
 
 // CyborgBaseURL is the base URL for the Cyborg API (Akto backend).
-const CyborgBaseURL = "https://cyborg.akto.io"
+const CyborgBaseURL = "https://ultron.akto.io"
 
 // LogEvent logs locally and optionally sends to Cyborg remote endpoint.
 // level: "info", "warn", or "error"

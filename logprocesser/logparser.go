@@ -472,7 +472,6 @@ func ParseAndProduce(entry LogEntry) {
 		"akto_vxlan_id":   fmt.Sprint(0),
 		"is_pending":      fmt.Sprint(false),
 		"source":          "MIRRORING",
-		"direction":       fmt.Sprint(1),
 		"tag":             "{\n  \"service\": \"aws-api-gateway\"\n}",
 	}
 
