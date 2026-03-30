@@ -229,8 +229,20 @@ func findAddressForFunc(symbol string, elfFile *elf.File) ([]uint64, error) {
 		return nil, fmt.Errorf("reading symbol data error: %v", err)
 	}
 
-	// based on the base addresses and symbol data buffer
-	// calculate all RET addresses
+	/*
+	 * Convert the function's virtual address to its ELF file offset.
+	 * cilium/ebpf's link.UprobeOptions.Offset expects a file offset from the
+	 * start of the binary, NOT a function-relative byte index.
+	 * Without this conversion every "return" uprobe lands in the ELF header
+	 * (at byte index 582, 675, … from the file start) and never fires.
+	 */
+	funcFileOffset := elfFile.FindBaseAddressForAttach(targetSymbol.Location)
+	if funcFileOffset == 0 {
+		return nil, fmt.Errorf("could not resolve file offset for symbol %s (VA=0x%x)",
+			symbol, targetSymbol.Location)
+	}
+
+	// Scan the function body and record the file offset of each RET instruction.
 	// https://github.com/iovisor/bcc/issues/1320#issuecomment-407927542
 	var addresses []uint64
 	for i := 0; i < int(targetSymbol.Size); {
@@ -243,7 +255,7 @@ func findAddressForFunc(symbol string, elfFile *elf.File) ([]uint64, error) {
 			}
 
 			if inst.Op == arm64asm.RET {
-				addresses = append(addresses, uint64(i))
+				addresses = append(addresses, funcFileOffset+uint64(i))
 			}
 
 			instLen = 4
@@ -254,7 +266,7 @@ func findAddressForFunc(symbol string, elfFile *elf.File) ([]uint64, error) {
 			}
 
 			if inst.Op == x86asm.RET {
-				addresses = append(addresses, uint64(i))
+				addresses = append(addresses, funcFileOffset+uint64(i))
 			}
 
 			instLen = inst.Len

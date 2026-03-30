@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strings"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/elf"
@@ -15,16 +14,17 @@ var (
 	buildVersion   = "runtime.buildVersion"
 	goVersionRegex = regexp.MustCompile(`^go(?P<Major>\d)\.(?P<Minor>\d+)`)
 
-	goTLSWriteSymbol     = "crypto/tls.(*Conn).Write"
-	goTLSReadSymbol      = "crypto/tls.(*Conn).Read"
-	goTLSGIDStatusSymbol = "runtime.casgstatus"
-	goTLSPollFDSymbol    = "internal/poll.FD"
-	goTLSConnSymbol      = "crypto/tls.Conn"
-	goTLSRuntimeG        = "runtime.g"
+	goTLSWriteSymbol = "crypto/tls.(*Conn).Write"
+	goTLSReadSymbol  = "crypto/tls.(*Conn).Read"
+
+	goTLSGIDStatusSymbol = "runtime.g"               // goid field
+	goTLSPollFDSymbol    = "net.pollDesc.waitRead"   // net.Conn fd
+	goTLSConnSymbol      = "crypto/tls.(*Conn).conn" // TLSConn field
+	goTLSRuntimeG        = "runtime.g"               // pointer to current goroutine
 )
 
+// TryGoTLSProbes attaches dynamic Go TLS uprobes to a process
 func TryGoTLSProbes(pid int32, m map[string]bool, coll *ebpf.Collection) (bool, error) {
-
 	symLinkHostPath, err := GetExeSymLinkHostPath(pid)
 	if err != nil {
 		return false, err
@@ -32,10 +32,9 @@ func TryGoTLSProbes(pid int32, m map[string]bool, coll *ebpf.Collection) (bool, 
 
 	isGo := checkGoProcess(symLinkHostPath)
 	if !isGo {
-		return false, fmt.Errorf("Not a go process")
-	} else {
-		slog.Debug("successfully found a go process", "path", symLinkHostPath)
+		return false, fmt.Errorf("Not a Go process")
 	}
+	slog.Debug("successfully found a Go process", "path", symLinkHostPath)
 
 	elfFile, err := elf.NewFile(symLinkHostPath)
 	if err != nil {
@@ -52,47 +51,68 @@ func TryGoTLSProbes(pid int32, m map[string]bool, coll *ebpf.Collection) (bool, 
 	if err != nil {
 		return false, err
 	}
-
 	slog.Debug("go version found", "pid", pid, "version", v.String())
 
 	offsets, err := generateGOTLSSymbolOffsets(elfFile, v)
-	if err != nil {
-		return false, err
-	}
-	if offsets == nil {
+	if err != nil || offsets == nil {
 		return false, fmt.Errorf("no offsets found")
 	}
-
 	slog.Debug("go offsets found", "pid", pid, "offsets", offsets)
 
-	// TODO: check egress internal traffic
 	if err := updateBpfMap(GoTLS, pid, offsets, nil); err != nil {
 		return false, fmt.Errorf("setting the Go TLS argument location failure, pid: %d, error: %v", pid, err)
 	}
 
-	for i, probe := range bpfwrapper.GoTlsRetHooks {
-		if strings.EqualFold(probe.FunctionToHook, goTLSWriteSymbol) {
-			address, err := findAddressForFunc(goTLSWriteSymbol, elfFile)
-			slog.Debug("Addresses for gotls sym", "pid", pid, "symbol", goTLSWriteSymbol, "address", address, "error", err)
-			if err == nil {
-				bpfwrapper.GoTlsRetHooks[i].Addresses = address
-			}
-
-		} else if strings.EqualFold(probe.FunctionToHook, goTLSReadSymbol) {
-			address, err := findAddressForFunc(goTLSReadSymbol, elfFile)
-			slog.Debug("Addresses for gotls sym", "pid", pid, "symbol", goTLSReadSymbol, "address", address, "error", err)
-			if err == nil {
-				bpfwrapper.GoTlsRetHooks[i].Addresses = address
-			}
-		}
+	// Find absolute addresses for function RETs
+	writeAddrs, err := findAddressForFunc(goTLSWriteSymbol, elfFile)
+	if err != nil {
+		return false, fmt.Errorf("finding Write return addresses: %v", err)
+	}
+	readAddrs, err := findAddressForFunc(goTLSReadSymbol, elfFile)
+	if err != nil {
+		return false, fmt.Errorf("finding Read return addresses: %v", err)
 	}
 
-	slog.Debug("Attaching on", "path", symLinkHostPath)
-	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsHooks); err != nil {
-		slog.Error("failed to attach Go TLS uprobe", "error", err)
+	slog.Debug("Addresses for gotls symbols", "pid", pid, goTLSWriteSymbol, writeAddrs)
+	slog.Debug("Addresses for gotls symbols", "pid", pid, goTLSReadSymbol, readAddrs)
+
+	// Entry probes
+	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, []bpfwrapper.Uprobe{
+		{FunctionToHook: goTLSWriteSymbol, HookName: "probe_entry_tls_conn_write", Type: bpfwrapper.EntryType},
+		{FunctionToHook: goTLSReadSymbol, HookName: "probe_entry_tls_conn_read", Type: bpfwrapper.EntryType},
+	}); err != nil {
+		return false, fmt.Errorf("failed to attach Go TLS entry uprobe: %v", err)
 	}
-	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsRetHooks); err != nil {
-		slog.Error("failed to attach Go TLS uretprobe", "error", err)
+
+	// Get function symbols for correct SymbolBaseOffset
+	writeSym := elfFile.FindSymbol(goTLSWriteSymbol)
+	readSym := elfFile.FindSymbol(goTLSReadSymbol)
+	if writeSym == nil || readSym == nil {
+		return false, fmt.Errorf("failed to find function symbols for TLS probes")
 	}
+
+	// Return probes with correct relative offsets
+	retHooks := []bpfwrapper.Uprobe{
+		{
+			FunctionToHook:   goTLSWriteSymbol,
+			HookName:         "probe_return_tls_conn_write",
+			Type:             bpfwrapper.ReturnType_Matching_Suf_Addr,
+			Addresses:        writeAddrs,
+			SymbolBaseOffset: writeSym.Location,
+		},
+		{
+			FunctionToHook:   goTLSReadSymbol,
+			HookName:         "probe_return_tls_conn_read",
+			Type:             bpfwrapper.ReturnType_Matching_Suf_Addr,
+			Addresses:        readAddrs,
+			SymbolBaseOffset: readSym.Location,
+		},
+	}
+
+	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, retHooks); err != nil {
+		return false, fmt.Errorf("failed to attach Go TLS return uprobe: %v", err)
+	}
+
+	slog.Debug("GoTLS probes attached successfully", "pid", pid)
 	return true, nil
 }
