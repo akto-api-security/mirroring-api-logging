@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/akto-api-security/api-gateway-logging/accountconfig"
 	"github.com/akto-api-security/api-gateway-logging/trafficUtil/utils"
 )
 
@@ -51,9 +52,29 @@ func uploadOpenAPISpecToCyborg(
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
+	// Determine which token to use based on AWS account ID (for multi-tenant support)
+	tokenToUse := authToken
+
+	// Extract AWS account ID from roleArn (format: arn:aws:iam::{account-id}:role/...)
+	if roleArn != "" {
+		awsAccountId := accountconfig.ExtractAwsAccountIdFromArn(roleArn)
+		if awsAccountId != "" {
+			// Get Akto account ID for this AWS account
+			aktoAccountId := accountconfig.GetAktoAccountId(awsAccountId)
+			if aktoAccountId > 0 {
+				// Get the token for this Akto account
+				token := accountconfig.GetTokenForAktoAccountId(aktoAccountId)
+				if token != "" {
+					tokenToUse = token
+					utils.DebugLog("Using multi-tenant token for AWS account %s (Akto account %d)", awsAccountId, aktoAccountId)
+				}
+			}
+		}
+	}
+
 	// Set headers (same pattern as fetchAwsAccountIds in main.go)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("authorization", authToken)
+	req.Header.Set("authorization", tokenToUse)
 
 	// Send request
 	client := &http.Client{

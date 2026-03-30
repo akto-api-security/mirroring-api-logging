@@ -57,21 +57,23 @@ func logPrintf(format string, a ...interface{}) {
 	os.Stdout.WriteString(msg)
 }
 
-// AccountMapping represents a single AWS→Akto account mapping
+// AccountMapping represents a single AWS→Akto account mapping with optional token
 type AccountMapping struct {
-	AktoAccountId int    `json:"aktoAccountId"`
-	AwsAccountId  string `json:"awsAccountId"`
-	Type          string `json:"type"`
+	AktoAccountId           int    `json:"aktoAccountId"`
+	AwsAccountId            string `json:"awsAccountId"`
+	Type                    string `json:"type"`
+	DatabaseAbstractorToken string `json:"databaseAbstractorToken"`
 }
 
-// AccountMappingManager manages AWS→Akto account ID mappings
+// AccountMappingManager manages AWS→Akto account ID mappings and their tokens
 type AccountMappingManager struct {
-	mu                  sync.RWMutex
-	awsToAktoMapping    map[string]int // awsAccountId → aktoAccountId
-	cyborgBaseURL       string
+	mu                      sync.RWMutex
+	awsToAktoMapping        map[string]int    // awsAccountId → aktoAccountId
+	aktoAccountIdToToken    map[int]string    // aktoAccountId → databaseAbstractorToken
+	cyborgBaseURL           string
 	databaseAbstractorToken string
-	lastFetchTime       time.Time
-	fetchIntervalMinutes int
+	lastFetchTime           time.Time
+	fetchIntervalMinutes    int
 }
 
 var globalAccountMappingManager *AccountMappingManager
@@ -82,6 +84,7 @@ func Initialize(cyborgBaseURL, databaseAbstractorToken string, fetchIntervalMinu
 
 	globalAccountMappingManager = &AccountMappingManager{
 		awsToAktoMapping:        make(map[string]int),
+		aktoAccountIdToToken:    make(map[int]string),
 		cyborgBaseURL:           cyborgBaseURL,
 		databaseAbstractorToken: databaseAbstractorToken,
 		fetchIntervalMinutes:    fetchIntervalMinutes,
@@ -209,10 +212,15 @@ func (m *AccountMappingManager) FetchMappings() {
 	logPrint("[ACCOUNT_CONFIG] Lock acquired, clearing old mappings")
 
 	m.awsToAktoMapping = make(map[string]int)
+	m.aktoAccountIdToToken = make(map[int]string)
 	successCount := 0
 	for _, mapping := range mappings {
 		if mapping.Type == "AWS-ACCOUNTS" {
 			m.awsToAktoMapping[mapping.AwsAccountId] = mapping.AktoAccountId
+			// Store token for this akto account if available
+			if mapping.DatabaseAbstractorToken != "" {
+				m.aktoAccountIdToToken[mapping.AktoAccountId] = mapping.DatabaseAbstractorToken
+			}
 			successCount++
 			logPrintf("[ACCOUNT_CONFIG] [SUCCESS] Mapped AWS account %s → Akto account %d\n", mapping.AwsAccountId, mapping.AktoAccountId)
 			utils.LogToCyborg("info", fmt.Sprintf("Mapped AWS account %s → Akto account %d", mapping.AwsAccountId, mapping.AktoAccountId))
@@ -268,6 +276,22 @@ func GetAllMappings() map[string]int {
 	return mappingsCopy
 }
 
+// GetTokenForAktoAccountId retrieves the database abstractor token for a given Akto account ID
+// Returns the token if found, otherwise returns empty string
+func GetTokenForAktoAccountId(aktoAccountId int) string {
+	if globalAccountMappingManager == nil {
+		return ""
+	}
+
+	globalAccountMappingManager.mu.RLock()
+	defer globalAccountMappingManager.mu.RUnlock()
+
+	if token, exists := globalAccountMappingManager.aktoAccountIdToToken[aktoAccountId]; exists {
+		return token
+	}
+	return ""
+}
+
 // ExtractAwsAccountIdFromLogGroupArn extracts AWS account ID from API Gateway log group ARN
 // ARN format: arn:aws:logs:region:account-id:log-group:API-Gateway-Execution-Logs_...
 // Returns empty string if not found
@@ -280,6 +304,25 @@ func ExtractAwsAccountIdFromLogGroupArn(logGroupArn string) string {
 		// Validate it's numeric
 		if _, err := strconv.ParseInt(accountId, 10, 64); err == nil {
 			return accountId
+		}
+	}
+	return ""
+}
+
+// ExtractAwsAccountIdFromArn extracts AWS account ID from any ARN
+// ARN format: arn:aws:service:region:account-id:resource-type/resource-id
+// Returns empty string if not found
+func ExtractAwsAccountIdFromArn(arn string) string {
+	// Example ARN: arn:aws:iam::123456789012:role/AktoLogReaderRole
+	parts := strings.Split(arn, ":")
+	if len(parts) >= 5 {
+		// AWS account ID is at index 4 (0-indexed)
+		accountId := parts[4]
+		// Validate it's numeric (allow empty for cross-account assume role ARNs)
+		if accountId == "" || (len(accountId) > 0 && strings.ContainsAny(accountId, "0123456789")) {
+			if _, err := strconv.ParseInt(accountId, 10, 64); err == nil {
+				return accountId
+			}
 		}
 	}
 	return ""
