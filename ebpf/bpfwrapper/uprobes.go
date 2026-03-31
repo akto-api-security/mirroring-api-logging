@@ -102,6 +102,25 @@ func AttachUprobes(soPath string, pid int, coll *ebpf.Collection, uprobeList []U
 				links = append(links, l)
 			}
 
+		case EntryType_Abs_Offset:
+			// Attach at an absolute ELF file offset (probe.Addresses[0]) with no
+			// symbol name — bypasses cilium/ebpf's symbol lookup entirely.
+			if len(probe.Addresses) == 0 {
+				slog.Error("EntryType_Abs_Offset: no address provided", "hook", probe.HookName)
+				continue
+			}
+			absOpts := &link.UprobeOptions{Offset: probe.Addresses[0]}
+			if pid != 0 {
+				absOpts.PID = pid
+			}
+			slog.Debug("Attaching abs-offset uprobe", "hook", probe.HookName, "offset", probe.Addresses[0])
+			l, err := ex.Uprobe("", prog, absOpts)
+			if err != nil {
+				slog.Error("failed to attach abs-offset uprobe", "hook", probe.HookName, "offset", probe.Addresses[0], "error", err)
+				continue
+			}
+			links = append(links, l)
+
 		case EntryType_Matching_Pre:
 			slog.Debug("Attaching prefix-matching uprobes", "hook", probe.HookName, "prefix", probe.FunctionToHook)
 			pattern := getPrefixRegex(probe.FunctionToHook)

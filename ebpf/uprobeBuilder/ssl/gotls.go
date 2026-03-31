@@ -9,7 +9,13 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/elf"
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 )
+
+// goTLSLinks keeps GoTLS uprobe links alive for the lifetime of the process.
+// cilium/ebpf automatically detaches a uprobe when its Link is garbage collected,
+// so we must retain a reference here.
+var goTLSLinks []link.Link
 
 var (
 	buildVersion   = "runtime.buildVersion"
@@ -87,12 +93,25 @@ func TryGoTLSProbes(pid int32, m map[string]bool, coll *ebpf.Collection) (bool, 
 		}
 	}
 
+	// Entry probes: use the same symbol+offset mechanism as return probes (offset=0
+	// means function entry). cilium/ebpf resolves Go symbols correctly, as evidenced
+	// by return-probe attachment working without errors.
+	for i := range bpfwrapper.GoTlsHooks {
+		bpfwrapper.GoTlsHooks[i].Addresses = []uint64{0}
+		bpfwrapper.GoTlsHooks[i].Type = bpfwrapper.ReturnType_Matching_Suf_Addr
+	}
+
 	slog.Debug("Attaching on", "path", symLinkHostPath)
-	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsHooks); err != nil {
+	entryLinks, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsHooks)
+	if err != nil {
 		slog.Error("failed to attach Go TLS uprobe", "error", err)
 	}
-	if _, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsRetHooks); err != nil {
+	retLinks, err := bpfwrapper.AttachUprobes(symLinkHostPath, -1, coll, bpfwrapper.GoTlsRetHooks)
+	if err != nil {
 		slog.Error("failed to attach Go TLS uretprobe", "error", err)
 	}
+	// Keep links alive — GC'ing a Link detaches the uprobe.
+	goTLSLinks = append(goTLSLinks, entryLinks...)
+	goTLSLinks = append(goTLSLinks, retLinks...)
 	return true, nil
 }

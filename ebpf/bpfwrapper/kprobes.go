@@ -23,6 +23,10 @@ const (
 	ReturnType_Matching_Suf_Addr
 	EntryType_Matching_Pre
 	ReturnType_Matching_Pre
+	// EntryType_Abs_Offset attaches an entry uprobe at an absolute ELF file offset
+	// (stored in Addresses[0]) with no symbol name lookup. Use this when the symbol
+	// is not in the standard .symtab but its file offset is known (e.g. from .gopclntab).
+	EntryType_Abs_Offset
 )
 
 // Kprobe represents a single Kprobe hook.
