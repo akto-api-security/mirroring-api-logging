@@ -1,47 +1,47 @@
+# syntax=docker/dockerfile:1
+
+# ── Runtime base (target arch) ───────────────────────────────────────────────
+# clang/bpftool are needed at container start-up to compile the BPF object
+# against the running kernel's BTF (/sys/kernel/btf/vmlinux).
 FROM alpine:3.22 AS base
-
 USER root
-RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
+RUN apk add --no-cache \
+    clang \
+    llvm \
+    libbpf-dev \
+    bpftool \
+    linux-headers \
+    build-base
 
-FROM base AS builder
+# ── Go builder (always runs on the BUILD host's native arch) ─────────────────
+# Using --platform=$BUILDPLATFORM lets Docker run this stage natively
+# (no QEMU emulation). Go's built-in cross-compilation produces the binary
+# for the TARGET arch via GOARCH / GOOS env vars.
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 
-# Install Go based on architecture
-ARG GO_VERSION=1.24.3
 ARG TARGETARCH
+ARG TARGETOS=linux
 
-RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        ARCH="arm64"; \
-    elif [ "$TARGETARCH" = "amd64" ]; then \
-        ARCH="amd64"; \
-    fi && \
-    wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz && \
-    tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz && \
-    rm go${GO_VERSION}.linux-${ARCH}.tar.gz
-
-ENV PATH="/usr/local/go/bin:${PATH}"
-
+WORKDIR /src
 COPY ebpf ./ebpf
 COPY trafficUtil ./trafficUtil
-WORKDIR /ebpf
 
-RUN go get
+WORKDIR /src/ebpf
 RUN go mod download
-RUN sed -i "s/\"p_/\"akto_p_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
-RUN sed -i "s/\"r_/\"akto_r_/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
-RUN sed -i "s/attachUProbe(/AttachUProbeInternal(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
-RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/symbol.go
-RUN sed -i "s/resolveSymbolPath(/ResolveSymbolPath(/g" ~/go/pkg/mod/github.com/iovisor/gobpf@v0.2.1-0.20221005153822-16120a1bf4d4/bcc/module.go
+RUN GOARCH=${TARGETARCH} GOOS=${TARGETOS} go build -o ebpf-logging
 
-RUN go build -o ebpf-logging
-
+# ── Final image (target arch) ─────────────────────────────────────────────────
 FROM base
 
 WORKDIR /ebpf
-COPY --from=builder /ebpf/ebpf-logging /ebpf/ebpf-logging
-COPY --from=builder /ebpf/kernel/module.cc /ebpf/kernel/module.cc
+COPY --from=builder /src/ebpf/ebpf-logging /ebpf/ebpf-logging
+
+# BPF source + Makefile — compiled at container start against the running
+# kernel's BTF via `make generate` in ebpf-run.sh.
+COPY ebpf/kernel/module.bpf.c /ebpf/kernel/module.bpf.c
+COPY ebpf/Makefile /ebpf/Makefile
+
 COPY ebpf-run.sh /ebpf/ebpf-run.sh
 RUN chmod +x /ebpf/ebpf-run.sh
-
-RUN apk add perf
 
 CMD "./ebpf-run.sh"
