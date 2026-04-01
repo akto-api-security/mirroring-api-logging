@@ -759,7 +759,7 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
     socket_data_event->ssl           = conn_info->ssl;
 
     int bytes_sent  = 0;
-    size_t size_to_save = 0;
+    u32  size_to_save = 0;
     int i = 0;
 #pragma unroll
     for (i = 0; i < CHUNK_LIMIT; ++i) {
@@ -768,14 +768,18 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         if (bytes_remaining <= 0) {
             break;
         }
-        size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1))
-                              ? MAX_MSG_SIZE : (size_t)bytes_remaining;
-
-        if (current_size > MAX_MSG_SIZE) {
-            current_size = MAX_MSG_SIZE;
+        u32 current_size;
+        if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
+            current_size = (u32)(MAX_MSG_SIZE - 1);
+        } else {
+            current_size = (u32)bytes_remaining;
         }
+        if (current_size >= MAX_MSG_SIZE) {
+            current_size = (u32)(MAX_MSG_SIZE - 1);
+        }
+        current_size &= (u32)(MAX_MSG_SIZE - 1); /* verifier: umax = 30719 < 30720 */
 
-        if (current_size > 0 && current_size <= MAX_MSG_SIZE) {
+        if (current_size > 0) {
             // args->buf is a user-space pointer; use bpf_probe_read_user so
             // kernels >= 5.11 (where bpf_probe_read aliases _kernel) read it correctly.
             if (bpf_probe_read_user(&socket_data_event->msg, current_size,
