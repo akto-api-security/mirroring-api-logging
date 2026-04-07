@@ -335,6 +335,7 @@ func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 		slog.Error("Kafka write for threat failed", "topic", topic, "error", err)
 		return err
 	}
+	slog.Debug("Successfully pushed message into kafka", "value", value, "topic", topic)
 	return nil
 }
 
@@ -455,6 +456,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost, method string
 		return err
 	}
 	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")
+	slog.Debug("Successfully pushed message into kafka", "value", []byte(message), "topic", topic)
 
 	return nil
 }
