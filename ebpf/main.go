@@ -57,8 +57,6 @@ func main() {
 }
 
 func run() {
-	bpfwrapper.DeleteExistingAktoKernelProbes()
-
 	// -----------------------------------------------------------------------
 	// Load the pre-compiled BPF object.
 	//

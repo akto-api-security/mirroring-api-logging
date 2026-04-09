@@ -25,8 +25,6 @@ type Uprobe struct {
 	Addresses  []uint64
 }
 
-var uprobeRegexp = regexp.MustCompile("[^a-zA-Z0-9_]")
-
 // SetUprobeMultiAttachType upgrades all SEC("uprobe") programs in the spec to
 // use BPF_TRACE_UPROBE_MULTI as their expected_attach_type, so they can be
 // loaded and later attached via bpf(BPF_LINK_CREATE) instead of perf_event_open.
