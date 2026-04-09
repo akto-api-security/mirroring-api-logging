@@ -293,21 +293,18 @@ struct {
 } conn_counter SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __uint(key_size, sizeof(u32));
-    __uint(value_size, sizeof(u32));
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 16 * 1024 * 1024);
 } socket_data_events SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __uint(key_size, sizeof(u32));
-    __uint(value_size, sizeof(u32));
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
 } socket_open_events SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __uint(key_size, sizeof(u32));
-    __uint(value_size, sizeof(u32));
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
 } socket_close_events SEC(".maps");
 
 struct {
@@ -666,8 +663,8 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
-    bpf_perf_event_output(ctx, &socket_open_events, BPF_F_CURRENT_CPU,
-                          &socket_open_event, sizeof(struct socket_open_event_t));
+    bpf_ringbuf_output(&socket_open_events, &socket_open_event,
+                       sizeof(struct socket_open_event_t), 0);
 }
 
 static __always_inline void process_syscall_close(struct pt_regs* ctx,
@@ -698,8 +695,8 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
     socket_close_event.ip            = conn_info->ip;
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
-    bpf_perf_event_output(ctx, &socket_close_events, BPF_F_CURRENT_CPU,
-                          &socket_close_event, sizeof(struct socket_close_event_t));
+    bpf_ringbuf_output(&socket_close_events, &socket_close_event,
+                       sizeof(struct socket_close_event_t), 0);
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
@@ -811,9 +808,8 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
 
         socket_data_event->bytes_sent  = is_send ? 1 : -1;
         socket_data_event->bytes_sent *= size_to_save;
-        bpf_perf_event_output(ctx, &socket_data_events, BPF_F_CURRENT_CPU,
-                              socket_data_event,
-                              sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+        bpf_ringbuf_output(&socket_data_events, socket_data_event,
+                           sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save, 0);
 
         bytes_sent += current_size;
     }

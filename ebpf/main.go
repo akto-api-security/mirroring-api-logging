@@ -26,8 +26,6 @@ import (
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-var source string = ""
-
 func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 	printBpfLogs := false
 	if v := os.Getenv("PRINT_BPF_LOGS"); strings.EqualFold(v, "true") {
@@ -86,6 +84,12 @@ func run() {
 	// Configure runtime parameters on the spec before loading into the kernel.
 	replaceBpfLogsMacros(spec)
 	replaceMaxConnectionMapSize(spec)
+
+	// If the kernel supports uprobe_multi (6.6+), mark all SEC("uprobe")
+	// programs with the multi attach type so they can be attached via
+	// bpf(BPF_LINK_CREATE) instead of perf_event_open — bypassing
+	// perf_event_paranoid restrictions.
+	bpfwrapper.SetUprobeMultiAttachType(spec)
 
 	// Load all programs and maps into the kernel.
 	coll, err := ebpf.NewCollection(spec)

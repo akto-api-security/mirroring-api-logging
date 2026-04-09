@@ -1,8 +1,7 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: akto-ebpf-connector
-  namespace: bookinfo
+  name: akto-k8s-ebpf
   labels:
     app: akto-collector
 spec:
@@ -14,16 +13,11 @@ spec:
       labels:
         app: akto-collector
     spec:
-    # optional
-      nodeSelector: 
-        mirror: "true"
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      hostPID: true
       containers:
-      - name: akto-ebpf
-        image: coastaldemigod/ebpf:v84
-        imagePullPolicy: Always
+      - name: mirror-api-logging
+        image: public.ecr.aws/aktosecurity/mirror-api-logging:k8s_ebpf_core
         resources:
           limits:
             cpu: 500m
@@ -31,71 +25,50 @@ spec:
           requests:
             cpu: 50m
             memory: 50Mi
-        env: 
-          # - name: AKTO_MODULE_DISCOVERY_CONFIG
-            # value: '[{"key":{"eq":"x-forwarded-client-cert","ifAbsent":"reject"},"value":{"regex":".*bookinfo.*"}}]'
+        env:
           - name: AKTO_TRAFFIC_BATCH_TIME_SECS
             value: "10"
           - name: AKTO_TRAFFIC_BATCH_SIZE
             value: "100"
           - name: AKTO_KAFKA_BROKER_MAL
-            value: "172.20.80.9:9092"
-          # - name: LOG_LEVEL
-            # value: "0"
-          - name: AKTO_MONGO_CONN
-            value: "mongodb://10.0.134.212:27017/admini"
-          - name: TRAFFIC_INACTIVITY_THRESHOLD
-            value: "30"
-          - name: INGEST_LOGS
-            value: "true"
-          # - name: TRAFFIC_COMPLETE_THRESHOLD
-          #   value: "0"
-          # - name: TRAFFIC_MAX_ACTIVE_CONN
-          #   value: "8192"
-          - name: PRINT_BPF_LOGS
-            value: "true"
-          # - name: TRAFFIC_MAX_BUFFER_PER_TRACKER
-          #   value: "20"
-          # - name: KAFKA_POLL_INTERVAL
-          #   value: "1"
-          - name: AKTO_MEM_THRESH_RESTART
-            value: "900"
-          # - name: TRAFFIC_SAMPLE_BUFFER_PER_MINUTE
-            # value: "100"
-          - name: DEBUG_MODE
-            value: "true"
-          # - name: AKTO_DISABLE_ON_DB
-            # value: "true"
-          # - name: SAMPLE_LIMIT_PER_MIN
-            # value:
-          - name: CAPTURE_SSL
-            value: "true"
+            value: "akto-mini-runtime-mini-runtime.default.svc.cluster.local:9092"
+          - name: AKTO_LOG_LEVEL
+            value: "DEBUG"
+          - name: UPROBE_POLL_INTERVAL
+            value: "5"
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: HOST_PROC
+            value: "/host/proc"
         securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
           capabilities:
+            drop:
+              - ALL
             add:
-            - SYS_PTRACE
-            - SYS_ADMIN
-          privileged: true
+              - BPF
+              - PERFMON
+              - SYS_PTRACE
         volumeMounts:
-          # needed to load kernel headers
-          - name: lib-modules
-            mountPath: /lib/modules
+          - name: sys-kernel-btf
+            mountPath: /sys/kernel/btf
             readOnly: true
-          # needed to trace kernel events
-          - name: sys-kernel
-            mountPath: /sys/kernel
-            readOnly: true
-          - name: host
-            mountPath: /host
+          - name: host-proc
+            mountPath: /host/proc
             readOnly: true
       volumes:
-        - name: sys-kernel
+        - name: sys-kernel-btf
           hostPath:
-            path: /sys/kernel
-        - name: lib-modules
+            path: /sys/kernel/btf
+            type: Directory
+        - name: host-proc
           hostPath:
-            path: /lib/modules
-        - name: host
-          hostPath:
-            path : /
-        
+            path: /proc
+            type: Directory

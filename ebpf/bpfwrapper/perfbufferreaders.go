@@ -4,26 +4,25 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/perf"
+	"github.com/cilium/ebpf/ringbuf"
 )
 
-// ProbeEventLoop is the signature for callbacks that drain perf event channels.
+// ProbeEventLoop is the signature for callbacks that drain ring buffer channels.
 type ProbeEventLoop func(inputChan chan []byte, connectionFactory *connections.Factory)
 
-// ProbeChannel links a named BPF perf-event array to a Go channel and event loop.
+// ProbeChannel links a named BPF ring buffer to a Go channel and event loop.
 type ProbeChannel struct {
 	name         string
 	eventLoop    ProbeEventLoop
 	eventChannel chan []byte
-	reader       *perf.Reader
+	reader       *ringbuf.Reader
 }
 
-// NewProbeChannel creates a new probe channel for the given BPF perf-event array name.
+// NewProbeChannel creates a new probe channel for the given BPF ring buffer name.
 func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 	return &ProbeChannel{
 		name:      name,
@@ -31,7 +30,7 @@ func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
 	}
 }
 
-// Start opens the perf reader, launches the event loop goroutine and starts draining.
+// Start opens the ring buffer reader, launches the event loop goroutine and starts draining.
 func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connections.Factory) error {
 	m, ok := coll.Maps[pc.name]
 	if !ok {
@@ -41,27 +40,23 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 	pc.eventChannel = make(chan []byte, kafkaUtil.EventChanBuffSize)
 
 	var err error
-	pc.reader, err = perf.NewReader(m, os.Getpagesize()*8192)
+	pc.reader, err = ringbuf.NewReader(m)
 	if err != nil {
-		return fmt.Errorf("failed to open perf reader for %q: %v", pc.name, err)
+		return fmt.Errorf("failed to open ring buffer reader for %q: %v", pc.name, err)
 	}
 
 	go pc.eventLoop(pc.eventChannel, connectionFactory)
 
 	go func() {
-		log.Printf("perf reader started for channel %s", pc.name)
+		log.Printf("ring buffer reader started for channel %s", pc.name)
 		for {
 			record, err := pc.reader.Read()
 			if err != nil {
-				if errors.Is(err, perf.ErrClosed) {
+				if errors.Is(err, ringbuf.ErrClosed) {
 					close(pc.eventChannel)
 					return
 				}
-				log.Printf("error reading perf event on %s: %v", pc.name, err)
-				continue
-			}
-			if record.LostSamples > 0 {
-				log.Printf("⚠️ Lost %d events on channel %s", record.LostSamples, pc.name)
+				log.Printf("error reading ring buffer event on %s: %v", pc.name, err)
 				continue
 			}
 			pc.eventChannel <- record.RawSample
@@ -71,7 +66,7 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 	return nil
 }
 
-// Stop closes the underlying perf reader, which will unblock the drain goroutine.
+// Stop closes the underlying ring buffer reader, which will unblock the drain goroutine.
 func (pc *ProbeChannel) Stop() {
 	if pc.reader != nil {
 		pc.reader.Close()
