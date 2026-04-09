@@ -81,13 +81,19 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collecti
 		}
 	}
 	slog.Debug("Attempt for processes", "count", len(pidSet))
+	skippedPids := make(map[int32]bool)
 	for pid := range pidSet {
 		time.Sleep(200 * time.Millisecond)
 		_, ok := processFactory.unattachedProcess[pid]
 		if ok {
-			slog.Debug("Not attempting for process", "pid", pid)
+			skippedPids[pid] = true
 			continue
 		}
+		if len(skippedPids) > 0 {
+			slog.Debug("Skipped unattached processes", "count", len(skippedPids), "pids", skippedPids)
+			skippedPids = make(map[int32]bool)
+		}
+
 		_, ok = processFactory.processMap[pid]
 		if !ok {
 
@@ -164,6 +170,9 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collecti
 			}
 			processFactory.unattachedProcess[pid] = true
 		}
+	}
+	if len(skippedPids) > 0 {
+		slog.Debug("Skipped unattached processes", "count", len(skippedPids), "pids", skippedPids)
 	}
 }
 
