@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
+	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"google.golang.org/protobuf/proto"
@@ -36,14 +38,14 @@ var kafkaPassword = ""
 
 func init() {
 
-	InitVar("USE_TLS", &useTLS)
-	InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
-	InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
+	utils.InitVar("USE_TLS", &useTLS)
+	utils.InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
+	utils.InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
 
 	// Initialize SASL authentication variables
-	InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
-	InitVar("KAFKA_USERNAME", &kafkaUsername)
-	InitVar("KAFKA_PASSWORD", &kafkaPassword)
+	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
+	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
+	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
 
 }
 
@@ -95,9 +97,10 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 	return packetIp
 }
 
-func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) error {
+func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string,  url, reqHost string) error {
 	// intialize the writer with the broker addresses, and the topic
 	topic := "akto.api.logs"
+	utils.CheckDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 	msg := kafka.Message{
 		Topic: topic,
 		Value: []byte(message),
@@ -106,9 +109,11 @@ func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string) 
 
 	if err != nil {
 		slog.Error("Kafka write for runtime failed", "topic", topic, "error", err)
+		utils.CheckDebugUrlAndPrint(url, reqHost, fmt.Sprintf("Kafka write failed: %v", err))
 		return err
 	}
 
+	utils.CheckDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")
 	return nil
 
 }
