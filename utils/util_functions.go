@@ -62,7 +62,7 @@ func InitVar(envVarName string, targetVar interface{}) {
 
 // Reads /ebpf/debug-urls.txt and updates DebugStrings with any new URLs found in the file (one per line)
 func UpdateDebugStringsFromFile() {
-	filePath := "/ebpf/debug-urls.txt"
+	filePath := "/app/debug-urls.txt"
 	f, err := os.Open(filePath)
 	if err != nil {
 		// File may not exist, that's fine
