@@ -401,7 +401,7 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 				printCounter--
 				log.Println("req-resp.String()", string(out))
 			}
-			go ProduceStr(kafkaWriter, ctx, string(out))
+			go ProduceStr(kafkaWriter, ctx, string(out), value["path"], http2Request.headersMap[":authority"])
 		}
 
 	}
@@ -437,10 +437,12 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		requests = append(requests, *req)
 		requestsContent = append(requestsContent, string(body))
+		utils.CheckDebugUrlAndPrint(req.URL.String(), req.Host, "request parsed in tryReadFromBD")
 		i++
 	}
 
 	if len(requests) == 0 {
+		utils.CheckDebugUrlAndPrint("", "", "no requests parsed, returning early")
 		return
 	}
 
@@ -490,6 +492,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 	}
 
 	if len(requests) != len(responses) {
+		if len(requests) > 0 {
+			utils.CheckDebugUrlAndPrint(requests[0].URL.String(), requests[0].Host, "req/resp count mismatch, dropping all")
+		}
 		return
 	}
 
@@ -501,6 +506,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 
 		req := &requests[i]
 		resp := &responses[i]
+
+		utils.CheckDebugUrlAndPrint(req.URL.String(), req.Host, "URL,host found in ParseAndProduce")
 
 		// build req headers for threat client
 		reqHeader := make(map[string]*trafficpb.StringList)
@@ -533,6 +540,7 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		//printLog(fmt.Sprintf("passes %t", passes))
 
 		if !passes {
+			utils.CheckDebugUrlAndPrint(req.URL.String(), req.Host, "request dropped by filter in tryReadFromBD")
 			i++
 			continue
 		}
@@ -638,7 +646,8 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 		}
 
 		// Todo convert to protobuf
-		go ProduceStr(kafkaWriter, ctx, string(out))
+		utils.CheckDebugUrlAndPrint(req.URL.String(), req.Host, "producing to kafka in tryReadFromBD")
+		go ProduceStr(kafkaWriter, ctx, string(out), req.URL.String(), req.Host)
 		i++
 	}
 }
@@ -927,7 +936,7 @@ func initKafka() {
 
 		ctx := context.Background()
 		out, _ := json.Marshal(value)
-		err := ProduceStr(kafkaWriter, ctx, string(out))
+		err := ProduceStr(kafkaWriter, ctx, string(out), "", "")
 		err = Produce(kafkaWriter, ctx, payload)
 		log.Println("logging kafka stats post pushing message")
 		logKafkaStats()
