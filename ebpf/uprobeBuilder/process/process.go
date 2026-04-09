@@ -13,7 +13,6 @@ import (
 )
 
 var (
-	kubepodsRegex       = regexp.MustCompile(`cri-containerd-(?P<Group>\w+)\.scope`)
 	mapFileContentRegex = regexp.MustCompile("(?P<StartAddr>[a-f\\d]+)\\-(?P<EndAddr>[a-f\\d]+)\\s(?P<Perm>[^\\s]+)" +
 		"\\s(?P<Offset>[a-f\\d]+)\\s[a-f\\d]+\\:[a-f\\d]+\\s\\d+\\s+(?P<Name>[^\\n]+)")
 )
