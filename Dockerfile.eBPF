@@ -17,7 +17,7 @@ RUN apk add --no-cache \
 # Using --platform=$BUILDPLATFORM lets Docker run this stage natively
 # (no QEMU emulation). Go's built-in cross-compilation produces the binary
 # for the TARGET arch via GOARCH / GOOS env vars.
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux
