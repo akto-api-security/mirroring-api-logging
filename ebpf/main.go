@@ -187,9 +187,7 @@ func run() {
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
 			slog.Debug("Starting uprobe process ticker")
-			ticker := time.NewTicker(pollInterval)
-			defer ticker.Stop()
-			for range ticker.C {
+			attachToProcesses := func() {
 				slog.Debug("Starting to attach to processes in ticker")
 				mu.Lock()
 				if isRunning {
@@ -207,6 +205,14 @@ func run() {
 				isRunning = false
 				mu.Unlock()
 				slog.Debug("Ended attaching to processes in ticker")
+			}
+
+			attachToProcesses()
+
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				attachToProcesses()
 			}
 			slog.Debug("Ended attaching to processes in ticker end")
 		}()
