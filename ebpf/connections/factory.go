@@ -77,7 +77,7 @@ func convertToSingleByteArr(connID structs.ConnID, bufMap map[int][]byte) []byte
 
 var (
 	disableEgress        = false
-	maxActiveConnections = 4096
+	maxActiveConnections = 8192
 	inactivityThreshold  = 7 * time.Second
 	// Value in MB
 	bufferMemThreshold = 400

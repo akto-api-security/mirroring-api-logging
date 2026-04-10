@@ -294,17 +294,17 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 16 * 1024 * 1024);
+    __uint(max_entries, 64 * 1024 * 1024);
 } socket_data_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
+    __uint(max_entries, 1024 * 1024);
 } socket_open_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
+    __uint(max_entries, 1024 * 1024);
 } socket_close_events SEC(".maps");
 
 struct {
