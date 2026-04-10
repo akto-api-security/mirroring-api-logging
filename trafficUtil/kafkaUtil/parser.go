@@ -427,6 +427,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 		}
 
 		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 			body = []byte{}
