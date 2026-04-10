@@ -1031,7 +1031,8 @@ int syscall__probe_ret_writev(struct pt_regs* ctx) {
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
-    if (write_args != NULL) {
+    /* Match module.cc: only capture after security_socket_sendmsg marked this syscall. */
+    if (write_args != NULL && write_args->sock_event) {
         if (print_bpf_logs) {
             bpf_printk("syscall__probe_ret_writev data process: pid: %d", id);
         }
@@ -1124,7 +1125,8 @@ int syscall__probe_ret_readv(struct pt_regs* ctx) {
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
-    if (read_args != NULL) {
+    /* Match module.cc: only capture after security_socket_recvmsg marked this syscall. */
+    if (read_args != NULL && read_args->sock_event) {
         process_syscall_data_vecs(ctx, read_args, id, false);
     }
 
@@ -1303,7 +1305,8 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
 
-    if (read_args != NULL) {
+    /* Match module.cc: only capture after security_socket_recvmsg marked this syscall. */
+    if (read_args != NULL && read_args->sock_event) {
         process_syscall_data(ctx, read_args, id, false, false);
     }
 
@@ -1436,7 +1439,8 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
 
-    if (write_args != NULL) {
+    /* Match module.cc: only capture after security_socket_sendmsg marked this syscall. */
+    if (write_args != NULL && write_args->sock_event) {
         if (print_bpf_logs) {
             bpf_printk("syscall__probe_ret_write data process: pid: %d", id);
         }
