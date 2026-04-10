@@ -406,11 +406,11 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 
 	for {
 		req, err := http.ReadRequest(reader)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
+			}
 			break
-		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return nil
 		}
 		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
@@ -438,11 +438,11 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 
 	for {
 		resp, err := http.ReadResponse(reader, nil)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
+			}
 			break
-		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
-			return nil
 		}
 
 		body, err := io.ReadAll(resp.Body)

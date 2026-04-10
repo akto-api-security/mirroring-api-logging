@@ -9,17 +9,24 @@ import (
 )
 
 var printCounter = 1000
+var printCounterResetAt = time.Now()
 
 const (
 	DirectionInbound  = 1
 	DirectionOutbound = 2
+	printCounterMax   = 1000
+	printCounterReset = 60 // seconds
 )
 
 /*
-Initial 1000 logs, marking as warn.
-Help in checking if the module started as expected.
+Logs at WARN level with a budget that resets every minute.
 */
 func PrintLog(val string, args ...any) {
+	now := time.Now()
+	if now.Sub(printCounterResetAt).Seconds() > printCounterReset {
+		printCounter = printCounterMax
+		printCounterResetAt = now
+	}
 	if printCounter > 0 {
 		slog.Warn(val, args...)
 		printCounter--
