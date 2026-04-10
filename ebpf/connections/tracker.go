@@ -49,7 +49,7 @@ func (conn *Tracker) IsComplete() bool {
 	complete := conn.closeTimestamp != 0 &&
 		uint64(time.Now().UnixNano()) >= conn.closeTimestamp
 	if complete {
-		metaUtils.LogProcessing("Connection closed", "fd", conn.connID.Fd, "id", conn.connID.Id, "closeTimestamp", conn.closeTimestamp, "currentTimestamp", uint64(time.Now().UnixNano()))
+		metaUtils.LogProcessing("Connection closed", append(structs.ConnIDLogArgs(conn.connID), "closeTimestamp", conn.closeTimestamp, "currentTimestamp", uint64(time.Now().UnixNano()))...)
 	}
 	return complete
 }
