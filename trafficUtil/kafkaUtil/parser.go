@@ -269,7 +269,7 @@ var (
 		"PATCH":   true}
 	DebugStrings = []string{}
 
-	EventChanBuffSize = 100000
+	EventChanBuffSize = 20000
 )
 
 const ONE_MINUTE = 60
@@ -396,21 +396,95 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
+var httpRequestMethods = [][]byte{
+	[]byte("GET "), []byte("HEAD "), []byte("POST "),
+	[]byte("PUT "), []byte("DELETE "), []byte("CONNECT "),
+	[]byte("OPTIONS "), []byte("TRACE "), []byte("TRACK "),
+	[]byte("PATCH "),
+}
+
+var httpVersionTag = []byte(" HTTP/")
+var httpStatusLinePrefix = []byte("HTTP/")
+
+// findHTTPRequestBoundaries returns byte offsets where HTTP request lines begin.
+// Uses bytes.Index for efficient scanning instead of byte-by-byte iteration.
+func findHTTPRequestBoundaries(buf []byte) []int {
+	var offsets []int
+	for i := 0; i < len(buf); {
+		idx := bytes.Index(buf[i:], httpVersionTag)
+		if idx < 0 {
+			break
+		}
+		pos := i + idx
+
+		lineStart := pos
+		for lineStart > 0 && buf[lineStart-1] != '\n' {
+			lineStart--
+		}
+
+		for _, method := range httpRequestMethods {
+			if bytes.HasPrefix(buf[lineStart:], method) {
+				offsets = append(offsets, lineStart)
+				break
+			}
+		}
+
+		i = pos + len(httpVersionTag)
+	}
+	return offsets
+}
+
+// findHTTPResponseBoundaries returns byte offsets where HTTP status lines begin.
+// Validates the version+status format to avoid matching "HTTP/" inside bodies.
+func findHTTPResponseBoundaries(buf []byte) []int {
+	var offsets []int
+	for i := 0; i < len(buf); {
+		idx := bytes.Index(buf[i:], httpStatusLinePrefix)
+		if idx < 0 {
+			break
+		}
+		pos := i + idx
+
+		if pos == 0 || buf[pos-1] == '\n' {
+			remaining := buf[pos:]
+			// "HTTP/1.0 NNN" or "HTTP/1.1 NNN" (need at least 13 bytes)
+			if len(remaining) >= 13 &&
+				remaining[5] == '1' && remaining[6] == '.' &&
+				(remaining[7] == '0' || remaining[7] == '1') &&
+				remaining[8] == ' ' &&
+				remaining[9] >= '1' && remaining[9] <= '5' {
+				offsets = append(offsets, pos)
+			} else if len(remaining) >= 8 && remaining[5] == '2' && remaining[6] == ' ' {
+				offsets = append(offsets, pos)
+			}
+		}
+
+		i = pos + len(httpStatusLinePrefix)
+	}
+	return offsets
+}
+
 // parseHTTPTraffic parses HTTP requests and responses from raw byte buffers.
-// Returns nil if parsing fails (errors are logged).
+// Splits at HTTP message boundaries so truncated bodies on keep-alive connections
+// cannot bleed into adjacent messages.
 func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx TrafficContext) *ParsedTraffic {
-	// Parse requests
-	reader := bufio.NewReader(bytes.NewReader(reqBuffer))
+	reqBoundaries := findHTTPRequestBoundaries(reqBuffer)
 	requests := []http.Request{}
 	requestBodies := []string{}
 
-	for {
+	for i, start := range reqBoundaries {
+		end := len(reqBuffer)
+		if i+1 < len(reqBoundaries) {
+			end = reqBoundaries[i+1]
+		}
+
+		reader := bufio.NewReader(bytes.NewReader(reqBuffer[start:end]))
 		req, err := http.ReadRequest(reader)
 		if err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
 			}
-			break
+			continue
 		}
 		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
@@ -431,18 +505,23 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 		return nil
 	}
 
-	// Parse responses
-	reader = bufio.NewReader(bytes.NewReader(respBuffer))
+	respBoundaries := findHTTPResponseBoundaries(respBuffer)
 	responses := []http.Response{}
 	responseBodies := []string{}
 
-	for {
+	for i, start := range respBoundaries {
+		end := len(respBuffer)
+		if i+1 < len(respBoundaries) {
+			end = respBoundaries[i+1]
+		}
+
+		reader := bufio.NewReader(bytes.NewReader(respBuffer[start:end]))
 		resp, err := http.ReadResponse(reader, nil)
 		if err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
 			}
-			break
+			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
