@@ -700,6 +700,68 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
+/*
+ * Copy up to max_len bytes from the logical stream formed by concatenating
+ * iovecs (capped by total_size) starting at stream_off, into dst.
+ * Used so writev/readv/sendmsg/recvmsg produce the same chunking as a single
+ * contiguous buffer would — one syscall return -> same rwc progression as
+ * process_syscall_data, instead of one ringbuf event per iovec.
+ */
+static __always_inline u32 copy_from_iovec_stream(const struct iovec* iov, int iovlen,
+                                                  int total_size, u32 stream_off,
+                                                  u32 max_len, void* dst_void) {
+    char* dst = (char *)dst_void;
+    u32 written = 0;
+    u32 skip    = stream_off;
+    u32 stream_base = 0;
+
+    for (int vi = 0; vi < LOOP_LIMIT && vi < iovlen && written < max_len; ++vi) {
+        struct iovec iv;
+
+        if (bpf_probe_read_user(&iv, sizeof(iv), &iov[vi]) != 0)
+            break;
+
+        u32 ilen = (u32)iv.iov_len;
+        if (ilen == 0)
+            continue;
+
+        if (stream_base >= (u32)total_size)
+            break;
+
+        u32 room = (u32)total_size - stream_base;
+        if (ilen > room)
+            ilen = room;
+
+        if (skip >= ilen) {
+            skip -= ilen;
+            stream_base += ilen;
+            continue;
+        }
+
+        u32 start_in_iov = skip;
+
+        skip = 0;
+
+        u32 avail = ilen - start_in_iov;
+        u32 need  = max_len - written;
+        u32 n     = avail < need ? avail : need;
+
+        if (n > 0) {
+            if (bpf_probe_read_user(dst + written, n,
+                                    (const char *)iv.iov_base + start_in_iov) != 0)
+                break;
+            written += n;
+        }
+
+        stream_base += ilen;
+
+        if (written >= max_len)
+            break;
+    }
+
+    return written;
+}
+
 static __always_inline void process_syscall_data(struct pt_regs* ctx,
                                            const struct data_args_t* args,
                                            u64 id, bool is_send, bool ssl) {
@@ -818,21 +880,95 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
 static __always_inline void process_syscall_data_vecs(struct pt_regs* ctx,
                                                 struct data_args_t* args,
                                                 u64 id, bool is_send) {
-    int bytes_sent  = 0;
-    int total_size  = PT_REGS_RC(ctx);
-    const struct iovec* iov = args->iov;
-    for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size; ++i) {
-        struct iovec iov_cpy;
-        bpf_probe_read_user(&iov_cpy, sizeof(iov_cpy), &iov[i]);
+    int total_size = PT_REGS_RC(ctx);
 
-        const int bytes_remaining = total_size - bytes_sent;
-        const size_t iov_size = iov_cpy.iov_len < bytes_remaining
-                                ? iov_cpy.iov_len : bytes_remaining;
+    if (total_size <= 0) {
+        return;
+    }
+    if (args->fd < 0) {
+        return;
+    }
+    if (args->iov == NULL || args->iovlen <= 0) {
+        return;
+    }
 
-        args->buf      = iov_cpy.iov_base;
-        args->buf_size = iov_size;
-        process_syscall_data(ctx, args, id, is_send, false);
-        bytes_sent += iov_size;
+    u32 tgid = id >> 32;
+    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+
+    struct conn_info_t* conn_info = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+    if (conn_info == NULL) {
+        return;
+    }
+
+    if (conn_info->ssl) {
+        return;
+    }
+
+    u32 kZero = 0;
+    struct socket_data_event_t* socket_data_event =
+        bpf_map_lookup_elem(&socket_data_event_buffer_heap, &kZero);
+    if (socket_data_event == NULL) {
+        return;
+    }
+
+    socket_data_event->id            = conn_info->id;
+    socket_data_event->fd            = conn_info->fd;
+    socket_data_event->conn_start_ns = conn_info->conn_start_ns;
+    socket_data_event->port          = conn_info->port;
+    socket_data_event->ip            = conn_info->ip;
+    socket_data_event->ssl           = conn_info->ssl;
+
+    u32 syscall_off = 0;
+    int i           = 0;
+
+#pragma unroll
+    for (i = 0; i < CHUNK_LIMIT; ++i) {
+        const int bytes_remaining = total_size - (int)syscall_off;
+
+        if (bytes_remaining <= 0) {
+            break;
+        }
+
+        u32 current_size;
+        if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
+            current_size = (u32)(MAX_MSG_SIZE - 1);
+        } else {
+            current_size = (u32)bytes_remaining;
+        }
+        if (current_size >= MAX_MSG_SIZE) {
+            current_size = (u32)(MAX_MSG_SIZE - 1);
+        }
+        current_size &= (u32)(MAX_MSG_SIZE - 1);
+
+        u32 size_to_save = copy_from_iovec_stream(args->iov, args->iovlen, total_size,
+                                                  syscall_off, current_size,
+                                                  socket_data_event->msg);
+        if (size_to_save == 0) {
+            break;
+        }
+
+        if (is_send) {
+            conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
+        } else {
+            conn_info->readEventsCount = (conn_info->readEventsCount) + 1u;
+        }
+
+        socket_data_event->writeEventsCount = conn_info->writeEventsCount;
+        socket_data_event->readEventsCount  = conn_info->readEventsCount;
+
+        if (print_bpf_logs) {
+            bpf_printk("pid: %d conn-id:%d, fd: %d",
+                       id, conn_info->id, conn_info->fd);
+            bpf_printk("vec coalesce: sz:%d off:%d total:%d",
+                       size_to_save, syscall_off, total_size);
+        }
+
+        socket_data_event->bytes_sent  = is_send ? 1 : -1;
+        socket_data_event->bytes_sent *= (int)size_to_save;
+        bpf_ringbuf_output(&socket_data_events, socket_data_event,
+                           sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save, 0);
+
+        syscall_off += size_to_save;
     }
 }
 
