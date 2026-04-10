@@ -52,7 +52,12 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	kPrev := -1
 	for _, k := range keys {
 		if kPrev == -1 {
-			if k != 1 {
+			// C sets read, write event count=0 only on new connection open
+			// For requests arriving after a time gap on the same underlying connection the
+			// read,write count will not be 1, they will simply continue from the last request
+			// This can only be replicated when there is a time gap/inactivityThreshold between requests
+			// on the same underlying connection
+			if !sequenceCheckSkip && k != 1 {
 				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
 				break
 			}
@@ -82,6 +87,7 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
+	sequenceCheckSkip             = false
 )
 
 func init() {
@@ -92,6 +98,7 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
