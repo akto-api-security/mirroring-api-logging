@@ -184,31 +184,29 @@ func run() {
 
 	ssl.InitMaps(coll)
 
+	attachToProcesses := func() {
+		slog.Debug("Starting to attach to processes in ticker")
+		mu.Lock()
+		if isRunning {
+			mu.Unlock()
+			return
+		}
+		isRunning = true
+		mu.Unlock()
+
+		slog.Info("Starting to attach to processes")
+		processFactory.AddNewProcessesToProbe(coll)
+		slog.Debug("Ended attaching to processes")
+
+		mu.Lock()
+		isRunning = false
+		mu.Unlock()
+		slog.Debug("Ended attaching to processes in ticker")
+	}
 	if captureSsl == "true" || captureAll == "true" {
+		attachToProcesses()
 		go func() {
 			slog.Debug("Starting uprobe process ticker")
-			attachToProcesses := func() {
-				slog.Debug("Starting to attach to processes in ticker")
-				mu.Lock()
-				if isRunning {
-					mu.Unlock()
-					return
-				}
-				isRunning = true
-				mu.Unlock()
-
-				slog.Info("Starting to attach to processes")
-				processFactory.AddNewProcessesToProbe(coll)
-				slog.Debug("Ended attaching to processes")
-
-				mu.Lock()
-				isRunning = false
-				mu.Unlock()
-				slog.Debug("Ended attaching to processes in ticker")
-			}
-
-			attachToProcesses()
-
 			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()
 			for range ticker.C {
