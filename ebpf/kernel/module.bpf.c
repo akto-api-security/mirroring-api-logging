@@ -436,10 +436,8 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
             return;
         }
         if (print_bpf_logs) {
-            bpf_printk("sock alloc found, processed: id: %llu ip: %llu port: %d",
-                             id, conn_info.ip, conn_info.port);
-            bpf_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d",
-                             id, srcIp, lport);
+            bpf_printk("sock alloc found, processed: id: %llu ip: %llu port: %d", id, conn_info.ip, conn_info.port);
+            bpf_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d", id, srcIp, lport);
         }
     }
 
@@ -539,12 +537,9 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     socket_open_event.src_port      = lport;
 
     if (print_bpf_logs) {
-        bpf_printk("accept call: %llu %d %d",
-                         socket_open_event.id, socket_open_event.fd, isConnect);
-        bpf_printk("accept call 2: %llu %d %d",
-                         socket_open_event.ip, socket_open_event.port, isConnect);
-        bpf_printk("accept call 3: %llu %d %d",
-                         socket_open_event.src_ip, socket_open_event.src_port, isConnect);
+        bpf_printk("accept call: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
+        bpf_printk("accept call 2: %llu %d %d", socket_open_event.ip, socket_open_event.port, isConnect);
+        bpf_printk("accept call 3: %llu %d %d", socket_open_event.src_ip, socket_open_event.src_port, isConnect);
     }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
@@ -681,14 +676,9 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         socket_data_event->readEventsCount  = conn_info->readEventsCount;
 
         if (print_bpf_logs) {
-            bpf_printk("pid: %d conn-id:%d, fd: %d",
-                             id, conn_info->id, conn_info->fd);
-            bpf_printk("current_size: %d i:%d, bytes_exchanged: %d",
-                             current_size, i, bytes_exchanged);
-            bpf_printk("rwc: %d tdfd: %llu data: %s",
-                             (socket_data_event->readEventsCount * 10000 +
-                              socket_data_event->writeEventsCount % 10000),
-                             tgid_fd, socket_data_event->msg);
+            bpf_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
+            bpf_printk("current_size: %d i:%d, bytes_exchanged: %d", current_size, i, bytes_exchanged);
+            bpf_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000), tgid_fd, socket_data_event->msg);
         }
 
         socket_data_event->bytes_sent  = is_send ? 1 : -1;
@@ -1029,11 +1019,9 @@ int syscall__probe_entry_recvfrom(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* read_args_1 = bpf_map_lookup_elem(&active_read_args_map, &id);
         if (read_args_1 != NULL) {
-            bpf_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : %d",
-                             id, fd, read_args_1->fd);
+            bpf_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : %d", id, fd, read_args_1->fd);
         } else {
-            bpf_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : NULL",
-                             id, fd);
+            bpf_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : NULL", id, fd);
         }
     }
 
@@ -1074,11 +1062,9 @@ int syscall__probe_entry_sendto(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* write_args_1 = bpf_map_lookup_elem(&active_write_args_map, &id);
         if (write_args_1 != NULL) {
-            bpf_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : %d",
-                             id, fd, write_args_1->fd);
+            bpf_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : %d", id, fd, write_args_1->fd);
         } else {
-            bpf_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : NULL",
-                             id, fd);
+            bpf_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : NULL", id, fd);
         }
     }
 
@@ -1157,11 +1143,9 @@ int syscall__probe_entry_read(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* read_args_1 = bpf_map_lookup_elem(&active_read_args_map, &id);
         if (read_args_1 != NULL) {
-            bpf_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : %d",
-                             id, fd, read_args_1->fd);
+            bpf_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : %d", id, fd, read_args_1->fd);
         } else {
-            bpf_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : NULL",
-                             id, fd);
+            bpf_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : NULL", id, fd);
         }
     }
 
@@ -1315,8 +1299,7 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
     if (print_bpf_logs) {
         struct data_args_t* write_args_1 = bpf_map_lookup_elem(&active_write_args_map, &id);
         if (write_args_1 != NULL) {
-            bpf_printk("syscall__probe_ret_write: pid: %llu write args : %d",
-                             id, write_args_1->fd);
+            bpf_printk("syscall__probe_ret_write: pid: %llu write args : %d", id, write_args_1->fd);
         } else {
             bpf_printk("syscall__probe_ret_write: pid: %llu write args : NULL", id);
         }
@@ -1413,8 +1396,7 @@ static u32 get_fd(void* ssl, int sslVersion, bool rw) {
     bpf_probe_read_user(&rbio_num, sizeof(rbio_num), rbio_ptr + RBIO_num_offset);
 
     if (print_bpf_logs) {
-        bpf_printk("SSL fd offset: %d %d %d", rbio_num,
-                         SSL_rbio_offset, RBIO_num_offset);
+        bpf_printk("SSL fd offset: %d %d %d", rbio_num, SSL_rbio_offset, RBIO_num_offset);
     }
     return rbio_num;
 }
@@ -1905,25 +1887,14 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
 
     struct tgid_goid_t tgid_goid = {};
     tgid_goid.tgid = tgid;
-
-    if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_write FIRED tgid=%lu", tgid);
-    }
-
     uint64_t goid = get_goid(ctx);
-
-    if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_write goid=%llu tgid=%lu", goid, tgid);
-    }
-
     if (goid == 0) {
         return 0;
     }
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_write 1 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_entry_tls_conn_write 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
@@ -1938,8 +1909,7 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_write 2 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_entry_tls_conn_write 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     struct go_tls_conn_args args = {};
@@ -1951,8 +1921,7 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
     bpf_map_update_elem(&active_tls_conn_op_map, &tgid_goid, &args, BPF_ANY);
 
     if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_write 3 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_entry_tls_conn_write 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
     return 0;
 }
@@ -1980,19 +1949,20 @@ static __always_inline int probe_return_tls_conn_write_core(struct pt_regs* ctx,
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_write 2.1 %llu %lu", id, tgid);
     }
-
+    // If function returns an error, then there's no data to trace.
     if (retval1.ptr != 0) {
         return 0;
     }
 
+    // To call get_fd_from_conn_intf, cast the conn_ptr into a go_interface.
     struct go_interface conn_intf;
     conn_intf.type = 1;
-    conn_intf.ptr  = args->conn_ptr;
-    int fd  = get_fd_from_conn_intf_core(conn_intf, symaddrs);
+    conn_intf.ptr = args->conn_ptr;
+    int fd = get_fd_from_conn_intf_core(conn_intf, symaddrs);
     u32 fdu = (u32)fd;
 
     if (print_bpf_logs) {
-        bpf_printk("TLS write fd: %d", fd);
+        bpf_printk("TLS : %lu", fdu);
     }
 
     if (fd <= 0) {
@@ -2006,10 +1976,10 @@ static __always_inline int probe_return_tls_conn_write_core(struct pt_regs* ctx,
 
     struct data_args_t data_args;
     data_args.source_fn = kGoTLSWrite;
-    data_args.buf       = args->plaintext_ptr;
-    data_args.fd        = fd;
+    data_args.buf = args->plaintext_ptr;
+    data_args.fd = fd;
 
-    process_syscall_data(ctx, &data_args, id, true, true);
+    process_syscall_data(ctx, &data_args, id, true, /* ssl */ true);
 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_write 2.3 %llu %lu", id, tgid);
@@ -2032,8 +2002,7 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_printk("probe_return_tls_conn_write 1 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_return_tls_conn_write 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     struct go_tls_conn_args* args = bpf_map_lookup_elem(&active_tls_conn_op_map, &tgid_goid);
@@ -2042,8 +2011,7 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_printk("probe_return_tls_conn_write 2 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_return_tls_conn_write 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     probe_return_tls_conn_write_core(ctx, id, tgid, args);
@@ -2051,8 +2019,7 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
     bpf_map_delete_elem(&active_tls_conn_op_map, &tgid_goid);
 
     if (print_bpf_logs) {
-        bpf_printk("probe_return_tls_conn_write 3 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_return_tls_conn_write 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
     return 0;
 }
@@ -2071,8 +2038,7 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_read 1 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_entry_tls_conn_read 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
@@ -2087,8 +2053,7 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_read 2 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_entry_tls_conn_read 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     struct go_tls_conn_args args = {};
@@ -2100,8 +2065,7 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
     bpf_map_update_elem(&active_tls_conn_op_map, &tgid_goid, &args, BPF_ANY);
 
     if (print_bpf_logs) {
-        bpf_printk("probe_entry_tls_conn_read 3 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_entry_tls_conn_read 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     return 0;
@@ -2130,19 +2094,20 @@ static __always_inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_read 2.1 %llu %lu", id, tgid);
     }
-
+    // If function returns an error, then there's no data to trace.
     if (retval1.ptr != 0) {
         return 0;
     }
 
+    // To call get_fd_from_conn_intf, cast the conn_ptr into a go_interface.
     struct go_interface conn_intf;
     conn_intf.type = 1;
-    conn_intf.ptr  = args->conn_ptr;
-    int fd  = get_fd_from_conn_intf_core(conn_intf, symaddrs);
+    conn_intf.ptr = args->conn_ptr;
+    int fd = get_fd_from_conn_intf_core(conn_intf, symaddrs);
     u32 fdu = (u32)fd;
 
     if (print_bpf_logs) {
-        bpf_printk("TLS read fd: %d", fd);
+        bpf_printk("TLS : %lu", fdu);
     }
 
     if (fd <= 0) {
@@ -2156,10 +2121,10 @@ static __always_inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, 
 
     struct data_args_t data_args;
     data_args.source_fn = kGoTLSRead;
-    data_args.buf       = args->plaintext_ptr;
-    data_args.fd        = fd;
+    data_args.buf = args->plaintext_ptr;
+    data_args.fd = fd;
 
-    process_syscall_data(ctx, &data_args, id, false, true);
+    process_syscall_data(ctx, &data_args, id, false, /* ssl */ true);
 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_read 2.3 %llu %lu", id, tgid);
@@ -2182,8 +2147,7 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
     tgid_goid.goid = goid;
 
     if (print_bpf_logs) {
-        bpf_printk("probe_return_tls_conn_read 1 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_return_tls_conn_read 1 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     struct go_tls_conn_args* args = bpf_map_lookup_elem(&active_tls_conn_op_map, &tgid_goid);
@@ -2192,8 +2156,7 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
     }
 
     if (print_bpf_logs) {
-        bpf_printk("probe_return_tls_conn_read 2 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_return_tls_conn_read 2 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
 
     probe_return_tls_conn_read_core(ctx, id, tgid, args);
@@ -2201,8 +2164,7 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
     bpf_map_delete_elem(&active_tls_conn_op_map, &tgid_goid);
 
     if (print_bpf_logs) {
-        bpf_printk("probe_return_tls_conn_read 3 %lu %llu",
-                         tgid_goid.tgid, tgid_goid.goid);
+        bpf_printk("probe_return_tls_conn_read 3 %lu %llu", tgid_goid.tgid, tgid_goid.goid);
     }
     return 0;
 }
