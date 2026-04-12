@@ -357,121 +357,6 @@ struct {
 } active_ssl_write_args_map SEC(".maps");
 
 /* ===================================================================
- * Node.js TLS structs and maps
- * =================================================================== */
-
-struct node_tlswrap_symaddrs_t {
-  u32 TLSWrapStreamListenerOffset;
-  u32 StreamListenerStreamOffset;
-  u32 StreamBaseStreamResourceOffset;
-  u32 LibuvStreamWrapStreamBaseOffset;
-  u32 LibuvStreamWrapStreamOffset;
-  u32 UVStreamSIOWatcherOffset;
-  u32 UVIOSFDOffset;
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, u32);
-    __type(value, struct node_tlswrap_symaddrs_t);
-} node_tlswrap_symaddrs_map SEC(".maps");
-
-/*
- * active_TLSWrap_memfn_this: stores void* (tls_wrap pointer) per pid_tgid.
- * void* cannot be a BTF map value type; stored as __u64.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 65536);
-    __type(key, u64);
-    __type(value, __u64);
-} active_TLSWrap_memfn_this SEC(".maps");
-
-/*
- * node_ssl_tls_wrap_map: ssl* → tls_wrap* mapping.
- * Both pointers stored as __u64.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 65536);
-    __type(key, __u64);
-    __type(value, __u64);
-} node_ssl_tls_wrap_map SEC(".maps");
-
-/* ===================================================================
- * Go TLS structs and maps
- * =================================================================== */
-
-struct tgid_goid_t {
-  u32 tgid;
-  long long goid;
-};
-
-struct go_tls_conn_args {
-  void* conn_ptr;
-  char* plaintext_ptr;
-};
-
-struct go_interface {
-  int64_t type;
-  void* ptr;
-};
-
-enum location_type_t {
-  kLocationTypeStack = 1,
-  kLocationTypeRegisters = 2
-};
-
-struct location_t {
-  enum location_type_t type;
-  u32 offset;
-};
-
-struct go_symaddrs_t {
-  u64 FDSysFDOffset;
-  u64 TLSConnOffset;
-  u64 GIDOffset;
-  u64 TCPConnOffset;
-  u64 IsClientOffset;
-
-  struct location_t WriteConnectionLoc;
-  struct location_t WriteBufferLoc;
-  struct location_t WriteRet0Loc;
-  struct location_t WriteRet1Loc;
-
-  struct location_t ReadConnectionLoc;
-  struct location_t ReadBufferLoc;
-  struct location_t ReadRet0Loc;
-  struct location_t ReadRet1Loc;
-};
-
-struct go_regabi_regs {
-  uint64_t regs[9];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, struct go_regabi_regs);
-} regs_heap SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, u32);
-    __type(value, struct go_symaddrs_t);
-} go_symaddrs_table SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 65536);
-    __type(key, struct tgid_goid_t);
-    __type(value, struct go_tls_conn_args);
-} active_tls_conn_op_map SEC(".maps");
-
-/* ===================================================================
  * Helper functions
  * =================================================================== */
 
@@ -1451,53 +1336,48 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
     return 0;
 }
 
-SEC("kprobe")
-int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
-    u64 id = bpf_get_current_pid_tgid();
+/* ===================================================================
+ * Node.js TLS structs and maps
+ * =================================================================== */
 
-    if (print_bpf_logs) {
-        bpf_printk("probe_entry_security_socket_sendmsg: pid: %d", id);
-    }
-    struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
-    if (write_args != NULL) {
-        write_args->sock_event = true;
-    }
-    return 0;
-}
+struct node_tlswrap_symaddrs_t {
+  u32 TLSWrapStreamListenerOffset;
+  u32 StreamListenerStreamOffset;
+  u32 StreamBaseStreamResourceOffset;
+  u32 LibuvStreamWrapStreamBaseOffset;
+  u32 LibuvStreamWrapStreamOffset;
+  u32 UVStreamSIOWatcherOffset;
+  u32 UVIOSFDOffset;
+};
 
-SEC("kprobe")
-int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
-    u64 id = bpf_get_current_pid_tgid();
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u32);
+    __type(value, struct node_tlswrap_symaddrs_t);
+} node_tlswrap_symaddrs_map SEC(".maps");
 
-    if (print_bpf_logs) {
-        bpf_printk("probe_entry_security_socket_recvmsg: pid: %d", id);
-    }
+/*
+ * active_TLSWrap_memfn_this: stores void* (tls_wrap pointer) per pid_tgid.
+ * void* cannot be a BTF map value type; stored as __u64.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, u64);
+    __type(value, __u64);
+} active_TLSWrap_memfn_this SEC(".maps");
 
-    struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
-    if (read_args != NULL) {
-        read_args->sock_event = true;
-    }
-    return 0;
-}
-
-SEC("kprobe")
-int probe_entry_setsockopt(struct pt_regs* ctx) {
-    u64 id = bpf_get_current_pid_tgid();
-
-    if (print_bpf_logs) {
-        bpf_printk("probe_entry_setsockopt: pid: %d", id);
-    }
-
-    struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
-    if (write_args != NULL) {
-        write_args->sock_event = true;
-    }
-    struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
-    if (read_args != NULL) {
-        read_args->sock_event = true;
-    }
-    return 0;
-}
+/*
+ * node_ssl_tls_wrap_map: ssl* → tls_wrap* mapping.
+ * Both pointers stored as __u64.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u64);
+    __type(value, __u64);
+} node_ssl_tls_wrap_map SEC(".maps");
 
 /* ===================================================================
  * SSL / OpenSSL uprobe helpers and probes
@@ -1798,6 +1678,126 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
     bpf_map_delete_elem(&active_ssl_read_args_map, &id);
     return 0;
 }
+
+SEC("kprobe")
+int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+
+    if (print_bpf_logs) {
+        bpf_printk("probe_entry_security_socket_sendmsg: pid: %d", id);
+    }
+    struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
+    if (write_args != NULL) {
+        write_args->sock_event = true;
+    }
+    return 0;
+}
+
+SEC("kprobe")
+int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+
+    if (print_bpf_logs) {
+        bpf_printk("probe_entry_security_socket_recvmsg: pid: %d", id);
+    }
+
+    struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
+    if (read_args != NULL) {
+        read_args->sock_event = true;
+    }
+    return 0;
+}
+
+SEC("kprobe")
+int probe_entry_setsockopt(struct pt_regs* ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+
+    if (print_bpf_logs) {
+        bpf_printk("probe_entry_setsockopt: pid: %d", id);
+    }
+
+    struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
+    if (write_args != NULL) {
+        write_args->sock_event = true;
+    }
+    struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
+    if (read_args != NULL) {
+        read_args->sock_event = true;
+    }
+    return 0;
+}
+
+/* ===================================================================
+ * Go TLS structs and maps
+ * =================================================================== */
+
+struct tgid_goid_t {
+  u32 tgid;
+  long long goid;
+};
+
+struct go_tls_conn_args {
+  void* conn_ptr;
+  char* plaintext_ptr;
+};
+
+struct go_interface {
+  int64_t type;
+  void* ptr;
+};
+
+enum location_type_t {
+  kLocationTypeStack = 1,
+  kLocationTypeRegisters = 2
+};
+
+struct location_t {
+  enum location_type_t type;
+  u32 offset;
+};
+
+struct go_symaddrs_t {
+  u64 FDSysFDOffset;
+  u64 TLSConnOffset;
+  u64 GIDOffset;
+  u64 TCPConnOffset;
+  u64 IsClientOffset;
+
+  struct location_t WriteConnectionLoc;
+  struct location_t WriteBufferLoc;
+  struct location_t WriteRet0Loc;
+  struct location_t WriteRet1Loc;
+
+  struct location_t ReadConnectionLoc;
+  struct location_t ReadBufferLoc;
+  struct location_t ReadRet0Loc;
+  struct location_t ReadRet1Loc;
+};
+
+struct go_regabi_regs {
+  uint64_t regs[9];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct go_regabi_regs);
+} regs_heap SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u32);
+    __type(value, struct go_symaddrs_t);
+} go_symaddrs_table SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct tgid_goid_t);
+    __type(value, struct go_tls_conn_args);
+} active_tls_conn_op_map SEC(".maps");
 
 /* ===================================================================
  * Go TLS probes
