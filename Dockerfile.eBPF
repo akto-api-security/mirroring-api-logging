@@ -1,26 +1,47 @@
 # syntax=docker/dockerfile:1
 
-# ── Runtime base (target arch) ───────────────────────────────────────────────
-# clang/bpftool are needed at container start-up to compile the BPF object
-# against the running kernel's BTF (/sys/kernel/btf/vmlinux).
-FROM alpine:3.22 AS base
-USER root
+# ── BPF object (CO-RE): compile once with a reference BTF; load-time relocations
+# use the host kernel's BTF. No clang/bpftool in the final image.
+#
+# Reference BTF: Ubuntu 20.04 5.8.0-49-generic from aquasecurity/btfhub-archive
+# (same kernel version string per arch; update intentionally if minimum kernel changes).
+
+FROM alpine:3.22 AS bpf-builder
+
+ARG TARGETARCH
 RUN apk add --no-cache \
     clang \
     llvm \
     libbpf-dev \
     bpftool \
-    linux-headers \
-    build-base
+    build-base \
+    make \
+    curl \
+    xz
 
-# ── Go builder (always runs on the BUILD host's native arch) ─────────────────
-# Using --platform=$BUILDPLATFORM lets Docker run this stage natively
-# (no QEMU emulation). Go's built-in cross-compilation produces the binary
-# for the TARGET arch via GOARCH / GOOS env vars.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+WORKDIR /build/ebpf
+COPY ebpf/kernel/module.bpf.c kernel/
+COPY ebpf/Makefile .
+
+# Download pinned BTF, emit vmlinux.h, compile module.bpf.o for TARGETARCH.
+RUN set -eu; \
+    case "$TARGETARCH" in \
+        amd64) BTF_SUB=x86_64 ;; \
+        arm64) BTF_SUB=arm64 ;; \
+        *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fL "https://raw.githubusercontent.com/aquasecurity/btfhub-archive/main/ubuntu/20.04/${BTF_SUB}/5.8.0-49-generic.btf.tar.xz" -o /tmp/btf.tar.xz; \
+    tar -xJf /tmp/btf.tar.xz -C /tmp; \
+    BTF_FILE="$(find /tmp -maxdepth 1 -name '*.btf' | head -1)"; \
+    test -n "$BTF_FILE"; \
+    make generate VMLINUX_BTF="$BTF_FILE"
+
+# ── Go binary (cross-compile on BUILDPLATFORM) ───────────────────────────────
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux
+ENV CGO_ENABLED=0
 
 WORKDIR /src
 COPY ebpf ./ebpf
@@ -28,20 +49,18 @@ COPY trafficUtil ./trafficUtil
 
 WORKDIR /src/ebpf
 RUN go mod download
-RUN GOARCH=${TARGETARCH} GOOS=${TARGETOS} go build -o ebpf-logging
+RUN GOARCH=${TARGETARCH} GOOS=${TARGETOS} go build -o ebpf-logging .
 
-# ── Final image (target arch) ─────────────────────────────────────────────────
-FROM base
+# ── Minimal runtime (no BPF toolchain) ─────────────────────────────────────────
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /ebpf
-COPY --from=builder /src/ebpf/ebpf-logging /ebpf/ebpf-logging
-
-# BPF source + Makefile — compiled at container start against the running
-# kernel's BTF via `make generate` in ebpf-run.sh.
-COPY ebpf/kernel/module.bpf.c /ebpf/kernel/module.bpf.c
-COPY ebpf/Makefile /ebpf/Makefile
+COPY --from=go-builder /src/ebpf/ebpf-logging /ebpf/ebpf-logging
+COPY --from=bpf-builder /build/ebpf/kernel/module.bpf.o /ebpf/kernel/module.bpf.o
 
 COPY ebpf-run.sh /ebpf/ebpf-run.sh
 RUN chmod +x /ebpf/ebpf-run.sh
 
-CMD "./ebpf-run.sh"
+CMD ["./ebpf-run.sh"]

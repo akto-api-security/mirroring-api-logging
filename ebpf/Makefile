@@ -1,18 +1,19 @@
 # Makefile — build helpers for the eBPF/libbpf migration.
 #
-# Prerequisites:
-#   bpftool  — generates vmlinux.h from the running kernel's BTF data
-#   clang    — >= 10, to compile the BPF C program
-#   go       — for `go build`
+# CO-RE: build with a reference vmlinux.h; relocations apply at load against the
+# host kernel BTF. Use either the running machine's BTF or a pinned BTF file.
 #
-# Typical workflow on a Linux host:
-#   make generate   # generate vmlinux.h then compile module.bpf.c → module.bpf.o
-#   go build .      # build the Go binary (embeds no BPF code; loads .o at runtime)
-#   BPF_OBJ_PATH=./kernel/module.bpf.o ./ebpf
+#   make generate
+#   VMLINUX_BTF=/path/to/vmlinux.btf make generate   # CI / reproducible builds
+#
+#   go build .   # loads kernel/module.bpf.o at runtime
 
 VMLINUX_H  := kernel/vmlinux.h
 BPF_SRC    := kernel/module.bpf.c
 BPF_OBJ    := kernel/module.bpf.o
+
+# Optional: reference vmlinux BTF when /sys/kernel/btf/vmlinux is unavailable.
+VMLINUX_BTF ?=
 
 # Detect architecture for the correct clang -D flag.
 ARCH       := $(shell uname -m)
@@ -38,8 +39,13 @@ generate: vmlinux bpf
 
 # Step 1: dump BTF from the running kernel into a C header.
 vmlinux:
-	@echo "Generating $(VMLINUX_H) from running kernel BTF..."
+	@echo "Generating $(VMLINUX_H)..."
+ifeq ($(VMLINUX_BTF),)
+	@test -r /sys/kernel/btf/vmlinux || (echo "No /sys/kernel/btf/vmlinux — set VMLINUX_BTF=/path/to/vmlinux.btf"; exit 1)
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX_H)
+else
+	bpftool btf dump file $(VMLINUX_BTF) format c > $(VMLINUX_H)
+endif
 	@echo "Done: $(VMLINUX_H)"
 
 # Step 2: compile the BPF C program to a BPF ELF object.

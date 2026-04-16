@@ -1,8 +1,9 @@
 /*
  * module.bpf.c — libbpf/CO-RE eBPF kernel program.
  *
- * Compiled ahead-of-time with bpf2go; no BCC or host kernel headers required.
- * vmlinux.h provides all kernel types from the running kernel's BTF data.
+ * Build with a reference vmlinux.h (see ebpf/Makefile); ship module.bpf.o in the
+ * container image. At load time, libbpf applies CO-RE relocations against the
+ * host’s /sys/kernel/btf/vmlinux — no per-node compile in production.
  */
 
 #include "vmlinux.h"
@@ -190,7 +191,7 @@ struct akto_sockaddr_in6 {
  * The fix follows the same pattern used for akto_sockaddr*: define a plain C
  * struct that mirrors the kernel layout and use bpf_probe_read_kernel — no CO-RE
  * relocation is generated, the compile-time offsetof() is correct because
- * vmlinux.h is regenerated from the *running* kernel by `make generate`.
+ * vmlinux.h is produced at build time (`make generate`); offsets are CO-RE-relocated at load.
  *
  * Layout of struct socket (stable across all 64-bit kernels we support):
  *   offset  0: state (socket_state enum, 4 bytes)

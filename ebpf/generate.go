@@ -1,11 +1,12 @@
 // generate.go documents the build steps needed to compile the BPF program.
 //
-// Primary build path (required):
+// Primary build path (Linux or Docker bpf-builder stage):
 //
 //	make generate
 //
-// This runs bpftool to produce kernel/vmlinux.h, then compiles
-// kernel/module.bpf.c → kernel/module.bpf.o with clang.
+// Optional: VMLINUX_BTF=/path/to/vmlinux.btf make generate
+//
+// bpftool emits kernel/vmlinux.h, then clang builds kernel/module.bpf.o (CO-RE).
 // The Go binary loads the .o at runtime via ebpf.LoadCollectionSpec.
 //
 // Optional — typed Go wrappers via bpf2go (not required for the binary to run):
