@@ -12,6 +12,10 @@ type ConnID struct {
 	Ip uint32
 }
 
+func ConnIDLogArgs(id ConnID) []any {
+	return []any{"fd", id.Fd, "id", id.Id, "timestamp", id.Conn_start_ns, "ip", id.Ip, "port", id.Port}
+}
+
 type SocketDataEventAttr struct {
 	ConnId           ConnID
 	Bytes_sent       int32

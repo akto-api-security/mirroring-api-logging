@@ -21,6 +21,23 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
+// TrafficConnID mirrors ebpf/structs.ConnID fields used for log correlation (eBPF mirroring path).
+type TrafficConnID struct {
+	ID        uint64
+	Fd        uint32
+	Timestamp uint64 // connection start, nanoseconds (Conn_start_ns)
+	Ip        uint32
+	Port      uint16
+}
+
+// TrafficConnIDLogArgs returns the same alternating key/value pairs as structs.ConnIDLogArgs for slog.
+func TrafficConnIDLogArgs(c *TrafficConnID) []any {
+	if c == nil {
+		return nil
+	}
+	return []any{"fd", c.Fd, "id", c.ID, "timestamp", c.Timestamp, "ip", c.Ip, "port", c.Port}
+}
+
 // TrafficContext holds metadata about the captured traffic.
 // This consolidates the many parameters previously passed to ParseAndProduce.
 type TrafficContext struct {
@@ -35,6 +52,8 @@ type TrafficContext struct {
 	SocketFD            uint32
 	DaemonsetIdentifier string
 	HostName            string
+	// ConnID is set on the eBPF mirroring path for structured logs (nil elsewhere).
+	ConnID *TrafficConnID
 }
 
 // ParsedTraffic holds the parsed HTTP requests and responses with their bodies.
@@ -123,7 +142,7 @@ func buildJSONPayload(input PayloadInput) map[string]string {
 
 // resolvePodLabels resolves pod labels for inbound traffic and adds them to the value map.
 func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host string) {
-		
+
 	if PodInformerInstance == nil {
 		checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil")
 		return
@@ -142,20 +161,20 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 
 	if ctx.HostName == "" {
 		checkDebugUrlAndPrint(url, host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(ctx.ProcessID))
-		slog.Debug("Failed to resolve pod name, hostName is empty for ", "processId", ctx.ProcessID, "hostName", ctx.HostName)
+		slog.Debug("Failed to resolve pod name, hostName is empty for ", append(TrafficConnIDLogArgs(ctx.ConnID), "processId", ctx.ProcessID, "hostName", ctx.HostName)...)
 		return
 	}
 
 	podLabels, err := PodInformerInstance.ResolvePodLabels(ctx.HostName, url, host)
 	if err != nil {
-		slog.Error("Failed to resolve pod labels", "hostName", ctx.HostName, "error", err)
+		slog.Error("Failed to resolve pod labels", append(TrafficConnIDLogArgs(ctx.ConnID), "hostName", ctx.HostName, "error", err)...)
 		checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+ctx.HostName)
 		return
 	}
 
 	value["tag"] = podLabels
 	checkDebugUrlAndPrint(url, host, "Pod labels found in ParseAndProduce, podLabels found "+fmt.Sprint(podLabels)+" for hostName "+ctx.HostName)
-	slog.Debug("Pod labels", "podName", ctx.HostName, "labels", podLabels)
+	slog.Debug("Pod labels", append(TrafficConnIDLogArgs(ctx.ConnID), "podName", ctx.HostName, "labels", podLabels)...)
 }
 
 // convertHeaders converts HTTP headers to both protobuf and string map formats in a single pass.
@@ -218,7 +237,7 @@ func shouldProcessRequest(req *http.Request, reqHeaders map[string]string, ctx T
 	}
 
 	if utils.IgnoreEnvoyProxycalls && ctx.SourceIP == utils.EnvoyProxyIp && ctx.Direction == utils.DirectionOutbound {
-		slog.Debug("Ignoring outbound envoy proxy call", "sourceIp", ctx.SourceIP, "url", req.URL.String(), "host", req.Host)
+		slog.Debug("Ignoring outbound envoy proxy call", append(TrafficConnIDLogArgs(ctx.ConnID), "sourceIp", ctx.SourceIP, "url", req.URL.String(), "host", req.Host)...)
 		return false
 	}
 
@@ -250,7 +269,7 @@ var (
 		"PATCH":   true}
 	DebugStrings = []string{}
 
-	EventChanBuffSize = 100000
+	EventChanBuffSize = 20000
 )
 
 const ONE_MINUTE = 60
@@ -377,21 +396,95 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
+var httpRequestMethods = [][]byte{
+	[]byte("GET "), []byte("HEAD "), []byte("POST "),
+	[]byte("PUT "), []byte("DELETE "), []byte("CONNECT "),
+	[]byte("OPTIONS "), []byte("TRACE "), []byte("TRACK "),
+	[]byte("PATCH "),
+}
+
+var httpVersionTag = []byte(" HTTP/")
+var httpStatusLinePrefix = []byte("HTTP/")
+
+// findHTTPRequestBoundaries returns byte offsets where HTTP request lines begin.
+// Uses bytes.Index for efficient scanning instead of byte-by-byte iteration.
+func findHTTPRequestBoundaries(buf []byte) []int {
+	var offsets []int
+	for i := 0; i < len(buf); {
+		idx := bytes.Index(buf[i:], httpVersionTag)
+		if idx < 0 {
+			break
+		}
+		pos := i + idx
+
+		lineStart := pos
+		for lineStart > 0 && buf[lineStart-1] != '\n' {
+			lineStart--
+		}
+
+		for _, method := range httpRequestMethods {
+			if bytes.HasPrefix(buf[lineStart:], method) {
+				offsets = append(offsets, lineStart)
+				break
+			}
+		}
+
+		i = pos + len(httpVersionTag)
+	}
+	return offsets
+}
+
+// findHTTPResponseBoundaries returns byte offsets where HTTP status lines begin.
+// Validates the version+status format to avoid matching "HTTP/" inside bodies.
+func findHTTPResponseBoundaries(buf []byte) []int {
+	var offsets []int
+	for i := 0; i < len(buf); {
+		idx := bytes.Index(buf[i:], httpStatusLinePrefix)
+		if idx < 0 {
+			break
+		}
+		pos := i + idx
+
+		if pos == 0 || buf[pos-1] == '\n' {
+			remaining := buf[pos:]
+			// "HTTP/1.0 NNN" or "HTTP/1.1 NNN" (need at least 13 bytes)
+			if len(remaining) >= 13 &&
+				remaining[5] == '1' && remaining[6] == '.' &&
+				(remaining[7] == '0' || remaining[7] == '1') &&
+				remaining[8] == ' ' &&
+				remaining[9] >= '1' && remaining[9] <= '5' {
+				offsets = append(offsets, pos)
+			} else if len(remaining) >= 8 && remaining[5] == '2' && remaining[6] == ' ' {
+				offsets = append(offsets, pos)
+			}
+		}
+
+		i = pos + len(httpStatusLinePrefix)
+	}
+	return offsets
+}
+
 // parseHTTPTraffic parses HTTP requests and responses from raw byte buffers.
-// Returns nil if parsing fails (errors are logged).
-func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTraffic {
-	// Parse requests
-	reader := bufio.NewReader(bytes.NewReader(reqBuffer))
+// Splits at HTTP message boundaries so truncated bodies on keep-alive connections
+// cannot bleed into adjacent messages.
+func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx TrafficContext) *ParsedTraffic {
+	reqBoundaries := findHTTPRequestBoundaries(reqBuffer)
 	requests := []http.Request{}
 	requestBodies := []string{}
 
-	for {
+	for i, start := range reqBoundaries {
+		end := len(reqBuffer)
+		if i+1 < len(reqBoundaries) {
+			end = reqBoundaries[i+1]
+		}
+
+		reader := bufio.NewReader(bytes.NewReader(reqBuffer[start:end]))
 		req, err := http.ReadRequest(reader)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
-			return nil
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
+			}
+			continue
 		}
 		body, err := io.ReadAll(req.Body)
 		req.Body.Close()
@@ -405,28 +498,34 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	}
 
 	if shouldPrint {
-		slog.Debug("parseHTTPTraffic", "requestCount", len(requests))
+		slog.Debug("parseHTTPTraffic", append(TrafficConnIDLogArgs(ctx.ConnID), "requestCount", len(requests))...)
 	}
 
 	if len(requests) == 0 {
 		return nil
 	}
 
-	// Parse responses
-	reader = bufio.NewReader(bytes.NewReader(respBuffer))
+	respBoundaries := findHTTPResponseBoundaries(respBuffer)
 	responses := []http.Response{}
 	responseBodies := []string{}
 
-	for {
+	for i, start := range respBoundaries {
+		end := len(respBuffer)
+		if i+1 < len(respBoundaries) {
+			end = respBoundaries[i+1]
+		}
+
+		reader := bufio.NewReader(bytes.NewReader(respBuffer[start:end]))
 		resp, err := http.ReadResponse(reader, nil)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		} else if err != nil {
-			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
-			return nil
+		if err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
+			}
+			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 			body = []byte{}
@@ -459,7 +558,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	}
 
 	if shouldPrint {
-		slog.Debug("parseHTTPTraffic", "responseCount", len(responses))
+		slog.Debug("parseHTTPTraffic", append(TrafficConnIDLogArgs(ctx.ConnID), "responseCount", len(responses))...)
 	}
 
 	return &ParsedTraffic{
@@ -478,10 +577,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
 	if shouldPrint {
-		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+		slog.Debug("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
 	}
 
-	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
+	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
 	if parsed == nil {
 		return
 	}
@@ -493,7 +592,9 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 	if len(requests) != len(responses) {
 		if shouldPrint {
-			slog.Debug("Len req-res mismatch", "lenRequests", len(requests), "lenResponses", len(responses), "lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", ctx.IsComplete)
+			slog.Debug("Len req-res mismatch", append(TrafficConnIDLogArgs(ctx.ConnID),
+				"lenRequests", len(requests), "lenResponses", len(responses),
+				"lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", ctx.IsComplete)...)
 		}
 		if ctx.IsComplete {
 			return
@@ -514,10 +615,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	for i := 0; i < len(requests); i++ {
 		req := &requests[i]
 		resp := &responses[i]
-		
+
 		url := req.URL.String()
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
-		
+
 		// Convert headers in a single pass (both protobuf and string map formats)
 		headers := convertHeaders(req, resp, shouldPrint)
 
@@ -593,12 +694,12 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 		if strings.Contains(responsesContent[i], headers.DebugID) {
 			goodRequests++
 		} else {
-			slog.Debug("req-resp.String()", "out", string(out))
+			slog.Debug("req-resp.String()", append(TrafficConnIDLogArgs(ctx.ConnID), "out", string(out))...)
 			badRequests++
 		}
 
 		if goodRequests%100 == 0 || badRequests%100 == 0 {
-			slog.Debug("Good requests", "count", goodRequests, "badRequests", badRequests)
+			slog.Debug("Good requests", append(TrafficConnIDLogArgs(ctx.ConnID), "count", goodRequests, "badRequests", badRequests)...)
 		}
 	}
 }

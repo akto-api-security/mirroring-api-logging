@@ -71,16 +71,16 @@ func InitKafka() {
 	if len(kafka_url) == 0 {
 		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
 	}
-	utils.PrintLog("kafka_url: " + kafka_url)
+	slog.Info("kafka_url: " + kafka_url)
 
 	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
 	if len(bytesInThresholdInput) > 0 {
 		bytesInThreshold, err := strconv.Atoi(bytesInThresholdInput)
 		if err != nil {
-			utils.PrintLog("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
+			slog.Error("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
 			return
 		} else {
-			utils.PrintLog("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
+			slog.Info("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
 		}
 
 	}
@@ -123,7 +123,7 @@ func InitKafka() {
 			}
 			time.Sleep(time.Second * 2)
 		} else {
-			utils.PrintLog("connection establishing with kafka successfully")
+			slog.Info("connection establishing with kafka successfully")
 			kafkaWriterMutex.Lock()
 			kafkaWriter.Completion = kafkaCompletion()
 			kafkaWriterMutex.Unlock()

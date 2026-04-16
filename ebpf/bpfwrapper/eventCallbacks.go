@@ -22,7 +22,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !connectionFactory.CanBeFilled() {
-			metaUtils.LogIngest("Connections filled")
+			slog.Warn("Connections filled")
 			continue
 		}
 
@@ -114,7 +114,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			metaUtils.LogIngest("Connections filled")
+			slog.Warn("Connections filled")
 			continue
 		}
 
@@ -157,9 +157,6 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 				"wc", event.Attr.WriteEventsCount)
 			continue
 		}
-
-		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
-		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
 
 		connectionFactory.CreateIfNotExists(connId)
 

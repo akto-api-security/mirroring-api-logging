@@ -13,7 +13,7 @@ func TestParseHTTPTraffic_ValidRequest(t *testing.T) {
 	respBody := `{"status":"success"}`
 	resp := []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n" + respBody)
 
-	result := parseHTTPTraffic(req, resp, true)
+	result := parseHTTPTraffic(req, resp, true, TrafficContext{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result for valid request")
@@ -39,7 +39,7 @@ func TestParseHTTPTraffic_BadGzip(t *testing.T) {
 	// Response claims gzip but body is not gzip encoded
 	resp := []byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\nnot-gzip-data")
 
-	result := parseHTTPTraffic(req, resp, true)
+	result := parseHTTPTraffic(req, resp, true, TrafficContext{})
 
 	if result == nil {
 		t.Fatal("should not return nil on gzip failure")
@@ -67,7 +67,7 @@ func TestParseHTTPTraffic_TruncatedGzip(t *testing.T) {
 
 	resp := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), truncatedGzip...)
 
-	result := parseHTTPTraffic(req, resp, true)
+	result := parseHTTPTraffic(req, resp, true, TrafficContext{})
 
 	if result == nil {
 		t.Fatal("should not return nil on truncated gzip")
@@ -88,7 +88,7 @@ func TestParseHTTPTraffic_ValidGzip(t *testing.T) {
 
 	resp := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\n\r\n"), buf.Bytes()...)
 
-	result := parseHTTPTraffic(req, resp, true)
+	result := parseHTTPTraffic(req, resp, true, TrafficContext{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result for valid gzip")
@@ -102,7 +102,7 @@ func TestParseHTTPTraffic_EmptyRequestBody(t *testing.T) {
 	req := []byte("GET /health HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
 
-	result := parseHTTPTraffic(req, resp, false)
+	result := parseHTTPTraffic(req, resp, false, TrafficContext{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -119,7 +119,7 @@ func TestParseHTTPTraffic_MultipleRequests(t *testing.T) {
 	req := []byte("GET /first HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\nGET /second HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\n")
 	resp := []byte("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirstHTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecond")
 
-	result := parseHTTPTraffic(req, resp, false)
+	result := parseHTTPTraffic(req, resp, false, TrafficContext{})
 
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -136,7 +136,7 @@ func TestParseHTTPTraffic_InvalidRequest(t *testing.T) {
 	req := []byte("not a valid http request")
 	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
 
-	result := parseHTTPTraffic(req, resp, false)
+	result := parseHTTPTraffic(req, resp, false, TrafficContext{})
 
 	// Should return nil because request parsing fails completely
 	if result != nil {
@@ -148,7 +148,7 @@ func TestParseHTTPTraffic_NoRequests(t *testing.T) {
 	req := []byte("")
 	resp := []byte("HTTP/1.1 200 OK\r\n\r\nOK")
 
-	result := parseHTTPTraffic(req, resp, false)
+	result := parseHTTPTraffic(req, resp, false, TrafficContext{})
 
 	if result != nil {
 		t.Error("expected nil result for empty request buffer")

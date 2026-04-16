@@ -26,8 +26,6 @@ import (
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-var source string = ""
-
 func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 	printBpfLogs := false
 	if v := os.Getenv("PRINT_BPF_LOGS"); strings.EqualFold(v, "true") {
@@ -59,8 +57,6 @@ func main() {
 }
 
 func run() {
-	bpfwrapper.DeleteExistingAktoKernelProbes()
-
 	// -----------------------------------------------------------------------
 	// Load the pre-compiled BPF object.
 	//
@@ -86,6 +82,12 @@ func run() {
 	// Configure runtime parameters on the spec before loading into the kernel.
 	replaceBpfLogsMacros(spec)
 	replaceMaxConnectionMapSize(spec)
+
+	// If the kernel supports uprobe_multi (6.6+), mark all SEC("uprobe")
+	// programs with the multi attach type so they can be attached via
+	// bpf(BPF_LINK_CREATE) instead of perf_event_open — bypassing
+	// perf_event_paranoid restrictions.
+	bpfwrapper.SetUprobeMultiAttachType(spec)
 
 	// Load all programs and maps into the kernel.
 	coll, err := ebpf.NewCollection(spec)
@@ -182,29 +184,33 @@ func run() {
 
 	ssl.InitMaps(coll)
 
+	attachToProcesses := func() {
+		slog.Debug("Starting to attach to processes in ticker")
+		mu.Lock()
+		if isRunning {
+			mu.Unlock()
+			return
+		}
+		isRunning = true
+		mu.Unlock()
+
+		slog.Info("Starting to attach to processes")
+		processFactory.AddNewProcessesToProbe(coll)
+		slog.Debug("Ended attaching to processes")
+
+		mu.Lock()
+		isRunning = false
+		mu.Unlock()
+		slog.Debug("Ended attaching to processes in ticker")
+	}
 	if captureSsl == "true" || captureAll == "true" {
+		attachToProcesses()
 		go func() {
 			slog.Debug("Starting uprobe process ticker")
 			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()
 			for range ticker.C {
-				slog.Debug("Starting to attach to processes in ticker")
-				mu.Lock()
-				if isRunning {
-					mu.Unlock()
-					return
-				}
-				isRunning = true
-				mu.Unlock()
-
-				slog.Info("Starting to attach to processes")
-				processFactory.AddNewProcessesToProbe(coll)
-				slog.Debug("Ended attaching to processes")
-
-				mu.Lock()
-				isRunning = false
-				mu.Unlock()
-				slog.Debug("Ended attaching to processes in ticker")
+				attachToProcesses()
 			}
 			slog.Debug("Ended attaching to processes in ticker end")
 		}()
