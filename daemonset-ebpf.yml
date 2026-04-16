@@ -18,6 +18,7 @@ spec:
       containers:
       - name: mirror-api-logging
         image: public.ecr.aws/aktosecurity/mirror-api-logging:k8s_ebpf_core
+        imagePullPolicy: Always
         resources:
           limits:
             cpu: 500m
