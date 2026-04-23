@@ -21,12 +21,21 @@ rotate_log() {
 
 # Function to check memory usage and kill process if threshold exceeded
 check_memory_and_kill() {
+    # Resolve container's cgroup path (needed when hostPID: true shifts cgroup root)
+    CGROUP_BASE=$(cut -d: -f3 /proc/self/cgroup | head -1)
+
     # Get current memory usage in bytes
-    if [ -f /sys/fs/cgroup/memory.current ]; then
-        # cgroup v2
+    if [ -f "/sys/fs/cgroup${CGROUP_BASE}/memory.current" ]; then
+        # cgroup v2 with hostPID
+        CURRENT_MEM=$(cat "/sys/fs/cgroup${CGROUP_BASE}/memory.current")
+    elif [ -f /sys/fs/cgroup/memory.current ]; then
+        # cgroup v2 normal
         CURRENT_MEM=$(cat /sys/fs/cgroup/memory.current)
+    elif [ -f "/sys/fs/cgroup${CGROUP_BASE}/memory.usage_in_bytes" ]; then
+        # cgroup v1 with hostPID
+        CURRENT_MEM=$(cat "/sys/fs/cgroup${CGROUP_BASE}/memory.usage_in_bytes")
     elif [ -f /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
-        # cgroup v1
+        # cgroup v1 normal
         CURRENT_MEM=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)
     else
         return
@@ -53,24 +62,31 @@ fi
 
 # 1. Check if MEM_LIMIT is provided as env variable
 if [ -z "$MEM_LIMIT" ]; then
+    # Resolve container's cgroup path (needed when hostPID: true shifts cgroup root)
+    CGROUP_BASE=$(cut -d: -f3 /proc/self/cgroup | head -1)
+
     # Not provided, detect and read cgroup memory limits
-    if [ -f /sys/fs/cgroup/memory.max ]; then
-        # cgroup v2
+    if [ -f "/sys/fs/cgroup${CGROUP_BASE}/memory.max" ]; then
+        # cgroup v2 with hostPID
+        MEM_LIMIT_BYTES=$(cat "/sys/fs/cgroup${CGROUP_BASE}/memory.max")
+    elif [ -f /sys/fs/cgroup/memory.max ]; then
+        # cgroup v2 normal
         MEM_LIMIT_BYTES=$(cat /sys/fs/cgroup/memory.max)
+    elif [ -f "/sys/fs/cgroup${CGROUP_BASE}/memory.limit_in_bytes" ]; then
+        # cgroup v1 with hostPID
+        MEM_LIMIT_BYTES=$(cat "/sys/fs/cgroup${CGROUP_BASE}/memory.limit_in_bytes")
     elif [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-        # cgroup v1
+        # cgroup v1 normal
         MEM_LIMIT_BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
     else
         # Fallback to free -b (bytes) if cgroup file not found
-        echo "Neither cgroup v2 nor v1 memory file found, defaulting to free -m"
-        # Convert from kB to bytes
+        echo "Neither cgroup v2 nor v1 memory file found, defaulting to free -b"
         MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
     fi
 
-    # 2. Handle edge cases: "max" means no strict limit or a very large limit
-    if [ "$MEM_LIMIT_BYTES" = "max" ]; then
-        # Arbitrary fallback (1 GiB in bytes here, but adjust as needed)
-        echo "Cgroup memory limit set to 'max', defaulting to free memory"
+    # 2. Handle edge cases: "max" (cgroup v2) or 9223372036854775807 (cgroup v1 INT64_MAX) mean no limit
+    if [ "$MEM_LIMIT_BYTES" = "max" ] || [ "$MEM_LIMIT_BYTES" = "9223372036854775807" ]; then
+        echo "Cgroup memory limit is unlimited, defaulting to free memory"
         MEM_LIMIT_BYTES=$(free -b | awk '/Mem:/ {print $2}')
     fi
 
@@ -150,6 +166,10 @@ run_ebpf_once() {
 }
 
 # Start memory monitoring in the background
+while true; do
+    check_memory_and_kill
+    sleep "$CHECK_INTERVAL_MEM"
+done &
 
 while :
 do
