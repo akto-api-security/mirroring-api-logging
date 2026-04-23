@@ -3,8 +3,8 @@
 LOG_FILE=${LOG_FILE:-/tmp/dump.log}
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 10 * 1024 * 1024 bytes)
 CHECK_INTERVAL=${CHECK_INTERVAL:-60}
-CHECK_INTERVAL_MEM=${CHECK_INTERVAL_MEM:-10}     # Check interval in seconds (configurable via env)
-MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-80} # Kill process at this % memory usage (configurable via env)
+CHECK_INTERVAL_MEM=${CHECK_INTERVAL_MEM:-5}     # Check interval in seconds (configurable via env)
+MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-85} # Kill process at this % memory usage (configurable via env)
 GOMEMLIMIT_PERCENT=${GOMEMLIMIT_PERCENT:-60} # GOMEMLIMIT as % of container memory limit (configurable via env)
 AKTO_SUPPRESS_TRACE=${AKTO_SUPPRESS_TRACE:-true}
 CRASH_RESTART_BACKOFF_SECONDS=${CRASH_RESTART_BACKOFF_SECONDS:-10}
