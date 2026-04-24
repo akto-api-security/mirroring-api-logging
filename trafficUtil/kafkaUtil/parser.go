@@ -719,7 +719,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 		} else {
 			// Produce to kafka with collection_details header
-			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
+			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method, ip)
 
 			// Only if threat enabled
 			if utils.ThreatEnabled {

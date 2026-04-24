@@ -110,7 +110,7 @@ func InitKafka() {
 
 		out, _ := json.Marshal(value)
 		ctx := context.Background()
-		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost", "")
+		err := ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost", "", "")
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
@@ -435,12 +435,13 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 	}
 }
 
-func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
+func ProduceStr(ctx context.Context, message string, url, reqHost, method, ip string) error {
 	topic := "akto.api.logs"
 	checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 
 	msg := kafka.Message{
 		Topic:   topic,
+		Key:     []byte(ip),
 		Value:   []byte(message),
 		Headers: buildCollectionDetailsHeader(reqHost, method, url),
 	}
