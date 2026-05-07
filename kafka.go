@@ -14,7 +14,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/sasl/plain"
+	"github.com/segmentio/kafka-go/sasl/scram"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -155,12 +155,13 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		transport.TLS = tlsConfig
 	}
 
-	// Add SASL authentication if enabled
 	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL plain authentication", "username", kafkaUsername)
-		transport.SASL = plain.Mechanism{
-			Username: kafkaUsername,
-			Password: kafkaPassword,
+		slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
+		mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
+		if err != nil {
+			slog.Error("Failed to create SCRAM mechanism", "error", err)
+		} else {
+			transport.SASL = mechanism
 		}
 	}
 
@@ -187,12 +188,13 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 		dialer.TLS = tlsConfig
 	}
 
-	// Add SASL authentication if enabled
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL plain authentication for reader", "username", kafkaUsername)
-		dialer.SASLMechanism = plain.Mechanism{
-			Username: kafkaUsername,
-			Password: kafkaPassword,
+		if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+		slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
+		mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
+		if err != nil {
+			slog.Error("Failed to create SCRAM mechanism", "error", err)
+		} else {
+			dialer.SASLMechanism = mechanism
 		}
 	}
 
