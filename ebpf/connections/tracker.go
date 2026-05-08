@@ -90,6 +90,7 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 
 	bytesSent := event.Attr.Bytes_sent
 	bytesAbs := utils.Abs(bytesSent)
+	bytesAbsInt := int(bytesAbs)
 
 	if bytesSent > 0 {
 		idx := int(event.Attr.WriteEventsCount)
@@ -101,14 +102,14 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		}
 		// Use position-based copy instead of append to avoid bounds checks and reallocation
 		pos := conn.sentPos[idx]
-		if pos+bytesAbs <= len(conn.sentBuf[idx]) {
-			copy(conn.sentBuf[idx][pos:pos+bytesAbs], event.Msg[:bytesAbs])
-			conn.sentPos[idx] = pos + bytesAbs
+		if pos+bytesAbsInt <= len(conn.sentBuf[idx]) {
+			copy(conn.sentBuf[idx][pos:pos+bytesAbsInt], event.Msg[:bytesAbsInt])
+			conn.sentPos[idx] = pos + bytesAbsInt
 			conn.sentBytes += uint64(bytesAbs)
 		} else {
 			// Buffer full, fall back to append for overflow (rare case)
-			conn.sentBuf[idx] = append(conn.sentBuf[idx][:pos], event.Msg[:bytesAbs]...)
-			conn.sentPos[idx] = pos + bytesAbs
+			conn.sentBuf[idx] = append(conn.sentBuf[idx][:pos], event.Msg[:bytesAbsInt]...)
+			conn.sentPos[idx] = pos + bytesAbsInt
 			conn.sentBytes += uint64(bytesAbs)
 		}
 	} else {
@@ -121,14 +122,14 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		}
 		// Use position-based copy instead of append to avoid bounds checks and reallocation
 		pos := conn.recvPos[idx]
-		if pos+bytesAbs <= len(conn.recvBuf[idx]) {
-			copy(conn.recvBuf[idx][pos:pos+bytesAbs], event.Msg[:bytesAbs])
-			conn.recvPos[idx] = pos + bytesAbs
+		if pos+bytesAbsInt <= len(conn.recvBuf[idx]) {
+			copy(conn.recvBuf[idx][pos:pos+bytesAbsInt], event.Msg[:bytesAbsInt])
+			conn.recvPos[idx] = pos + bytesAbsInt
 			conn.recvBytes += uint64(bytesAbs)
 		} else {
 			// Buffer full, fall back to append for overflow (rare case)
-			conn.recvBuf[idx] = append(conn.recvBuf[idx][:pos], event.Msg[:bytesAbs]...)
-			conn.recvPos[idx] = pos + bytesAbs
+			conn.recvBuf[idx] = append(conn.recvBuf[idx][:pos], event.Msg[:bytesAbsInt]...)
+			conn.recvPos[idx] = pos + bytesAbsInt
 			conn.recvBytes += uint64(bytesAbs)
 		}
 	}
@@ -163,6 +164,7 @@ func (conn *Tracker) addDataEventLocked(event structs.SocketDataEvent) {
 
 	bytesSent := event.Attr.Bytes_sent
 	bytesAbs := utils.Abs(bytesSent)
+	bytesAbsInt := int(bytesAbs)
 
 	if bytesSent > 0 {
 		idx := int(event.Attr.WriteEventsCount)
@@ -174,14 +176,14 @@ func (conn *Tracker) addDataEventLocked(event structs.SocketDataEvent) {
 		}
 		// Use position-based copy instead of append to avoid bounds checks and reallocation
 		pos := conn.sentPos[idx]
-		if pos+bytesAbs <= len(conn.sentBuf[idx]) {
-			copy(conn.sentBuf[idx][pos:pos+bytesAbs], event.Msg[:bytesAbs])
-			conn.sentPos[idx] = pos + bytesAbs
+		if pos+bytesAbsInt <= len(conn.sentBuf[idx]) {
+			copy(conn.sentBuf[idx][pos:pos+bytesAbsInt], event.Msg[:bytesAbsInt])
+			conn.sentPos[idx] = pos + bytesAbsInt
 			conn.sentBytes += uint64(bytesAbs)
 		} else {
 			// Buffer full, fall back to append for overflow (rare case)
-			conn.sentBuf[idx] = append(conn.sentBuf[idx][:pos], event.Msg[:bytesAbs]...)
-			conn.sentPos[idx] = pos + bytesAbs
+			conn.sentBuf[idx] = append(conn.sentBuf[idx][:pos], event.Msg[:bytesAbsInt]...)
+			conn.sentPos[idx] = pos + bytesAbsInt
 			conn.sentBytes += uint64(bytesAbs)
 		}
 	} else {
@@ -194,14 +196,14 @@ func (conn *Tracker) addDataEventLocked(event structs.SocketDataEvent) {
 		}
 		// Use position-based copy instead of append to avoid bounds checks and reallocation
 		pos := conn.recvPos[idx]
-		if pos+bytesAbs <= len(conn.recvBuf[idx]) {
-			copy(conn.recvBuf[idx][pos:pos+bytesAbs], event.Msg[:bytesAbs])
-			conn.recvPos[idx] = pos + bytesAbs
+		if pos+bytesAbsInt <= len(conn.recvBuf[idx]) {
+			copy(conn.recvBuf[idx][pos:pos+bytesAbsInt], event.Msg[:bytesAbsInt])
+			conn.recvPos[idx] = pos + bytesAbsInt
 			conn.recvBytes += uint64(bytesAbs)
 		} else {
 			// Buffer full, fall back to append for overflow (rare case)
-			conn.recvBuf[idx] = append(conn.recvBuf[idx][:pos], event.Msg[:bytesAbs]...)
-			conn.recvPos[idx] = pos + bytesAbs
+			conn.recvBuf[idx] = append(conn.recvBuf[idx][:pos], event.Msg[:bytesAbsInt]...)
+			conn.recvPos[idx] = pos + bytesAbsInt
 			conn.recvBytes += uint64(bytesAbs)
 		}
 	}
