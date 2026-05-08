@@ -108,6 +108,8 @@ struct socket_data_event_t {
     u32 readEventsCount;
     u32 writeEventsCount;
     bool ssl;
+    u8 _padding[3];
+    u64 event_timestamp_ns;
     char msg[MAX_MSG_SIZE];
 };
 
