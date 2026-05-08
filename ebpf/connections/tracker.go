@@ -114,6 +114,9 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		}
 	} else {
 		idx := int(event.Attr.ReadEventsCount)
+		if idx > 255{
+			return
+		}
 		// Pre-allocate 8KB capacity on first use to avoid reallocation during append growth
 		if !conn.recvBufInitialized[idx] {
 			conn.recvBuf[idx] = make([]byte, 8192)
@@ -188,6 +191,9 @@ func (conn *Tracker) addDataEventLocked(event structs.SocketDataEvent) {
 		}
 	} else {
 		idx := int(event.Attr.ReadEventsCount)
+		if idx > 255 {
+			return
+		}
 		// Pre-allocate 8KB capacity on first use to avoid reallocation during append growth
 		if !conn.recvBufInitialized[idx] {
 			conn.recvBuf[idx] = make([]byte, 8192)
