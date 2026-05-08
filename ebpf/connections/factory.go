@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
