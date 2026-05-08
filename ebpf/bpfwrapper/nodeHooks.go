@@ -9,7 +9,7 @@ var (
 		},
 	}
 
-	NodeTLSMemHooks_12_3_1  = []Uprobe{
+	NodeTLSMemHooks_12_3_1 = []Uprobe{
 		{
 			FunctionToHook: "_ZN4node7TLSWrapC2E",
 			HookName:       "probe_entry_TLSWrap_memfn",

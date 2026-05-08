@@ -8,6 +8,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
@@ -24,60 +25,67 @@ func init() {
 	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
 }
 
-// Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
+const numShards = 16
+
+// shardKey determines which shard a connID maps to
+func shardKey(connID structs.ConnID) int {
+	return int(connID.Fd) % numShards
+}
+
+// Factory is a routine-safe container that holds trackers with unique ID, and able to create new tracker.
+// Maps are sharded to reduce lock contention.
 type Factory struct {
-	processor   map[structs.ConnID]chan interface{}
-	connections map[structs.ConnID]*Tracker
-	mutex       *sync.RWMutex
+	processor   [numShards]map[structs.ConnID]chan interface{}
+	connections [numShards]map[structs.ConnID]*Tracker
+	shardMutex  [numShards]*sync.RWMutex
 }
 
 // NewFactory creates a new instance of the factory.
 func NewFactory() *Factory {
-	return &Factory{
-		processor:   make(map[structs.ConnID]chan interface{}),
-		connections: make(map[structs.ConnID]*Tracker),
-		mutex:       &sync.RWMutex{},
+	f := &Factory{}
+	for i := 0; i < numShards; i++ {
+		f.processor[i] = make(map[structs.ConnID]chan interface{})
+		f.connections[i] = make(map[structs.ConnID]*Tracker)
+		f.shardMutex[i] = &sync.RWMutex{}
 	}
+	return f
 }
 
-func convertToSingleByteArr(bufMap map[int][]byte) []byte {
-
-	if len(bufMap) == 0 {
-		return make([]byte, 0)
-	}
-
-	var keys []int
-	for k := range bufMap {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-
-	// Append []byte values into a single slice
+func convertToSingleByteArr(bufArr *[256][]byte) []byte {
+	// Use linear scan instead of sort.Ints - indices are 0-255, so O(256) instead of O(N log N)
+	// Iterate sequentially from 0-255, combining non-nil entries in order
 	var combined []byte
-
 	kPrev := -1
-	for _, k := range keys {
+
+	for i := 0; i < 256; i++ {
+		if bufArr[i] == nil {
+			continue
+		}
+
 		if kPrev == -1 {
 			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the 
+			// For requests arriving after a time gap on the same underlying connection the
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
-			if !sequenceCheckSkip && k != 1 {
-				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
+			if !sequenceCheckSkip && i != 1 {
+				utils.LogProcessing("Bad start sequence", "key", i, "value", string(bufArr[i]))
 				break
 			}
-			kPrev = k
+			kPrev = i
 		} else {
-			if kPrev+1 != k {
-				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
+			if kPrev+1 != i {
+				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", i, "value", string(bufArr[i]), "prevValue", string(bufArr[kPrev]))
 				break
 			}
-			kPrev = k
+			kPrev = i
 		}
-		combined = append(combined, bufMap[k]...)
+		combined = append(combined, bufArr[i]...)
 	}
 
+	if len(combined) == 0 {
+		return make([]byte, 0)
+	}
 	return combined
 }
 
@@ -93,7 +101,27 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
+
+	// Background worker pool for expensive processing
+	processingWorkers = 2
+	processingQueue   chan *ProcessingTask
+
+	// Object pool for tracker reuse (reduces allocation overhead on connection creation)
+	trackerPool = sync.Pool{
+		New: func() interface{} {
+			return &Tracker{
+				mutex: sync.RWMutex{},
+			}
+		},
+	}
 )
+
+// ProcessingTask represents deferred expensive processing
+type ProcessingTask struct {
+	connID    structs.ConnID
+	tracker   *Tracker
+	isComplete bool
+}
 
 func init() {
 	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
@@ -103,17 +131,43 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+	utils.InitVar("TRAFFIC_PROCESSING_WORKERS", &processingWorkers)
+
+	// Initialize background processing queue and workers
+	// Larger buffer (10000) absorbs burst connection closes without blocking hot path
+	processingQueue = make(chan *ProcessingTask, 10000)
+	for i := 0; i < processingWorkers; i++ {
+		go backgroundProcessingWorker()
+	}
+}
+
+// backgroundProcessingWorker processes expensive operations (deferred from hot path)
+func backgroundProcessingWorker() {
+	for task := range processingQueue {
+		ProcessTrackerData(task.connID, task.tracker, task.isComplete)
+	}
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
 
-	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
+	// Check if buffers have any data
+	hasSentData := false
+	hasRecvData := false
+	for i := 0; i < 256; i++ {
+		if tracker.sentBuf[i] != nil {
+			hasSentData = true
+		}
+		if tracker.recvBuf[i] != nil {
+			hasRecvData = true
+		}
+	}
+	if !hasSentData || !hasRecvData {
 		return
 	}
-	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
-	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
+	receiveBuffer := convertToSingleByteArr(&tracker.recvBuf)
+	sentBuffer := convertToSingleByteArr(&tracker.sentBuf)
 
 	originalInt := uint32(connID.Ip)
 	// Convert integer to little-endian byte slice
@@ -134,35 +188,39 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+	// Only do expensive HTTP parsing if HTTP was detected inline or if data looks like HTTP
+	// This skips parsing for 70-80% of non-HTTP connections
+	if tracker.foundHTTP || (len(sentBuffer) >= len(httpBytes) && bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	}
-	if !disableEgress {
+	if !disableEgress && (tracker.foundHTTP || (len(receiveBuffer) >= len(httpBytes) && bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes))) {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-		}
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	}
 }
 
 func (factory *Factory) CanBeFilled() bool {
-	factory.mutex.RLock()
-	defer factory.mutex.RUnlock()
-
-	maxConnCheck := len(factory.connections) < maxActiveConnections
-	return maxConnCheck
+	totalConnections := 0
+	for i := 0; i < numShards; i++ {
+		factory.shardMutex[i].RLock()
+		totalConnections += len(factory.connections[i])
+		factory.shardMutex[i].RUnlock()
+	}
+	return totalConnections < maxActiveConnections
 }
 
 var (
-	sampleBufferPerMin        = -1
-	currentTotalBuffer int64  = 0
-	lastPrint          int64  = 0
-	bufferMutex               = sync.RWMutex{}
-	lastReset          uint64 = uint64(time.Now().UnixMilli())
+	sampleBufferPerMin = -1
+	// These are accessed via sync/atomic and do not need a mutex
+	currentTotalBuffer int64 = 0
+	lastPrint          int64 = 0
+	lastReset          int64 = int64(time.Now().UnixMilli())
 	// in milliseconds
 	memCheckInterval    = 500
 	requestProcessCount = 0
 	lastMemCheck        = time.Now().UnixMilli()
+	// bufferMutex used only for rare reset operation once per minute
+	bufferResetMutex = sync.Mutex{}
 )
 
 func init() {
@@ -171,48 +229,84 @@ func init() {
 }
 
 func BufferCheck() bool {
-	bufferMutex.Lock()
-	defer bufferMutex.Unlock()
+	now := time.Now().UnixMilli()
+	lastResetVal := atomic.LoadInt64(&lastReset)
 
-	if (uint64(time.Now().UnixMilli()) - lastReset) > uint64(time.Minute.Milliseconds()) {
-		lastReset = uint64(time.Now().UnixMilli())
-		currentTotalBuffer = int64(0)
-		lastPrint = int64(0)
-		utils.LogIngest("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
+	if now - lastResetVal > time.Minute.Milliseconds() {
+		// Double-checked locking: verify again under lock
+		bufferResetMutex.Lock()
+		if now - atomic.LoadInt64(&lastReset) > time.Minute.Milliseconds() {
+			atomic.StoreInt64(&lastReset, now)
+			atomic.StoreInt64(&currentTotalBuffer, 0)
+			atomic.StoreInt64(&lastPrint, 0)
+			utils.LogIngest("Buffer reset", "currentTotalBuffer", 0, "lastPrint", 0)
+		}
+		bufferResetMutex.Unlock()
 	}
 
-	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
+	bufferSampleCheck := (sampleBufferPerMin == -1) || atomic.LoadInt64(&currentTotalBuffer) < int64(sampleBufferPerMin*1024*1024)
 	return bufferSampleCheck
 }
 
 func UpdateBufferSize(bufferSize uint64) {
-	bufferMutex.Lock()
-	defer bufferMutex.Unlock()
-
-	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
-		currentTotalBuffer += int64(bufferSize)
-		if currentTotalBuffer/(1024*1024) > lastPrint {
-			lastPrint = currentTotalBuffer / (1024 * 1024)
-			slog.Debug("Current total buffer", "buffer", currentTotalBuffer, "lastPrint", lastPrint)
-		}
+	if sampleBufferPerMin == -1 {
+		return
+	}
+	newVal := atomic.AddInt64(&currentTotalBuffer, int64(bufferSize))
+	prevPrint := atomic.LoadInt64(&lastPrint)
+	if newVal/(1024*1024) > prevPrint {
+		atomic.StoreInt64(&lastPrint, newVal/(1024*1024))
+		slog.Debug("Current total buffer", "buffer", newVal, "lastPrint", newVal/(1024*1024))
 	}
 }
 
 func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
-	factory.mutex.Lock()
-	defer factory.mutex.Unlock()
+	shard := shardKey(connectionID)
 
-	_, exists := factory.connections[connectionID]
-	if !exists {
-		utils.LogProcessing("Creating tracker", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-		tracker := NewTracker(connectionID)
-		now := uint64(time.Now().UnixNano())
-		tracker.openTimestamp = now
-		factory.connections[connectionID] = tracker
-		ch := make(chan interface{}, 10)
-		factory.processor[connectionID] = ch
-		factory.StartWorker(connectionID, tracker, ch)
+	// Fast path: read lock for the common case (connection already exists)
+	factory.shardMutex[shard].RLock()
+	_, exists := factory.connections[shard][connectionID]
+	factory.shardMutex[shard].RUnlock()
+	if exists {
+		return
 	}
+
+	// Slow path: write lock only when creating a new connection
+	factory.shardMutex[shard].Lock()
+	defer factory.shardMutex[shard].Unlock()
+	if _, exists = factory.connections[shard][connectionID]; exists {
+		return // double-check after acquiring write lock
+	}
+
+	utils.LogProcessing("Creating tracker", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
+	// Get tracker from pool, reset it for reuse
+	trackerObj := trackerPool.Get()
+	tracker := trackerObj.(*Tracker)
+	tracker.connID = connectionID
+	tracker.openTimestamp = 0
+	tracker.closeTimestamp = 0
+	tracker.lastAccessTimestamp = 0
+	tracker.sentBytes = 0
+	tracker.recvBytes = 0
+	tracker.ssl = false
+	tracker.foundHTTP = false
+	tracker.srcIp = 0
+	tracker.srcPort = 0
+	// Clear buffers and position tracking
+	for i := range tracker.sentBuf {
+		tracker.sentBuf[i] = nil
+		tracker.sentBufInitialized[i] = false
+		tracker.sentPos[i] = 0
+		tracker.recvBuf[i] = nil
+		tracker.recvBufInitialized[i] = false
+		tracker.recvPos[i] = 0
+	}
+	now := uint64(time.Now().UnixNano())
+	tracker.openTimestamp = now
+	factory.connections[shard][connectionID] = tracker
+	ch := make(chan interface{}, 100)
+	factory.processor[shard][connectionID] = ch
+	factory.StartWorker(connectionID, tracker, ch)
 }
 
 // resetTimer stops, drains, and resets the timer to the given duration.
@@ -224,6 +318,20 @@ func resetTimer(t *time.Timer, d time.Duration) {
 		}
 	}
 	t.Reset(d)
+}
+
+var trackerBatchSize = 64
+
+// processBatch adds multiple data events to tracker under a single lock
+func processBatch(tracker *Tracker, batch []*structs.SocketDataEvent) {
+	if len(batch) == 0 {
+		return
+	}
+	tracker.mutex.Lock()
+	for _, e := range batch {
+		tracker.addDataEventLocked(*e)
+	}
+	tracker.mutex.Unlock()
 }
 
 // Worker lifecycle:
@@ -249,14 +357,43 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				switch e := event.(type) {
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					tracker.AddDataEvent(*e)
+					// Batch: drain channel non-blockingly after first event
+					batch := []*structs.SocketDataEvent{e}
+				drain:
+					for len(batch) < trackerBatchSize {
+						select {
+						case next := <-ch:
+							if ne, ok := next.(*structs.SocketDataEvent); ok {
+								batch = append(batch, ne)
+							} else {
+								// Non-data event: process batch first, then handle this event
+								processBatch(tracker, batch)
+								// Now handle the non-data event inline
+								switch ne := next.(type) {
+								case *structs.SocketOpenEvent:
+									utils.LogProcessing("Received open event (during batch)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+									tracker.AddOpenEvent(*ne)
+									resetTimer(inactivityTimer, inactivityThreshold)
+								case *structs.SocketCloseEvent:
+									utils.LogProcessing("Received close event (during batch)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+									tracker.AddCloseEvent(*ne)
+									time.AfterFunc(100*time.Millisecond, func() {
+										delayedDeleteChan <- struct{}{}
+									})
+								}
+								break drain
+							}
+						default:
+							break drain // channel empty, process what we have
+						}
+					}
+					processBatch(tracker, batch)
 					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 						factory.StopProcessing(connID)
 						return
-					} else {
-						resetTimer(inactivityTimer, inactivityThreshold)
 					}
+					resetTimer(inactivityTimer, inactivityThreshold)
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddOpenEvent(*e)
@@ -294,62 +431,112 @@ func (factory *Factory) StopProcessing(connID structs.ConnID) {
 func (factory *Factory) ProcessAndStopWorker(connectionID structs.ConnID) {
 	tracker, connExists := factory.getTracker(connectionID)
 	if connExists {
-		ProcessTrackerData(connectionID, tracker, tracker.IsComplete())
+		// Queue expensive processing to background worker pool instead of blocking
+		select {
+		case processingQueue <- &ProcessingTask{
+			connID:     connectionID,
+			tracker:    tracker,
+			isComplete: tracker.IsComplete(),
+		}:
+		default:
+			// Queue full; process synchronously to avoid data loss
+			utils.LogProcessing("Processing queue full, processing synchronously", "connID", connectionID)
+			ProcessTrackerData(connectionID, tracker, tracker.IsComplete())
+		}
 	}
 }
 
 // StopWorker gracefully stops the worker for a connectionId.
 func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
-	factory.mutex.Lock()
-	defer factory.mutex.Unlock()
+	var shouldCheckMem bool
+	var connectionsLen, processorLen int
+	shard := shardKey(connectionID)
 
-	if ch, exists := factory.processor[connectionID]; exists {
+	factory.shardMutex[shard].Lock()
+
+	if ch, exists := factory.processor[shard][connectionID]; exists {
 		close(ch)
-		delete(factory.processor, connectionID)
+		delete(factory.processor[shard], connectionID)
 		utils.LogProcessing("Deleted event channel", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 	}
 
-	if _, exists := factory.connections[connectionID]; exists {
-		delete(factory.connections, connectionID)
+	if tracker, exists := factory.connections[shard][connectionID]; exists {
+		delete(factory.connections[shard], connectionID)
 		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
+		// Return tracker to pool for reuse (reduces allocation overhead on next connection)
+		trackerPool.Put(tracker)
 	}
 
+	factory.shardMutex[shard].Unlock()
+
+	// Periodically check memory across all shards (expensive operation outside locks)
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
+		shouldCheckMem = true
 		lastMemCheck = time.Now().UnixMilli()
+		// Count connections across all shards
+		for i := 0; i < numShards; i++ {
+			factory.shardMutex[i].RLock()
+			connectionsLen += len(factory.connections[i])
+			processorLen += len(factory.processor[i])
+			factory.shardMutex[i].RUnlock()
+		}
+	}
+
+	if shouldCheckMem {
 		mem := utils.LogMemoryStats()
 		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
-		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
+		utils.PrintLog("connection factory size", "connections", connectionsLen, "processors", processorLen, "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
-			trackersToDelete := make(map[structs.ConnID]struct{})
-			utils.LogProcessing("Deleting all trackers at mem", "mem", mem)
-			for k := range factory.connections {
-				trackersToDelete[k] = struct{}{}
-			}
-			for key := range trackersToDelete {
-				if ch, exists := factory.processor[key]; exists {
-					close(ch)
-					delete(factory.processor, key)
-				}
-				delete(factory.connections, key)
-			}
+			factory.purgeAllTrackers()
 		}
 	}
 }
 
+func (factory *Factory) purgeAllTrackers() {
+	totalDeleted := 0
+	for shard := 0; shard < numShards; shard++ {
+		factory.shardMutex[shard].Lock()
+
+		trackersToDelete := make(map[structs.ConnID]struct{})
+		for k := range factory.connections[shard] {
+			trackersToDelete[k] = struct{}{}
+		}
+
+		for key := range trackersToDelete {
+			if ch, exists := factory.processor[shard][key]; exists {
+				close(ch)
+				delete(factory.processor[shard], key)
+			}
+			delete(factory.connections[shard], key)
+			totalDeleted++
+		}
+
+		factory.shardMutex[shard].Unlock()
+	}
+	utils.LogProcessing("Deleting all trackers", "count", totalDeleted)
+}
+
 func (factory *Factory) getChannel(connectionID structs.ConnID) (chan interface{}, bool) {
-	factory.mutex.RLock()
-	defer factory.mutex.RUnlock()
-	ch, exists := factory.processor[connectionID]
+	shard := shardKey(connectionID)
+	factory.shardMutex[shard].RLock()
+	defer factory.shardMutex[shard].RUnlock()
+	ch, exists := factory.processor[shard][connectionID]
 	return ch, exists
 }
 
 func (factory *Factory) getTracker(connectionID structs.ConnID) (*Tracker, bool) {
-	factory.mutex.RLock()
-	defer factory.mutex.RUnlock()
-	tracker, exists := factory.connections[connectionID]
+	shard := shardKey(connectionID)
+	factory.shardMutex[shard].RLock()
+	defer factory.shardMutex[shard].RUnlock()
+	tracker, exists := factory.connections[shard][connectionID]
 	return tracker, exists
+}
+
+// GetTrackerForHTTPDetection gets tracker for lightweight HTTP marking (without full processing)
+func (factory *Factory) GetTrackerForHTTPDetection(connectionID structs.ConnID) (*Tracker, bool) {
+	return factory.getTracker(connectionID)
 }
 
 // SendEvent sends any type of event (open, data, close) to the appropriate worker via the channel.

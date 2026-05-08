@@ -54,18 +54,6 @@ var (
 
 	Level1hooksType2 = []Kprobe{
 		{
-			FunctionToHook: "security_socket_sendmsg",
-			HookName:       "probe_entry_security_socket_sendmsg",
-			Type:           EntryType,
-			IsSyscall:      false,
-		},
-		{
-			FunctionToHook: "security_socket_recvmsg",
-			HookName:       "probe_entry_security_socket_recvmsg",
-			Type:           EntryType,
-			IsSyscall:      false,
-		},
-		{
 			FunctionToHook: "setsockopt",
 			HookName:       "probe_entry_setsockopt",
 			Type:           EntryType,
