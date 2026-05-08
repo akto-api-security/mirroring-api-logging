@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	pyroscope "github.com/grafana/pyroscope-go"
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -91,7 +93,47 @@ func main() {
 	run()
 }
 
+func initPyroscope() func() {
+	pyroscopeURL := os.Getenv("PYROSCOPE_URL")
+	if pyroscopeURL == "" {
+		return func() {}
+	}
+
+	runtime.SetMutexProfileFraction(5)
+	runtime.SetBlockProfileRate(5)
+
+	profiler, err := pyroscope.Start(pyroscope.Config{
+		ApplicationName:   "akto.ebpf-sniffer",
+		ServerAddress:     pyroscopeURL,
+		BasicAuthUser:     os.Getenv("PYROSCOPE_USER"),
+		BasicAuthPassword: os.Getenv("PYROSCOPE_PASSWORD"),
+		Logger:            pyroscope.StandardLogger,
+		Tags:              map[string]string{"hostname": os.Getenv("HOSTNAME")},
+		ProfileTypes: []pyroscope.ProfileType{
+			pyroscope.ProfileCPU,
+			pyroscope.ProfileAllocObjects,
+			pyroscope.ProfileAllocSpace,
+			pyroscope.ProfileInuseObjects,
+			pyroscope.ProfileInuseSpace,
+			pyroscope.ProfileGoroutines,
+			pyroscope.ProfileMutexCount,
+			pyroscope.ProfileMutexDuration,
+			pyroscope.ProfileBlockCount,
+			pyroscope.ProfileBlockDuration,
+		},
+	})
+	if err != nil {
+		slog.Error("failed to start Pyroscope profiler", "error", err)
+		return func() {}
+	}
+	slog.Info("Pyroscope profiler started", "url", pyroscopeURL)
+	return func() { profiler.Stop() }
+}
+
 func run() {
+	stopPyroscope := initPyroscope()
+	defer stopPyroscope()
+
 	slog.Debug("Go version", "version", runtime.Version())
 	slog.Debug("runtime.NumCPU()", "count", runtime.NumCPU())
 	slog.Debug("runtime.GOMAXPROCS(0)", "procs", runtime.GOMAXPROCS(0))
