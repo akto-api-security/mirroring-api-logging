@@ -38,6 +38,19 @@ var (
 	cpuMutex        sync.Mutex
 )
 
+var (
+	hostCPUMutex     sync.Mutex
+	lastHostCPUValid bool
+	lastHostUser     uint64
+	lastHostNice     uint64
+	lastHostSystem   uint64
+	lastHostIdle     uint64
+	lastHostIowait   uint64
+	lastHostIrq      uint64
+	lastHostSoftirq  uint64
+	lastHostSteal    uint64
+)
+
 func getEnvData() map[string]string {
 	envMap := make(map[string]string)
 
@@ -76,6 +89,84 @@ func getCPUUsage() (cpuPercent float64, cpuCoresUsed float64) {
 	return cpuPercent, cpuCoresUsed
 }
 
+// getHostSystemCPUPercent returns the share of aggregate CPU time spent in kernel mode
+// (column "system" on the first line of /proc/stat), since the previous call.
+// First call returns 0 (baseline). This rises when kernel work (e.g. BPF on probes) grows.
+func getHostSystemCPUPercent() float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 {
+		return 0
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) < 9 || fields[0] != "cpu" {
+		return 0
+	}
+
+	parse := func(i int) uint64 {
+		if i >= len(fields) {
+			return 0
+		}
+		v, err := strconv.ParseUint(fields[i], 10, 64)
+		if err != nil {
+			return 0
+		}
+		return v
+	}
+
+	user := parse(1)
+	nice := parse(2)
+	system := parse(3)
+	idle := parse(4)
+	iowait := parse(5)
+	irq := parse(6)
+	softirq := parse(7)
+	steal := parse(8)
+
+	hostCPUMutex.Lock()
+	defer hostCPUMutex.Unlock()
+
+	if !lastHostCPUValid {
+		lastHostUser, lastHostNice = user, nice
+		lastHostSystem = system
+		lastHostIdle, lastHostIowait = idle, iowait
+		lastHostIrq, lastHostSoftirq, lastHostSteal = irq, softirq, steal
+		lastHostCPUValid = true
+		return 0
+	}
+
+	du := subDelta(user, lastHostUser)
+	dn := subDelta(nice, lastHostNice)
+	ds := subDelta(system, lastHostSystem)
+	di := subDelta(idle, lastHostIdle)
+	diow := subDelta(iowait, lastHostIowait)
+	dirq := subDelta(irq, lastHostIrq)
+	dsoft := subDelta(softirq, lastHostSoftirq)
+	dst := subDelta(steal, lastHostSteal)
+
+	lastHostUser, lastHostNice = user, nice
+	lastHostSystem = system
+	lastHostIdle, lastHostIowait = idle, iowait
+	lastHostIrq, lastHostSoftirq, lastHostSteal = irq, softirq, steal
+
+	totalDelta := du + dn + ds + di + diow + dirq + dsoft + dst
+	if totalDelta == 0 {
+		return 0
+	}
+
+	return 100 * float64(ds) / float64(totalDelta)
+}
+
+func subDelta(curr, prev uint64) uint64 {
+	if curr >= prev {
+		return curr - prev
+	}
+	return curr
+}
+
 func getProfilingData() map[string]interface{} {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -85,6 +176,7 @@ func getProfilingData() map[string]interface{} {
 	totalAllocMB := float64(memStats.TotalAlloc) / 1024 / 1024
 
 	cpuPercent, cpuCoresUsed := getCPUUsage()
+	systemCPUPct := getHostSystemCPUPercent()
 
 	profiling := map[string]interface{}{
 		"memory_used_mb":       allocMB,
@@ -95,6 +187,7 @@ func getProfilingData() map[string]interface{} {
 		"cpu_cores_total":      runtime.NumCPU(),
 		"goroutines":           runtime.NumGoroutine(),
 		"num_gc":               memStats.NumGC,
+		"system_cpu_percent":   systemCPUPct,
 	}
 
 	return profiling
