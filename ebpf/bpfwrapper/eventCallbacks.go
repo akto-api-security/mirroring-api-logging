@@ -206,6 +206,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
 
+
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 

@@ -36,12 +36,20 @@ func tryReadFromBD(ip string, destIp string, receiveBuffer []byte, sentBuffer []
 		if direction == 2 {
 			directionStr = "egress"
 		}
+ 
+		/*if strings.Contains(ip, "9000") {
+ 			fmt.Printf("[TRAFFIC_9000] direction=%s src=%s dst=%s processId=%d fd=%d daemon=%s host=%s complete=%v recvBytes=%d sentBytes=%d\n",
+			directionStr, ip, destIp, uint32(id>>32), fd, daemonsetIdentifier, hostName, isComplete, len(receiveBuffer), len(sentBuffer));
+		} else
 
 		if !strings.Contains(ip,"168.63.129.16") && !strings.Contains(destIp,"168.63.129.16") {
-
+		
 		fmt.Printf("[TRAFFIC] rec=%s send=%s direction=%s src=%s dst=%s processId=%d fd=%d daemon=%s host=%s complete=%v recvBytes=%d sentBytes=%d\n",
 			string(receiveBuffer), string(sentBuffer),  directionStr, ip, destIp, uint32(id>>32), fd, daemonsetIdentifier, hostName, isComplete, len(receiveBuffer), len(sentBuffer))
-		}
+		} else {*/
+		fmt.Printf("[TRAFFIC_HOST] direction=%s src=%s dst=%s processId=%d fd=%d daemon=%s host=%s complete=%v recvBytes=%d sentBytes=%d\n",
+			  directionStr, ip, destIp, uint32(id>>32), fd, daemonsetIdentifier, hostName, isComplete, len(receiveBuffer), len(sentBuffer))
+				
 		return
 	}
 

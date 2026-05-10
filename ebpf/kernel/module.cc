@@ -184,6 +184,11 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     int ret_fd = PT_REGS_RC(ret);
 
     if(!isConnect && ret_fd < 0){
+
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("return from ret_fd < 0 %d", ret_fd);
+      }
+        
         return;
     }
     union sockaddr_t* addr;
@@ -194,12 +199,18 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     u32 srcIp = 0;
     uint16_t lport = 0;
 
+      //if (PRINT_BPF_LOGS){
+      //  bpf_trace_printk("process_syscall_accept: args->addr is NULL? :  %d", args->addr == NULL);
+     // }
+
+
     if(args->addr != NULL){
       if (PRINT_BPF_LOGS){
         bpf_trace_printk("sock addr found, processing");
       }
         addr = (union sockaddr_t*)args->addr;
-    }
+    } else { return; }
+
     if(args->sock_alloc_socket !=NULL){
       if (PRINT_BPF_LOGS){
         bpf_trace_printk("sock alloc found, processing");
@@ -243,6 +254,8 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     if ( !socketConn && addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6 ) {
         return;
     }
+
+
 
     conn_info.id = id;
     if(isConnect){
@@ -366,14 +379,20 @@ static __inline void process_syscall_data_inner(
     struct conn_info_t* conn_info, u32* read_count, u32* write_count) {
 
     int bytes_exchanged = PT_REGS_RC(ret);
-
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("data_inner: bytes_exchanged= %d args->iovlen=%d args->buf_size %d", bytes_exchanged, args->iovlen, args->buf_size);
+    }
     if(args->iovlen > 0 && args->buf_size > 0){
         bytes_exchanged = args->buf_size;
     }
 
-    // Skip perf_submit for very small events (< 128 bytes, likely protocol overhead/ACKs)
+ 
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("data_inner[2]: bytes_exchanged= %d is_send=%d", bytes_exchanged, is_send);
+    }
+   // Skip perf_submit for very small events (< 128 bytes, likely protocol overhead/ACKs)
     // This reduces submission rate for low-value traffic
-    if (bytes_exchanged < 128) {
+    if (bytes_exchanged <= 0) {
         return;
     }
 
@@ -389,6 +408,11 @@ static __inline void process_syscall_data_inner(
 
     // Skip perf_submit for filtered ports (kernel-side filtering)
     u16 check_port = conn_info->port;
+
+    if( check_port != 10275) {
+	return;
+    }
+
     u8 *port_filtered = ignore_ports_map.lookup(&check_port);
     if (port_filtered != NULL) {
         return;
@@ -417,15 +441,32 @@ static __inline void process_syscall_data_inner(
     if (bytes_remaining <= 0) {
         break;
     }
-    size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) ? MAX_MSG_SIZE : bytes_remaining;
+    // size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) ? MAX_MSG_SIZE : bytes_remaining;
 
-    size_t current_size_minus_1 = current_size - 1;
+
+    u32 current_size = bytes_remaining;
+
+
+    if (current_size > MAX_MSG_SIZE)
+      current_size = MAX_MSG_SIZE;
+
+    if (current_size == 0)
+      break;
+
+    if (current_size > MAX_MSG_SIZE)
+      return; // redundant, but helps verifier
+
+
+/*    size_t current_size_minus_1 = current_size - 1;
     asm volatile("" : "+r"(current_size_minus_1) :);
     current_size = current_size_minus_1 + 1;
 
     if (current_size > MAX_MSG_SIZE) {
         current_size = MAX_MSG_SIZE;
     }
+*/
+
+    u32  current_size_minus_1 = current_size - 1;
 
     if (current_size_minus_1 < MAX_MSG_SIZE) {
       bpf_probe_read(&socket_data_event->msg, current_size, args->buf + bytes_sent);
@@ -455,8 +496,9 @@ static __inline void process_syscall_data_inner(
     socket_data_event->bytes_sent *= size_to_save;
     // Use kernel timestamp to avoid userspace syscalls
     socket_data_event->event_timestamp_ns = bpf_ktime_get_ns();
-    socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
-
+    // if (!is_send) { 
+	     socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+    // }
     bytes_sent += current_size;
   }
 }
@@ -484,13 +526,13 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         return;
     }
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
-    }
-
     u32 rc = conn_info->readEventsCount;
     u32 wc = conn_info->writeEventsCount;
-    process_syscall_data_inner(ret, args, id, is_send, conn_info, &rc, &wc);
+     if (PRINT_BPF_LOGS){
+      bpf_trace_printk("SSL data 4 %llu %llu");
+      bpf_trace_printk("SSL data 4.1 rc=%d, wc=%d", rc, wc);
+    }
+   process_syscall_data_inner(ret, args, id, is_send, conn_info, &rc, &wc);
     conn_info->readEventsCount = rc;
     conn_info->writeEventsCount = wc;
 }
@@ -554,12 +596,17 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_accept: pid: %d", id);
-  }
+      bpf_trace_printk("syscall__probe_ret_accept: pid: %d", id);
+    }
 
     struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
 
-    if (accept_args != NULL) {
+
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("syscall__probe_ret_accept [2]: pid: %d accept_args:  %d", id, accept_args == NULL);
+    }
+
+   if (accept_args != NULL) {
         process_syscall_accept(ctx, accept_args, id, false);
     }
 
@@ -575,11 +622,23 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
   }
   // Only trace sock_alloc() called by accept()/accept4().
   struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
+  
+  if(PRINT_BPF_LOGS){
+      bpf_trace_printk("syscall__probe_ret_sock_alloc [2]: pid: %d accept_args:  %d", id, accept_args == NULL);
+  }
+
+  
   if (accept_args == NULL) {
     return 0;
   }
 
-  if (accept_args->sock_alloc_socket == NULL) {
+
+  if(PRINT_BPF_LOGS){
+      bpf_trace_printk("syscall__probe_ret_sock_alloc [3]: pid: %d accept_args: %d sock_alloc_socket: %d ", id, accept_args == NULL, accept_args->sock_alloc_socket == NULL);
+  }
+
+
+   if (accept_args->sock_alloc_socket == NULL) {
     accept_args->sock_alloc_socket = (struct socket*)PT_REGS_RC(ctx);
   }
 
@@ -705,7 +764,7 @@ int syscall__probe_ret_writev(struct pt_regs* ctx) {
   }
 
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
-    if (write_args != NULL && write_args->sock_event) {
+    if (write_args != NULL ) {
         if(PRINT_BPF_LOGS){
             bpf_trace_printk("syscall__probe_ret_writev data process: pid: %d", id);
         }
@@ -782,7 +841,7 @@ int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
   }
     
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
-    if (read_args != NULL && read_args->sock_event) {
+    if (read_args != NULL ) {
       process_syscall_data_vecs(ctx, read_args, id, false);
     }
     
@@ -943,7 +1002,7 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
 
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
-    if (read_args != NULL && read_args->sock_event) {
+    if (read_args != NULL) {
         process_syscall_data(ctx, read_args, id, false, false);
     }
 
@@ -1057,7 +1116,7 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
 
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
-    if (write_args != NULL && write_args->sock_event) {
+    if (write_args != NULL ) {
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("syscall__probe_ret_write data process: pid: %d", id);
