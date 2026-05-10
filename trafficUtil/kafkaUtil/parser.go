@@ -258,6 +258,7 @@ var (
 	goodRequests               = 0
 	badRequests                = 0
 	debugMode                  = false
+	dataPrintMode              = false
 	outputBandwidthLimitPerMin = -1
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
@@ -300,6 +301,7 @@ func init() {
 	utils.InitVar("BLOOM_FILTER_CAPACITY", &bloomFilterCapacity)
 	utils.InitVar("BLOOM_FILTER_FP_RATE", &bloomFilterFPRate)
 	utils.InitVar("TIME_BUCKET_DURATION_MINUTES", &timeBucketDuration)
+	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
 
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
@@ -614,7 +616,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		return
 	}
 
-	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
 	if shouldPrint {
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
