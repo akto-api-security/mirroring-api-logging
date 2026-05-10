@@ -54,7 +54,7 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
+func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
@@ -76,12 +76,16 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 
 	bytesSent := event.Attr.Bytes_sent
 
+	n := utils.Abs(bytesSent)
+	payload := event.Msg[:n]
 	if bytesSent > 0 {
-		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
-		conn.sentBytes += uint64(utils.Abs(bytesSent))
+		wc := int(event.Attr.WriteEventsCount)
+		conn.sentBuf[wc] = append(conn.sentBuf[wc], payload...)
+		conn.sentBytes += uint64(n)
 	} else {
-		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
-		conn.recvBytes += uint64(utils.Abs(bytesSent))
+		rc := int(event.Attr.ReadEventsCount)
+		conn.recvBuf[rc] = append(conn.recvBuf[rc], payload...)
+		conn.recvBytes += uint64(n)
 	}
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())

@@ -59,6 +59,11 @@ func LogIngest(format string, args ...any) {
 	}
 }
 
+// IngestLogsEnabled is true when ingest debug logs are enabled.
+func IngestLogsEnabled() bool {
+	return ingestLogs
+}
+
 func LogProcessing(format string, args ...any) {
 	if processLogs {
 		slog.Debug(format, args...)

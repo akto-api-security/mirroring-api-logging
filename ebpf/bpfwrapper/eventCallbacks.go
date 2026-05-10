@@ -27,18 +27,18 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var event structs.SocketOpenEvent
+		var ev structs.SocketOpenEvent
 		err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &ev)
 		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket open", "error", err)
 			continue
 		}
-		connId := event.ConnId
+		connId := ev.ConnId
 		metaUtils.LogIngest("Received socket open event",
 			"fd", connId.Fd,
 			"id", connId.Id,
@@ -46,7 +46,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"ip", connId.Ip,
 			"port", connId.Port)
 		connectionFactory.CreateIfNotExists(connId)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, ev)
 	}
 }
 
@@ -55,26 +55,26 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if data == nil {
 			return
 		}
-		var event structs.SocketCloseEvent
+		var ev structs.SocketCloseEvent
 		err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &ev)
 		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket close", "error", err)
 			continue
 		}
 
-		connId := event.ConnId
+		connId := ev.ConnId
 		metaUtils.LogIngest("Received close on",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
 			"ip", connId.Ip,
 			"port", connId.Port)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, ev)
 	}
 }
 
@@ -119,66 +119,58 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var event structs.SocketDataEvent
-
-		// binary.Read require the input data to be at the same size of the object.
-		// Since the Msg field might be mostly empty, binary.read fails.
-		// So we split the loading into the fixed size attribute parts, and copying the message separately.
-
-		// slog.Debug("data", "data", data)
-
+		ev := connections.AcquireSocketDataEvent()
 		if err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &ev.Attr)
 		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
+			connections.ReleaseSocketDataEvent(ev)
 			continue
 		}
 
-		bytesSent := event.Attr.Bytes_sent
+		bytesSent := ev.Attr.Bytes_sent
 
-		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
 		eventAttributesLogicalSize := 45
 
 		if len(data) > eventAttributesLogicalSize {
-			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
+			copy(ev.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
 		}
 
-		connId := event.Attr.ConnId
+		connId := ev.Attr.ConnId
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
+			connections.ReleaseSocketDataEvent(ev)
 			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount)
+				"rc", ev.Attr.ReadEventsCount,
+				"wc", ev.Attr.WriteEventsCount)
 			continue
 		}
 
-		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
-		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
-
 		connectionFactory.CreateIfNotExists(connId)
 
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+		if metaUtils.IngestLogsEnabled() {
+			previewLen := min(32, utils.Abs(bytesSent))
+			metaUtils.LogIngest("Got data",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"ip", connId.Ip,
+				"port", connId.Port,
+				"data", string(ev.Msg[:previewLen]),
+				"rc", ev.Attr.ReadEventsCount,
+				"wc", ev.Attr.WriteEventsCount,
+				"ssl", ev.Attr.Ssl,
+				"bytesSent", bytesSent)
+		}
 
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, ev)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-
-		metaUtils.LogIngest("Got data",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port,
-			"data", dataStr,
-			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
-			"ssl", event.Attr.Ssl,
-			"bytesSent", bytesSent)
 	}
 }

@@ -59,7 +59,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	for _, k := range keys {
 		if kPrev == -1 {
 			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the 
+			// For requests arriving after a time gap on the same underlying connection the
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
@@ -249,21 +249,21 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				switch e := event.(type) {
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					tracker.AddDataEvent(*e)
+					tracker.AddDataEvent(e)
+					ReleaseSocketDataEvent(e)
 					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 						factory.StopProcessing(connID)
 						return
-					} else {
-						resetTimer(inactivityTimer, inactivityThreshold)
 					}
-				case *structs.SocketOpenEvent:
-					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					tracker.AddOpenEvent(*e)
 					resetTimer(inactivityTimer, inactivityThreshold)
-				case *structs.SocketCloseEvent:
+				case structs.SocketOpenEvent:
+					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
+					tracker.AddOpenEvent(e)
+					resetTimer(inactivityTimer, inactivityThreshold)
+				case structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					tracker.AddCloseEvent(*e)
+					tracker.AddCloseEvent(e)
 
 					time.AfterFunc(100*time.Millisecond, func() {
 						delayedDeleteChan <- struct{}{}
@@ -365,12 +365,18 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 			}
 		}()
 		select {
-		case ch <- event: // Try sending the event to the worker's channel
+		case ch <- event:
 			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
-		default: // Avoid blocking if the channel is full
+		default:
+			if ev, ok := event.(*structs.SocketDataEvent); ok {
+				ReleaseSocketDataEvent(ev)
+			}
 			utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
 		}
 	} else {
+		if ev, ok := event.(*structs.SocketDataEvent); ok {
+			ReleaseSocketDataEvent(ev)
+		}
 		utils.LogProcessing("No worker found for", "connectionId", connectionID)
 	}
 }
