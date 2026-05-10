@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -65,6 +66,18 @@ func replaceArchType() {
 	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
 }
 
+func replaceLocalTrafficFilter() {
+	filterLocal := "false"
+	trafficUtils.InitVar("FILTER_LOCAL_TRAFFIC", &filterLocal)
+	source = strings.Replace(source, "FILTER_LOCAL_TRAFFIC", filterLocal, -1)
+
+	// Default: 127.0.0.1 as little-endian u32.
+	// IP bytes [127,0,0,1] → LE u32 = 127 + 0<<8 + 0<<16 + 1<<24 = 16777343
+	localIpLE := 16777343
+	trafficUtils.InitVar("LOCAL_TRAFFIC_IP_LE", &localIpLE)
+	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
+}
+
 func isArmArch() bool {
 	arch := runtime.GOARCH
 	trafficUtils.PrintLog("arch type detected", "arch", arch)
@@ -106,6 +119,7 @@ func run() {
 	replaceBpfLogsMacros()
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
+	replaceLocalTrafficFilter()
 	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()

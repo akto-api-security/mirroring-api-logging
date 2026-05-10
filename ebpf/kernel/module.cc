@@ -348,6 +348,15 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     if (conn_info == NULL) {
         return;
     }
+
+    if (FILTER_LOCAL_TRAFFIC) {
+        if (conn_info->ip == LOCAL_TRAFFIC_IP) {
+            if (PRINT_BPF_LOGS){
+              bpf_trace_printk("Dropping local traffic ip:%u fd:%d", conn_info->ip, args->fd);
+            }
+            return;
+        }
+    }
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
     }
