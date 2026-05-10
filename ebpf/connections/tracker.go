@@ -3,7 +3,6 @@ package connections
 import (
 	"sync"
 	"time"
-
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
@@ -95,6 +94,11 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	if bytesSent > 0 {
 		idx := int(event.Attr.WriteEventsCount)
 		// Pre-allocate 8KB capacity on first use to avoid reallocation during append growth
+		if idx > 255{
+			//fmt.Println("returning from write index > 255: %d IP: %d, Port: %d", idx, event.Attr.ConnId.Ip, event.Attr.ConnId.Port);
+			return
+		}
+
 		if !conn.sentBufInitialized[idx] {
 			conn.sentBuf[idx] = make([]byte, 8192)
 			conn.sentBufInitialized[idx] = true
@@ -114,6 +118,10 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		}
 	} else {
 		idx := int(event.Attr.ReadEventsCount)
+		if idx > 255{
+			//fmt.Println("returning from write index > 255: %d IP: %d, Port: %d", idx, event.Attr.ConnId.Ip, event.Attr.ConnId.Port);
+			return
+		}
 		// Pre-allocate 8KB capacity on first use to avoid reallocation during append growth
 		if !conn.recvBufInitialized[idx] {
 			conn.recvBuf[idx] = make([]byte, 8192)
@@ -168,6 +176,10 @@ func (conn *Tracker) addDataEventLocked(event structs.SocketDataEvent) {
 
 	if bytesSent > 0 {
 		idx := int(event.Attr.WriteEventsCount)
+		if idx > 255 {
+			//fmt.Printf("returning from read index > 255: %d IP=%d Port=%d", idx, event.Attr.ConnId.Ip, event.Attr.ConnId.Port);
+			return
+		}
 		// Pre-allocate 8KB capacity on first use to avoid reallocation during append growth
 		if !conn.sentBufInitialized[idx] {
 			conn.sentBuf[idx] = make([]byte, 8192)
@@ -188,6 +200,10 @@ func (conn *Tracker) addDataEventLocked(event structs.SocketDataEvent) {
 		}
 	} else {
 		idx := int(event.Attr.ReadEventsCount)
+		if idx > 255 {
+			//fmt.Println("returning from read index > 255: %d IP=%d Port=%d", idx, event.Attr.ConnId.Ip, event.Attr.ConnId.Port);
+			return
+		}
 		// Pre-allocate 8KB capacity on first use to avoid reallocation during append growth
 		if !conn.recvBufInitialized[idx] {
 			conn.recvBuf[idx] = make([]byte, 8192)

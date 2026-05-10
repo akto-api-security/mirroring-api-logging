@@ -348,7 +348,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 		utils.LogProcessing("Starting go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 		inactivityTimer := time.NewTimer(inactivityThreshold)
 		delayedDeleteChan := make(chan struct{}, 1)
-
+		processed := false
 		for {
 			select {
 			case event := <-ch:
@@ -367,6 +367,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 							} else {
 								// Non-data event: process batch first, then handle this event
 								processBatch(tracker, batch)
+								processed = true
 								// Now handle the non-data event inline
 								switch ne := next.(type) {
 								case *structs.SocketOpenEvent:
@@ -386,7 +387,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 							break drain // channel empty, process what we have
 						}
 					}
-					processBatch(tracker, batch)
+					if !processed { processBatch(tracker, batch); }
 					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 						factory.StopProcessing(connID)
@@ -402,7 +403,10 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					tracker.AddCloseEvent(*e)
 
 					time.AfterFunc(100*time.Millisecond, func() {
-						delayedDeleteChan <- struct{}{}
+						select { 
+							case delayedDeleteChan <- struct{}{}:
+								default:
+						}
 					})
 				}
 

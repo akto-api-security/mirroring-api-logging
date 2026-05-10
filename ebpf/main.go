@@ -131,7 +131,6 @@ func run() {
 
 	// this needs to be called before InitKafka
 	apiProcessor.InitCloudTrafficProcessor()
-	kafkaUtil.InitKafka()
 
 	kafkaUtil.StartConfigConsumer()
 
