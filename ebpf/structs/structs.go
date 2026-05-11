@@ -36,11 +36,11 @@ u32 writeEventsCount;
 char msg[MAX_MSG_SIZE];
 */
 
-// MAX_MSG_SIZE is defined in C++ ebpf code.
+// MAX_MSG_SIZE must match the C define in module.bpf.c (32768).
 
 type SocketDataEvent struct {
 	Attr SocketDataEventAttr
-	Msg  [30720]byte
+	Msg  [32768]byte
 }
 
 type SocketOpenEvent struct {

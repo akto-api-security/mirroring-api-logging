@@ -101,7 +101,7 @@ volatile const bool skip_loopback_conns = true;
 #define CHUNK_SIZE_LIMIT 4
 #endif
 
-#define MAX_MSG_SIZE 30720
+#define MAX_MSG_SIZE 32768
 #define CHUNK_LIMIT  CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT   42
 
@@ -798,35 +798,21 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
             break;
         }
         u32 current_size;
-        if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
-            current_size = (u32)MAX_MSG_SIZE;
+        if (bytes_remaining > (int)(MAX_MSG_SIZE - 1) && (i != CHUNK_LIMIT - 1)) {
+            current_size = (u32)(MAX_MSG_SIZE - 1);
         } else {
             current_size = (u32)bytes_remaining;
         }
 
         /*
-         * BPF verifier needs a provable upper bound on bpf_probe_read_user's
-         * size arg (R2).  Two-step approach:
-         *
-         * 1. "var &= 0x7FFF" — the verifier sees a power-of-2 mask and
-         *    tracks current_size in [0, 32767].  Since 30720 < 32768 the
-         *    mask is a no-op for all valid sizes (no data corruption).
-         *
-         * 2. asm volatile barrier + "if (var >= MAX_MSG_SIZE)" — narrows
-         *    the verifier range to [0, 30720] which fits in msg[30720].
-         *    The asm barrier prevents clang -O2 from eliding the check
-         *    (it can prove current_size <= 30720 from the code above and
-         *    would otherwise remove the if as dead code).
-         *
-         * The old mask (MAX_MSG_SIZE-1 = 0x77FF) was WRONG: 30720 is not
-         * a power of 2, so bit 11 (0x800) was clear in the mask, silently
-         * corrupting sizes in 2048-4095, 6144-8191, etc.
+         * BPF verifier hint: MAX_MSG_SIZE is a power of 2 (32768),
+         * so (MAX_MSG_SIZE - 1) = 0x7FFF is a valid bitmask.  The
+         * verifier sees "var &= const" and tracks current_size in
+         * [0, 32767] which fits in msg[32768].  Since we cap
+         * current_size at MAX_MSG_SIZE-1 above, this is a no-op at
+         * runtime — it exists purely for the verifier proof.
          */
-        current_size &= 0x7FFF;
-        asm volatile("" : "+r"(current_size) :);
-        if (current_size >= MAX_MSG_SIZE) {
-            current_size = MAX_MSG_SIZE;
-        }
+        current_size &= (MAX_MSG_SIZE - 1);
 
         if (current_size > 0) {
             if (bpf_probe_read_user(&socket_data_event->msg, current_size,
