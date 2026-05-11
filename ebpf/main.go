@@ -78,15 +78,27 @@ func replaceLocalTrafficFilter() {
 	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
 }
 
-// replaceHTTPFilterSocketData sets BPF compile-time flag TRAFFIC_HTTP_ONLY_SOCKET_DATA:
-// when true, kernel drops socket_data perf events until payload contains substring "HTTP".
-func replaceHTTPFilterSocketData() {
-	httpOnly := "false"
+// bpfHTTPFilterCFlags returns extra clang flags when TRAFFIC_HTTP_ONLY_SOCKET_DATA is enabled.
+// HTTP filtering is compiled out by default so the unrolled process_syscall_data path stays small
+// for the verifier (readv/writev/recvmsg/sendmsg otherwise hit E2BIG / complexity limits).
+// When enabled, we also cap iovec syscall fan-out (BPF_IOVEC_LOOP_LIMIT) — tunable via
+// TRAFFIC_BPF_IOVEC_LOOP_LIMIT (default 20, clamped 8–42).
+func bpfHTTPFilterCFlags() []string {
+	var flags []string
 	env := os.Getenv("TRAFFIC_HTTP_ONLY_SOCKET_DATA")
 	if len(env) > 0 && strings.EqualFold(env, "true") {
-		httpOnly = "true"
+		flags = append(flags, "-DBPF_HTTP_FILTER_ENABLED")
+		iovecLim := 20
+		trafficUtils.InitVar("TRAFFIC_BPF_IOVEC_LOOP_LIMIT", &iovecLim)
+		if iovecLim < 8 {
+			iovecLim = 8
+		}
+		if iovecLim > 42 {
+			iovecLim = 42
+		}
+		flags = append(flags, fmt.Sprintf("-DBPF_IOVEC_LOOP_LIMIT=%d", iovecLim))
 	}
-	source = strings.Replace(source, "HTTP_FILTER_SOCKET_DATA", httpOnly, -1)
+	return flags
 }
 
 func isArmArch() bool {
@@ -131,12 +143,15 @@ func run() {
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceLocalTrafficFilter()
-	replaceHTTPFilterSocketData()
 	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
-	bpfModule := bcc.NewModule(source, []string{})
+	cflags := bpfHTTPFilterCFlags()
+	if cflags == nil {
+		cflags = []string{}
+	}
+	bpfModule := bcc.NewModule(source, cflags)
 	if bpfModule == nil {
 		slog.Error("failed to create BPF module", "error", "module is nil")
 		panic("bpf module is nil")

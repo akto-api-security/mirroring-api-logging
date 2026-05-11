@@ -9,6 +9,10 @@
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
+/* readv/writev/recvmsg/sendmsg fan-out; lower when compiling with BPF_HTTP_FILTER_ENABLED (see main.go). */
+#ifndef BPF_IOVEC_LOOP_LIMIT
+#define BPF_IOVEC_LOOP_LIMIT 42
+#endif
 
 #define ARCH_TYPE 1
 
@@ -112,11 +116,13 @@ struct socket_data_event_t {
 };
 
 BPF_HASH(conn_info_map, u64, struct conn_info_t, TRAFFIC_MAX_CONNECTION_MAP_SIZE); // 128 * 1024
+#ifdef BPF_HTTP_FILTER_ENABLED
 /*
-Per tgid_fd: set to 1 once payload contains ASCII "HTTP" (HTTP_FILTER_SOCKET_DATA drops data events until then).
-Separate from conn_info_t so userspace ConnInfoT layout stays unchanged.
+Per tgid_fd: set to 1 once a chunk starts with "HTTP". When TRAFFIC_HTTP_ONLY_SOCKET_DATA is enabled,
+Go passes -DBPF_HTTP_FILTER_ENABLED so this map exists; otherwise it is omitted to keep verifier cost down.
 */
 BPF_HASH(http_seen_map, u64, u8, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
+#endif
 /*
 Stores conn_info_map's keys on a rotating basic, using the conn_counter.
 i.e. clear the one which you're on and store the new one.
@@ -147,29 +153,31 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
-/* First 4 bytes only: "HTTP" (e.g. HTTP/1.x status line at chunk start). No loop — avoids LLVM unroll failures. */
-static __inline void maybe_scan_http(u64 tgid_fd, const char* buf, int len) {
-  u8 one = 1;
+#ifdef BPF_HTTP_FILTER_ENABLED
+/* Single decision: already marked HTTP, or this chunk starts with "HTTP" (set map and allow). */
+static __inline int http_filter_allow_submit(u64 tgid_fd, const char* buf, int len) {
   u8 *seen = http_seen_map.lookup(&tgid_fd);
   if (seen != NULL && *seen == 1) {
-    return;
-  }
-  if (len < 4) {
-    return;
-  }
-  if (buf[0] == 72 && buf[1] == 84 && buf[2] == 84 && buf[3] == 80) {
-    http_seen_map.update(&tgid_fd, &one);
-  }
-}
-
-/* When HTTP_FILTER_SOCKET_DATA is true, only emit socket_data_events after "HTTP" seen for this fd. */
-static __inline int should_emit_socket_data(u64 tgid_fd) {
-  if (!HTTP_FILTER_SOCKET_DATA) {
     return 1;
   }
-  u8 *seen = http_seen_map.lookup(&tgid_fd);
-  return (seen != NULL && *seen == 1);
+  if (len < 4) {
+    return 0;
+  }
+  if (buf[0] == 72 && buf[1] == 84 && buf[2] == 84 && buf[3] == 80) {
+    u8 one = 1;
+    http_seen_map.update(&tgid_fd, &one);
+    return 1;
+  }
+  return 0;
 }
+#else
+static __inline int http_filter_allow_submit(u64 tgid_fd, const char* buf, int len) {
+  (void)tgid_fd;
+  (void)buf;
+  (void)len;
+  return 1;
+}
+#endif
 
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
     int ret_fd = PT_REGS_RC(ret);
@@ -291,7 +299,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         struct conn_info_t *conn_info = conn_info_map.lookup(&curVal);
         if (conn_info != NULL) {
           conn_info_map.delete(&curVal);
+#ifdef BPF_HTTP_FILTER_ENABLED
           http_seen_map.delete(&curVal);
+#endif
           if (PRINT_BPF_LOGS){
             bpf_trace_printk("conn_info_counter deleting: %d", curVal);
           }
@@ -348,7 +358,9 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
+#ifdef BPF_HTTP_FILTER_ENABLED
     http_seen_map.delete(&tgid_fd);
+#endif
     conn_info_map.delete(&tgid_fd);
 }
 
@@ -441,9 +453,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
       size_to_save = MAX_MSG_SIZE;
     }
 
-    maybe_scan_http(tgid_fd, (const char*)socket_data_event->msg, (int)size_to_save);
-
-    if (!should_emit_socket_data(tgid_fd)) {
+    if (!http_filter_allow_submit(tgid_fd, (const char*)socket_data_event->msg, (int)size_to_save)) {
       bytes_sent += current_size;
       continue;
     }
@@ -478,7 +488,7 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
     int bytes_sent=0;
     int total_size = PT_REGS_RC(ret);
     const struct iovec* iov = args->iov;
-    for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size ; ++i) {
+    for (int i = 0; i < BPF_IOVEC_LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size ; ++i) {
         struct iovec iov_cpy;
         bpf_probe_read(&iov_cpy, sizeof(iov_cpy), &iov[i]);
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"sort"
 	"sync"
 	"time"
 
@@ -40,47 +39,6 @@ func NewFactory() *Factory {
 	}
 }
 
-func convertToSingleByteArr(bufMap map[int][]byte) []byte {
-
-	if len(bufMap) == 0 {
-		return make([]byte, 0)
-	}
-
-	var keys []int
-	for k := range bufMap {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-
-	// Append []byte values into a single slice
-	var combined []byte
-
-	kPrev := -1
-	for _, k := range keys {
-		if kPrev == -1 {
-			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the
-			// read,write count will not be 1, they will simply continue from the last request
-			// This can only be replicated when there is a time gap/inactivityThreshold between requests
-			// on the same underlying connection
-			if !sequenceCheckSkip && k != 1 {
-				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
-				break
-			}
-			kPrev = k
-		} else {
-			if kPrev+1 != k {
-				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
-				break
-			}
-			kPrev = k
-		}
-		combined = append(combined, bufMap[k]...)
-	}
-
-	return combined
-}
-
 var (
 	disableEgress        = false
 	maxActiveConnections = 4096
@@ -109,11 +67,11 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
 
-	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
+	if len(tracker.sentParts) == 0 || len(tracker.recvParts) == 0 {
 		return
 	}
-	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
-	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
+	receiveBuffer := joinPartsMap(tracker.recvParts)
+	sentBuffer := joinPartsMap(tracker.sentParts)
 
 	originalInt := uint32(connID.Ip)
 	// Convert integer to little-endian byte slice
@@ -247,10 +205,9 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case event := <-ch:
 				// Handle event based on its type
 				switch e := event.(type) {
-				case *structs.SocketDataEvent:
+				case *SocketDataPayload:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
-					tracker.AddDataEvent(e)
-					ReleaseSocketDataEvent(e)
+					tracker.AddDataPayload(e)
 					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 						factory.StopProcessing(connID)
@@ -368,15 +325,9 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 		case ch <- event:
 			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		default:
-			if ev, ok := event.(*structs.SocketDataEvent); ok {
-				ReleaseSocketDataEvent(ev)
-			}
 			utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
 		}
 	} else {
-		if ev, ok := event.(*structs.SocketDataEvent); ok {
-			ReleaseSocketDataEvent(ev)
-		}
 		utils.LogProcessing("No worker found for", "connectionId", connectionID)
 	}
 }

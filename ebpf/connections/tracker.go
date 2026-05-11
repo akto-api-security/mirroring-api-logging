@@ -1,13 +1,24 @@
 package connections
 
 import (
+	"bytes"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
-	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
+
+func previewBytes(b []byte, max int) string {
+	if len(b) == 0 {
+		return ""
+	}
+	if len(b) > max {
+		return string(b[:max])
+	}
+	return string(b)
+}
 
 type Tracker struct {
 	connID structs.ConnID
@@ -16,16 +27,15 @@ type Tracker struct {
 	closeTimestamp      uint64
 	lastAccessTimestamp uint64
 
-	// Indicates the tracker stopped tracking due to closing the session.
 	sentBytes uint64
 	recvBytes uint64
 
-	recvBuf map[int][]byte
-	sentBuf map[int][]byte
-	mutex   sync.RWMutex
-	ssl     bool
+	// Per read/write sequence key: ordered payload chunks (each []byte is one perf event).
+	recvParts map[int][][]byte
+	sentParts map[int][][]byte
+	mutex     sync.RWMutex
+	ssl       bool
 
-	// source IP-Port / local IP-Port
 	srcIp   uint32
 	srcPort uint16
 }
@@ -33,10 +43,10 @@ type Tracker struct {
 func NewTracker(connID structs.ConnID) *Tracker {
 	return &Tracker{
 		connID:    connID,
-		recvBuf:   make(map[int][]byte),
-		sentBuf:   make(map[int][]byte),
-		mutex: sync.RWMutex{},
-		ssl:   false,
+		recvParts: make(map[int][][]byte),
+		sentParts: make(map[int][][]byte),
+		mutex:     sync.RWMutex{},
+		ssl:       false,
 	}
 }
 
@@ -46,42 +56,46 @@ func (conn *Tracker) IsComplete() bool {
 	complete := conn.closeTimestamp != 0 &&
 		uint64(time.Now().UnixNano()) >= conn.closeTimestamp
 	if complete {
-		metaUtils.LogProcessing("Connection closed", "fd", conn.connID.Fd, "id", conn.connID.Id, "closeTimestamp", conn.closeTimestamp, "currentTimestamp", uint64(time.Now().UnixNano()))
+		trafficUtils.LogProcessing("Connection closed", "fd", conn.connID.Fd, "id", conn.connID.Id, "closeTimestamp", conn.closeTimestamp, "currentTimestamp", uint64(time.Now().UnixNano()))
 	}
 	return complete
 }
 
-func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
+func (conn *Tracker) AddDataPayload(p *SocketDataPayload) {
+	if p == nil {
+		return
+	}
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if !conn.ssl && event.Attr.Ssl {
-		for k := range conn.sentBuf {
-			conn.sentBuf[k] = []byte{}
+	attr := &p.Attr
+	data := p.Data
+	n := len(data)
+
+	if !conn.ssl && attr.Ssl {
+		for k := range conn.sentParts {
+			conn.sentParts[k] = nil
 		}
-		for k := range conn.recvBuf {
-			conn.recvBuf[k] = []byte{}
+		for k := range conn.recvParts {
+			conn.recvParts[k] = nil
 		}
 		conn.sentBytes = 0
 		conn.recvBytes = 0
-		conn.ssl = event.Attr.Ssl
+		conn.ssl = attr.Ssl
 	}
 
-	if conn.ssl != event.Attr.Ssl {
+	if conn.ssl != attr.Ssl {
 		return
 	}
 
-	bytesSent := event.Attr.Bytes_sent
-
-	n := utils.Abs(bytesSent)
-	payload := event.Msg[:n]
+	bytesSent := attr.Bytes_sent
 	if bytesSent > 0 {
-		wc := int(event.Attr.WriteEventsCount)
-		conn.sentBuf[wc] = append(conn.sentBuf[wc], payload...)
+		wc := int(attr.WriteEventsCount)
+		conn.sentParts[wc] = append(conn.sentParts[wc], data)
 		conn.sentBytes += uint64(n)
 	} else {
-		rc := int(event.Attr.ReadEventsCount)
-		conn.recvBuf[rc] = append(conn.recvBuf[rc], payload...)
+		rc := int(attr.ReadEventsCount)
+		conn.recvParts[rc] = append(conn.recvParts[rc], data)
 		conn.recvBytes += uint64(n)
 	}
 
@@ -94,7 +108,7 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 
 	now := uint64(time.Now().UnixNano())
 	if conn.openTimestamp != 0 {
-		metaUtils.LogIngest("Changing conn open timestamp", "current", conn.openTimestamp, "new", now)
+		trafficUtils.LogIngest("Changing conn open timestamp", "current", conn.openTimestamp, "new", now)
 	}
 	conn.openTimestamp = now
 	conn.lastAccessTimestamp = now
@@ -116,4 +130,54 @@ func (conn *Tracker) GetSentBytes() uint64 {
 
 func (conn *Tracker) GetRecvBytes() uint64 {
 	return conn.recvBytes
+}
+
+// joinPartsMap merges [][]byte per sequence key like convertToSingleByteArr did for []byte.
+func joinPartsMap(partsMap map[int][][]byte) []byte {
+	if len(partsMap) == 0 {
+		return make([]byte, 0)
+	}
+
+	var keys []int
+	for k := range partsMap {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
+	var combined []byte
+	kPrev := -1
+	for _, k := range keys {
+		if kPrev == -1 {
+			if !sequenceCheckSkip && k != 1 {
+				first := partsMap[k]
+				preview := ""
+				if len(first) > 0 && len(first[0]) > 0 {
+					preview = previewBytes(first[0], 64)
+				}
+				trafficUtils.LogProcessing("Bad start sequence", "key", k, "value", preview)
+				break
+			}
+			kPrev = k
+		} else {
+			if kPrev+1 != k {
+				first := partsMap[k]
+				preview := ""
+				if len(first) > 0 && len(first[0]) > 0 {
+					preview = previewBytes(first[0], 64)
+				}
+				prevFirst := partsMap[kPrev]
+				prevPreview := ""
+				if len(prevFirst) > 0 && len(prevFirst[0]) > 0 {
+					prevPreview = previewBytes(prevFirst[0], 64)
+				}
+				trafficUtils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", preview, "prevValue", prevPreview)
+				break
+			}
+			kPrev = k
+		}
+		perKey := bytes.Join(partsMap[k], nil)
+		combined = append(combined, perKey...)
+	}
+
+	return combined
 }
