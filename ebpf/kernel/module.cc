@@ -339,7 +339,7 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
 #define SD_INBOUND_LOG_NS (10ULL * 1000000000ULL)
 
-static void __attribute__((noinline)) note_socket_data_inbound_before_submit(void) {
+static void __attribute__((__noinline__)) note_socket_data_inbound_before_submit(void) {
     if (!PRINT_BPF_LOGS) {
         return;
     }
