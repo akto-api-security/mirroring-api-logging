@@ -68,6 +68,9 @@ func (s *HostSystemCPUSampler) Step() (systemPercent, systemCores float64, ok bo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Ignore pathological windows (e.g. overlapping Step calls): tiny elapsed blows up cores/sec.
+	const minSampleGap = 100 * time.Millisecond
+
 	if !s.primed {
 		s.lastUser, s.lastNice = user, nice
 		s.lastSystem = system
@@ -95,6 +98,10 @@ func (s *HostSystemCPUSampler) Step() (systemPercent, systemCores float64, ok bo
 	elapsed := now.Sub(s.lastWall).Seconds()
 	s.lastWall = now
 
+	if elapsed < minSampleGap.Seconds() {
+		return 0, 0, false
+	}
+
 	if elapsed <= 0 {
 		return 0, 0, false
 	}
@@ -104,6 +111,7 @@ func (s *HostSystemCPUSampler) Step() (systemPercent, systemCores float64, ok bo
 		systemPercent = 100 * float64(ds) / float64(totalDelta)
 	}
 	systemCores = float64(ds) / float64(s.clk) / elapsed
+
 	return systemPercent, systemCores, true
 }
 
@@ -111,7 +119,8 @@ func subDeltaUint64(curr, prev uint64) uint64 {
 	if curr >= prev {
 		return curr - prev
 	}
-	return curr
+	// Counter reset, hotplug, migrate, or bad read — do not treat curr as a delta.
+	return 0
 }
 
 // MeasureHostSystemCPUBaseline returns average host kernel CPU usage in core-equivalents over `wait`
