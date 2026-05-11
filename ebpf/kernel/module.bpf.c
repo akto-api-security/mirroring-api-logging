@@ -805,22 +805,22 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         }
 
         /*
-         * Clamp to MAX_MSG_SIZE and use an asm barrier so the BPF verifier
-         * can track the upper bound without the compiler eliding it.
+         * BPF verifier needs a provable upper bound on bpf_probe_read_user's
+         * size arg (R2).  We mask with 0x7FFF (32768-1, next power-of-2
+         * above MAX_MSG_SIZE=30720) so the verifier sees "var &= const".
+         * Since 30720 < 32768 the mask is a no-op for all valid sizes.
+         * The subsequent clamp ensures we never exceed the actual buffer.
          *
-         * The previous approach (current_size &= MAX_MSG_SIZE - 1) is WRONG
-         * because 30720 is not a power of 2: bit 11 (0x800) is clear in
-         * the mask 0x77FF, silently corrupting any size in 2048-4095,
-         * 6144-8191, etc.
+         * The old mask (MAX_MSG_SIZE-1 = 0x77FF) was WRONG: 30720 is not
+         * a power of 2, so bit 11 (0x800) was clear in the mask, silently
+         * corrupting sizes in 2048-4095, 6144-8191, etc.
          */
-        u32 current_size_minus_1 = current_size - 1;
-        asm volatile("" : "+r"(current_size_minus_1) :);
-        current_size = current_size_minus_1 + 1;
+        current_size &= 0x7FFF;
         if (current_size > MAX_MSG_SIZE) {
             current_size = MAX_MSG_SIZE;
         }
 
-        if (current_size_minus_1 < MAX_MSG_SIZE) {
+        if (current_size > 0) {
             if (bpf_probe_read_user(&socket_data_event->msg, current_size,
                                     (const char *)args->buf + bytes_sent) != 0) {
                 break;
