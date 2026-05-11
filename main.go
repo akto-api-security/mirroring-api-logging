@@ -251,15 +251,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	incomingReqSrcIpCountMap := make(map[string]int)
 	incomingReqDstIpCountMap := make(map[string]int)
 
-	maintainTrafficIpMapInput := os.Getenv("MAINTAIN_TRAFFIC_IP_MAP")
-	if len(maintainTrafficIpMapInput) > 0 {
-		val, err := strconv.ParseBool(maintainTrafficIpMapInput)
-		if err != nil {
-			slog.Error("invalid value set for flag MAINTAIN_TRAFFIC_IP_MAP")
-		}
-		slog.Debug("setting MAINTAIN_TRAFFIC_IP_MAP = ", "value", val)
-		maintainTrafficIpMap = val
-	}
+	utils.InitVar("MAINTAIN_TRAFFIC_IP_MAP", &maintainTrafficIpMap)
 
 	if maintainTrafficIpMap {
 		ifaces, err := net.Interfaces()

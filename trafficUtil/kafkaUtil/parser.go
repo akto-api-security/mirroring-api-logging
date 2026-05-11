@@ -267,7 +267,8 @@ var (
 		"TRACE":   true,
 		"TRACK":   true,
 		"PATCH":   true}
-	DebugStrings = []string{}
+	DebugStrings  = []string{}
+	dataPrintMode = false
 
 	EventChanBuffSize = 20000
 )
@@ -275,6 +276,7 @@ var (
 const ONE_MINUTE = 60
 
 func init() {
+	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
 	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
@@ -575,9 +577,9 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		return
 	}
 
-	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
 	if shouldPrint {
-		slog.Debug("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
+		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
 	}
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
@@ -674,8 +676,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		if apiProcessor.CloudProcessorInstance != nil {
 			apiProcessor.CloudProcessorInstance.Produce(value)
 
-		} else {
-			// Produce to kafka with collection_details header
+		} else if KafkaWriteAvailable() {
+			// Produce to kafka with collection_details header (same gate as Produce/ProduceStr)
 			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
 			go Produce(bgCtx, payload)
 		}

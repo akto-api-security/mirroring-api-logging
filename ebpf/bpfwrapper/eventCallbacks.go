@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -13,6 +14,37 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
+
+var (
+	logSocketDataUserspace   = false
+	socketDataInboundCount   uint64
+	socketDataInboundLastLog time.Time
+)
+
+const socketDataUserspaceLogInterval = 10 * time.Second
+
+// noteSocketDataInboundBeforeSend counts decoded socket_data records handed to the connection
+// factory (same goroutine as the socket_data ringbuf reader — no lock.)
+func noteSocketDataInboundBeforeSend() {
+	if !logSocketDataUserspace {
+		return
+	}
+	socketDataInboundCount++
+	now := time.Now()
+	if socketDataInboundLastLog.IsZero() {
+		socketDataInboundLastLog = now
+		return
+	}
+	d := now.Sub(socketDataInboundLastLog)
+	if d < socketDataUserspaceLogInterval {
+		return
+	}
+	slog.Warn("socket_data events reaching userspace (before SendEvent)",
+		"countInWindow", socketDataInboundCount,
+		"window", d.String())
+	socketDataInboundCount = 0
+	socketDataInboundLastLog = now
+}
 
 func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
 
@@ -98,6 +130,7 @@ var (
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+	metaUtils.InitVar("TRAFFIC_LOG_SOCKET_DATA_USERSPACE", &logSocketDataUserspace)
 }
 
 func min(a, b int32) int32 {
@@ -162,6 +195,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
 
+		noteSocketDataInboundBeforeSend()
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 

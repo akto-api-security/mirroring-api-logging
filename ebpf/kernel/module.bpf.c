@@ -85,6 +85,8 @@
  * Replaces the runtime Go string-substitution used in the BCC version.
  */
 volatile const bool print_bpf_logs = false;
+/* When true (env TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS), count each socket_data ringbuf submit. */
+volatile const bool log_socket_data_submit_stats = false;
 
 /*
  * CHUNK_SIZE_LIMIT must be a compile-time constant because it is used as the
@@ -291,6 +293,14 @@ struct {
     __type(key, u32);
     __type(value, int);
 } conn_counter SEC(".maps");
+
+/* Total socket_data bpf_ringbuf_output calls (userspace reads for windowed logs). */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_data_submit_total SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -808,6 +818,13 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
 
         socket_data_event->bytes_sent  = is_send ? 1 : -1;
         socket_data_event->bytes_sent *= size_to_save;
+        if (log_socket_data_submit_stats) {
+            u32 __sd_k = 0;
+            u64 *__sd_tot = bpf_map_lookup_elem(&socket_data_submit_total, &__sd_k);
+            if (__sd_tot != NULL) {
+                (*__sd_tot) += 1;
+            }
+        }
         bpf_ringbuf_output(&socket_data_events, socket_data_event,
                            sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save, 0);
 

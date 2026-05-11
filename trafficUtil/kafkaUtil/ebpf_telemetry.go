@@ -211,10 +211,12 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 }
 
 func StartConfigConsumer() {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
+	if KafkaDisabled() {
+		slog.Warn("Kafka disabled (AKTO_KAFKA_DISABLED), config consumer not started")
+		return
 	}
+
+	kafka_url := KafkaBrokerURL()
 
 	if kafka_url == "" {
 		slog.Warn("Kafka URL not configured, config consumer disabled")

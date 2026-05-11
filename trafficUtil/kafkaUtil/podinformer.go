@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,12 +35,21 @@ import (
 
 var KubeInjectEnabled = false
 
+var envKubeconfig string
+var envHome string
+var envNodeName string
+var k8MetadataCaptureNamespace string
+
 // TODO: Make this configurable, or account based.
 var SERVICE_IDENTIFIER_LABELS = []string{"catalog.agoda.com/component", "privatecloud.agoda.com/service"}
 var PodInformerInstance *PodInformer
 
 func init() {
 	utils.InitVar("AKTO_K8_METADATA_CAPTURE", &KubeInjectEnabled)
+	utils.InitVar("KUBECONFIG", &envKubeconfig)
+	utils.InitVar("HOME", &envHome)
+	utils.InitVar("NODE_NAME", &envNodeName)
+	utils.InitVar("AKTO_K8_METADATA_CAPTURE_NAMESPACE", &k8MetadataCaptureNamespace)
 }
 
 type PidInfo struct {
@@ -87,9 +97,16 @@ func GetClientset() (*kubernetes.Clientset, error) {
 	// this is used for out of cluster configuration
 	if err != nil {
 		// Fallback to kubeconfig for local testing
-		kubeconfig := os.Getenv("KUBECONFIG")
+		kubeconfig := envKubeconfig
 		if kubeconfig == "" {
-			kubeconfig = os.Getenv("HOME") + "/.kube/config"
+			if envHome != "" {
+				kubeconfig = filepath.Join(envHome, ".kube", "config")
+			}
+		}
+		if kubeconfig == "" {
+			if home, herr := os.UserHomeDir(); herr == nil {
+				kubeconfig = filepath.Join(home, ".kube", "config")
+			}
 		}
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
@@ -112,7 +129,7 @@ func NewPodInformer() (*PodInformer, error) {
 	}
 
 	// Get the node name from the environment (set by Kubernetes for DaemonSet pods)
-	nodeName := os.Getenv("NODE_NAME")
+	nodeName := envNodeName
 	if nodeName == "" {
 		return nil, fmt.Errorf("NODE_NAME environment variable not set")
 	}
@@ -263,8 +280,8 @@ func (w *PodInformer) initpodNameLabelsMap(podInformer cache.SharedIndexInformer
 func (w *PodInformer) getFieldSelector() string {
 	var namespaceFilter string
 	nodeFilter := fmt.Sprintf("spec.nodeName=%s", w.nodeName)
-	if os.Getenv("AKTO_K8_METADATA_CAPTURE_NAMESPACE") != "" {
-		namespaceFilter = fmt.Sprintf("metadata.namespace=%s", os.Getenv("AKTO_K8_METADATA_CAPTURE_NAMESPACE"))
+	if k8MetadataCaptureNamespace != "" {
+		namespaceFilter = fmt.Sprintf("metadata.namespace=%s", k8MetadataCaptureNamespace)
 	} else {
 		namespaceFilter = "metadata.namespace!=kube-system,metadata.namespace!=kube-public,metadata.namespace!=kube-node-lease"
 	}
