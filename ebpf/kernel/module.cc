@@ -147,7 +147,7 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
-/* First min(len,1024) bytes: substring "HTTP". Sets http_seen_map when found. */
+/* First 4 bytes only: "HTTP" (e.g. HTTP/1.x status line at chunk start). No loop — avoids LLVM unroll failures. */
 static __inline void maybe_scan_http(u64 tgid_fd, const char* buf, int len) {
   u8 one = 1;
   u8 *seen = http_seen_map.lookup(&tgid_fd);
@@ -157,20 +157,8 @@ static __inline void maybe_scan_http(u64 tgid_fd, const char* buf, int len) {
   if (len < 4) {
     return;
   }
-  int lim = len;
-  if (lim > 1024) {
-    lim = 1024;
-  }
-  int j;
-#pragma unroll
-  for (j = 0; j < 1020; j++) {
-    if (j + 4 > lim) {
-      break;
-    }
-    if (buf[j] == 72 && buf[j + 1] == 84 && buf[j + 2] == 84 && buf[j + 3] == 80) {
-      http_seen_map.update(&tgid_fd, &one);
-      break;
-    }
+  if (buf[0] == 72 && buf[1] == 84 && buf[2] == 84 && buf[3] == 80) {
+    http_seen_map.update(&tgid_fd, &one);
   }
 }
 
