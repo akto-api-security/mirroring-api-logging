@@ -111,14 +111,6 @@ struct socket_data_event_t {
     char msg[MAX_MSG_SIZE];
 };
 
-/* Mirrors userspace noteSocketDataInboundBeforeSend: count perf_submit attempts (~10s window). */
-struct socket_data_inbound_log_t {
-    u64 count;
-    u64 window_start_ns;
-};
-
-BPF_ARRAY(socket_data_inbound_log, struct socket_data_inbound_log_t, 1);
-
 BPF_HASH(conn_info_map, u64, struct conn_info_t, TRAFFIC_MAX_CONNECTION_MAP_SIZE); // 128 * 1024
 /*
 Stores conn_info_map's keys on a rotating basic, using the conn_counter.
@@ -132,6 +124,13 @@ BPF_PERF_OUTPUT(socket_open_events);
 BPF_PERF_OUTPUT(socket_close_events);
 
 BPF_PERCPU_ARRAY(socket_data_event_buffer_heap, struct socket_data_event_t, 1);
+
+/* ~10s windowed count of socket_data perf_submit; separate noinline fn so LLVM does not inline into connect/accept. */
+struct socket_data_inbound_log_t {
+    u64 count;
+    u64 window_start_ns;
+};
+BPF_ARRAY(socket_data_inbound_log, struct socket_data_inbound_log_t, 1);
 
 BPF_HASH(active_accept_args_map, u64, struct accept_args_t);
 BPF_HASH(active_close_args_map, u64, struct close_args_t);
@@ -156,7 +155,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     if(!isConnect && ret_fd < 0){
         return;
     }
-    union sockaddr_t* addr;
+    union sockaddr_t* addr = NULL;
 
     struct conn_info_t conn_info = {};
     bool socketConn = false;
@@ -210,8 +209,13 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         }
     }
 
-    if ( !socketConn && addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6 ) {
-        return;
+    if (!socketConn) {
+        if (addr == NULL) {
+            return;
+        }
+        if (addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6) {
+            return;
+        }
     }
 
     conn_info.id = id;
@@ -335,7 +339,7 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
 #define SD_INBOUND_LOG_NS (10ULL * 1000000000ULL)
 
-static __always_inline void note_socket_data_inbound_before_submit(void) {
+static void __attribute__((noinline)) note_socket_data_inbound_before_submit(void) {
     if (!PRINT_BPF_LOGS) {
         return;
     }
