@@ -91,6 +91,27 @@ func replaceStrictRemotePortFilter() {
 	source = strings.Replace(source, "STRICT_REMOTE_PORT", strconv.Itoa(strictPort), -1)
 }
 
+// replaceLogBPFSocketDataSubmits injects socket_data_submit_total map + increment only when
+// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS is true (same env as startBPFSubmitStatsReporter).
+func replaceLogBPFSocketDataSubmits() {
+	env := os.Getenv("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS")
+	mapDecl := ""
+	incBlock := ""
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		mapDecl = `/* Total socket_data perf_submit calls (increment only — stats read from userspace). */
+BPF_ARRAY(socket_data_submit_total, u64, 1);
+`
+		incBlock = `      u32 __sd_idx = 0;
+      u64 *__sd_tot = socket_data_submit_total.lookup(&__sd_idx);
+      if (__sd_tot != NULL) {
+        *__sd_tot += 1;
+      }
+`
+	}
+	source = strings.Replace(source, "BPF_REPLACE_SOCKET_DATA_SUBMIT_MAP", mapDecl, 1)
+	source = strings.Replace(source, "BPF_REPLACE_SOCKET_DATA_SUBMIT_INC", incBlock, 1)
+}
+
 // replaceDisablePerfSubmit sets token DISABLE_PERF_SUBMIT in module.cc to true/false.
 // When true (env TRAFFIC_DISABLE_PERF_SUBMIT), BPF skips all perf_submit calls (no events to userspace).
 func replaceDisablePerfSubmit() {
@@ -154,6 +175,7 @@ func run() {
 	replaceLocalTrafficFilter()
 	replaceStrictRemotePortFilter()
 	replaceDisablePerfSubmit()
+	replaceLogBPFSocketDataSubmits()
 	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
