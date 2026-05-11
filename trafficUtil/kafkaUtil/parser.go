@@ -611,10 +611,6 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
-	if KafkaDisabled {
-		return
-	}
-
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
@@ -622,6 +618,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
 	if shouldPrint {
 		slog.Warn("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+	}
+
+	if KafkaDisabled {
+		return
 	}
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
