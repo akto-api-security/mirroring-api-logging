@@ -140,7 +140,7 @@ func noteSocketDataInboundBeforeSend() {
 	if d < socketDataInboundLogInterval {
 		return
 	}
-	slog.Warn("socket_data events reaching userspace (before SendEvent)",
+	slog.Debug("socket_data events reaching eventCallback",
 		"countInWindow", socketDataInboundCount,
 		"window", d.String())
 	socketDataInboundCount = 0
