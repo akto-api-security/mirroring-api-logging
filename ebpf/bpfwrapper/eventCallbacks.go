@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -108,6 +109,35 @@ func min(a, b int32) int32 {
 	return b
 }
 
+const socketDataInboundLogInterval = 10 * time.Second
+
+// SocketDataEventCallback runs one goroutine per perf map (see ProbeChannel.Start); these
+// fields are only touched from that goroutine — no lock on the hot path.
+var (
+	socketDataInboundCount   uint64
+	socketDataInboundLastLog time.Time // zero until first event arms the window
+)
+
+// noteSocketDataInboundBeforeSend counts socket_data perf records that are about to be
+// handed to the connection factory (after decode, port filter, and payload copy).
+func noteSocketDataInboundBeforeSend() {
+	socketDataInboundCount++
+	now := time.Now()
+	if socketDataInboundLastLog.IsZero() {
+		socketDataInboundLastLog = now
+		return
+	}
+	d := now.Sub(socketDataInboundLastLog)
+	if d < socketDataInboundLogInterval {
+		return
+	}
+	slog.Warn("socket_data events reaching userspace (before SendEvent)",
+		"countInWindow", socketDataInboundCount,
+		"window", d.String())
+	socketDataInboundCount = 0
+	socketDataInboundLastLog = now
+}
+
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
 	for data := range inputChan {
 		if data == nil {
@@ -175,6 +205,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 				"bytesSent", bytesSent)
 		}
 
+		noteSocketDataInboundBeforeSend()
 		connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
 		connections.UpdateBufferSize(uint64(n))
 	}
