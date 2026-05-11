@@ -226,6 +226,8 @@ func run() {
 		fmt.Errorf("Error in attaching kprobes %v", err)
 	}
 
+	startBPFSubmitStatsReporter(bpfModule)
+
 	processFactory := process.NewFactory()
 
 	var isRunning_2 bool
@@ -296,6 +298,43 @@ func run() {
 	}
 
 	slog.Info("signaled to terminate")
+}
+
+// startBPFSubmitStatsReporter reads BPF_ARRAY socket_data_submit_total every 10s when
+// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. Counting stays minimal in kernel (one add per submit);
+// windowed logging happens here so we do not bloat the unrolled process_syscall_data loop.
+func startBPFSubmitStatsReporter(bpfModule *bcc.Module) {
+	logBPFSubmits := false
+	trafficUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logBPFSubmits)
+	if !logBPFSubmits {
+		return
+	}
+
+	table := bcc.NewTable(bpfModule.TableId("socket_data_submit_total"), bpfModule)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		var prev uint64
+		primed := false
+		key := make([]byte, 4)
+		for range ticker.C {
+			val, err := table.Get(key)
+			if err != nil || len(val) < 8 {
+				continue
+			}
+			total := binary.LittleEndian.Uint64(val)
+			if !primed {
+				prev = total
+				primed = true
+				continue
+			}
+			delta := total - prev
+			prev = total
+			slog.Warn("BPF socket_data perf_submit stats",
+				"countInWindow", delta,
+				"cumulativeSubmits", total)
+		}
+	}()
 }
 
 func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {

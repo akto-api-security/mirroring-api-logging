@@ -118,20 +118,14 @@ i.e. clear the one which you're on and store the new one.
 */
 BPF_ARRAY(conn_info_map_keys, u64, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
 BPF_ARRAY(conn_counter, int, 1);
+/* Total socket_data perf_submit calls (increment only — stats read from userspace). */
+BPF_ARRAY(socket_data_submit_total, u64, 1);
 
 BPF_PERF_OUTPUT(socket_data_events);
 BPF_PERF_OUTPUT(socket_open_events);
 BPF_PERF_OUTPUT(socket_close_events);
 
 BPF_PERCPU_ARRAY(socket_data_event_buffer_heap, struct socket_data_event_t, 1);
-
-/* ~10s windowed count of socket_data perf_submit (inline only — BPF-to-BPF calls here broke load on some kernels). */
-struct socket_data_inbound_log_t {
-    u64 count;
-    u64 window_start_ns;
-};
-BPF_ARRAY(socket_data_inbound_log, struct socket_data_inbound_log_t, 1);
-#define SD_INBOUND_LOG_NS (10ULL * 1000000000ULL)
 
 BPF_HASH(active_accept_args_map, u64, struct accept_args_t);
 BPF_HASH(active_close_args_map, u64, struct close_args_t);
@@ -457,23 +451,10 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
     if (!DISABLE_PERF_SUBMIT) {
-      if (PRINT_BPF_LOGS) {
-        u32 __sdl_k = 0;
-        struct socket_data_inbound_log_t *__sdl_st = socket_data_inbound_log.lookup(&__sdl_k);
-        if (__sdl_st != NULL) {
-          u64 __sdl_now = bpf_ktime_get_ns();
-          if (__sdl_st->window_start_ns == 0ULL) {
-            __sdl_st->window_start_ns = __sdl_now;
-            __sdl_st->count = 1;
-          } else {
-            __sdl_st->count += 1;
-            if ((__sdl_now - __sdl_st->window_start_ns) >= SD_INBOUND_LOG_NS) {
-              bpf_trace_printk("socket_data submits (bpf ~10s window) count=%llu\n", __sdl_st->count);
-              __sdl_st->count = 0;
-              __sdl_st->window_start_ns = __sdl_now;
-            }
-          }
-        }
+      u32 __sd_idx = 0;
+      u64 *__sd_tot = socket_data_submit_total.lookup(&__sd_idx);
+      if (__sd_tot != NULL) {
+        *__sd_tot += 1;
       }
       socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
     }
