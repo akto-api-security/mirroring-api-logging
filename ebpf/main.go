@@ -41,6 +41,17 @@ func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 			slog.Warn("failed to set log_socket_data_submit_stats variable", "error", err)
 		}
 	}
+
+	// TRAFFIC_CAPTURE_LOOPBACK=true disables the loopback filter (default: skip loopback).
+	var captureLoopback bool
+	trafficUtils.InitVar("TRAFFIC_CAPTURE_LOOPBACK", &captureLoopback)
+	skipLoopback := !captureLoopback
+	if v, ok := spec.Variables["skip_loopback_conns"]; ok {
+		if err := v.Set(skipLoopback); err != nil {
+			slog.Warn("failed to set skip_loopback_conns variable", "error", err)
+		}
+	}
+	slog.Info("BPF loopback filter", "skipLoopbackConns", skipLoopback)
 }
 
 func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {

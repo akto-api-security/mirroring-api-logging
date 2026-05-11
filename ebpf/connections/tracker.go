@@ -75,13 +75,20 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	}
 
 	bytesSent := event.Attr.Bytes_sent
+	dataLen := utils.Abs(bytesSent)
 
 	if bytesSent > 0 {
-		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
-		conn.sentBytes += uint64(utils.Abs(bytesSent))
+		key := int(event.Attr.WriteEventsCount)
+		if len(conn.sentBuf[key]) == 0 {
+			conn.sentBuf[key] = append(conn.sentBuf[key], event.Msg[:dataLen]...)
+			conn.sentBytes += uint64(dataLen)
+		}
 	} else {
-		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
-		conn.recvBytes += uint64(utils.Abs(bytesSent))
+		key := int(event.Attr.ReadEventsCount)
+		if len(conn.recvBuf[key]) == 0 {
+			conn.recvBuf[key] = append(conn.recvBuf[key], event.Msg[:dataLen]...)
+			conn.recvBytes += uint64(dataLen)
+		}
 	}
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())

@@ -19,6 +19,7 @@ var (
 	logSocketDataUserspace   = false
 	socketDataInboundCount   uint64
 	socketDataInboundLastLog time.Time
+	captureLoopback          = false
 )
 
 const socketDataUserspaceLogInterval = 10 * time.Second
@@ -70,6 +71,13 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 		connId := event.ConnId
+
+		if !captureLoopback && isLoopbackIP(connId.Ip) {
+			metaUtils.LogIngest("Skipping loopback socket open",
+				"fd", connId.Fd, "id", connId.Id, "ip", connId.Ip)
+			continue
+		}
+
 		metaUtils.LogIngest("Received socket open event",
 			"fd", connId.Fd,
 			"id", connId.Id,
@@ -131,6 +139,13 @@ var (
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
 	metaUtils.InitVar("TRAFFIC_LOG_SOCKET_DATA_USERSPACE", &logSocketDataUserspace)
+	metaUtils.InitVar("TRAFFIC_CAPTURE_LOOPBACK", &captureLoopback)
+}
+
+// isLoopbackIP returns true when the IP (stored as a u32 in network byte order
+// read on a little-endian host) falls in 127.0.0.0/8.
+func isLoopbackIP(ip uint32) bool {
+	return (ip & 0xFF) == 0x7F
 }
 
 func min(a, b int32) int32 {
@@ -179,6 +194,10 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		connId := event.Attr.ConnId
+
+		if !captureLoopback && isLoopbackIP(connId.Ip) {
+			continue
+		}
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {

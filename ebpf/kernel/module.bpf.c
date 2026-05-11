@@ -87,6 +87,10 @@
 volatile const bool print_bpf_logs = false;
 /* When true (env TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS), count each socket_data ringbuf submit. */
 volatile const bool log_socket_data_submit_stats = false;
+/* When true (default), skip connections where the remote IP is in 127.0.0.0/8 (loopback).
+ * This prevents duplicate capture when a reverse-proxy (e.g. nginx) forwards to a backend
+ * on the same host via localhost.  Set to false via env TRAFFIC_CAPTURE_LOOPBACK=true. */
+volatile const bool skip_loopback_conns = true;
 
 /*
  * CHUNK_SIZE_LIMIT must be a compile-time constant because it is used as the
@@ -489,6 +493,17 @@ static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
+/*
+ * is_loopback_ip — check if a u32 IP (as stored by skc_daddr, network byte
+ * order read into a native-endian u32) falls in 127.0.0.0/8.
+ *
+ * On little-endian (x86-64, ARM64), the first octet of the IP address is
+ * stored in the least-significant byte of the u32.  127.x.x.x ⇒ (ip & 0xFF) == 0x7F.
+ */
+static __always_inline bool is_loopback_ip(u32 ip) {
+    return (ip & 0xFF) == 0x7F;
+}
+
 static __always_inline void process_syscall_accept(struct pt_regs* ctx,
                                              const struct accept_args_t* args,
                                              u64 id, bool isConnect) {
@@ -611,6 +626,13 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     conn_info.ssl = false;
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
+
+    if (skip_loopback_conns && is_loopback_ip(conn_info.ip)) {
+        if (print_bpf_logs) {
+            bpf_printk("skipping loopback conn id: %llu ip: %u", id, conn_info.ip);
+        }
+        return;
+    }
 
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
@@ -777,18 +799,28 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         }
         u32 current_size;
         if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
-            current_size = (u32)(MAX_MSG_SIZE - 1);
+            current_size = (u32)MAX_MSG_SIZE;
         } else {
             current_size = (u32)bytes_remaining;
         }
-        if (current_size >= MAX_MSG_SIZE) {
-            current_size = (u32)(MAX_MSG_SIZE - 1);
-        }
-        current_size &= (u32)(MAX_MSG_SIZE - 1); /* verifier: umax = 30719 < 30720 */
 
-        if (current_size > 0) {
-            // args->buf is a user-space pointer; use bpf_probe_read_user so
-            // kernels >= 5.11 (where bpf_probe_read aliases _kernel) read it correctly.
+        /*
+         * Clamp to MAX_MSG_SIZE and use an asm barrier so the BPF verifier
+         * can track the upper bound without the compiler eliding it.
+         *
+         * The previous approach (current_size &= MAX_MSG_SIZE - 1) is WRONG
+         * because 30720 is not a power of 2: bit 11 (0x800) is clear in
+         * the mask 0x77FF, silently corrupting any size in 2048-4095,
+         * 6144-8191, etc.
+         */
+        u32 current_size_minus_1 = current_size - 1;
+        asm volatile("" : "+r"(current_size_minus_1) :);
+        current_size = current_size_minus_1 + 1;
+        if (current_size > MAX_MSG_SIZE) {
+            current_size = MAX_MSG_SIZE;
+        }
+
+        if (current_size_minus_1 < MAX_MSG_SIZE) {
             if (bpf_probe_read_user(&socket_data_event->msg, current_size,
                                     (const char *)args->buf + bytes_sent) != 0) {
                 break;
