@@ -806,17 +806,25 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
 
         /*
          * BPF verifier needs a provable upper bound on bpf_probe_read_user's
-         * size arg (R2).  We mask with 0x7FFF (32768-1, next power-of-2
-         * above MAX_MSG_SIZE=30720) so the verifier sees "var &= const".
-         * Since 30720 < 32768 the mask is a no-op for all valid sizes.
-         * The subsequent clamp ensures we never exceed the actual buffer.
+         * size arg (R2).  Two-step approach:
+         *
+         * 1. "var &= 0x7FFF" — the verifier sees a power-of-2 mask and
+         *    tracks current_size in [0, 32767].  Since 30720 < 32768 the
+         *    mask is a no-op for all valid sizes (no data corruption).
+         *
+         * 2. asm volatile barrier + "if (var >= MAX_MSG_SIZE)" — narrows
+         *    the verifier range to [0, 30720] which fits in msg[30720].
+         *    The asm barrier prevents clang -O2 from eliding the check
+         *    (it can prove current_size <= 30720 from the code above and
+         *    would otherwise remove the if as dead code).
          *
          * The old mask (MAX_MSG_SIZE-1 = 0x77FF) was WRONG: 30720 is not
          * a power of 2, so bit 11 (0x800) was clear in the mask, silently
          * corrupting sizes in 2048-4095, 6144-8191, etc.
          */
         current_size &= 0x7FFF;
-        if (current_size > MAX_MSG_SIZE) {
+        asm volatile("" : "+r"(current_size) :);
+        if (current_size >= MAX_MSG_SIZE) {
             current_size = MAX_MSG_SIZE;
         }
 
