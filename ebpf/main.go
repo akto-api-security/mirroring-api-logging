@@ -70,6 +70,27 @@ func replaceLocalTrafficFilter() {
 	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
 }
 
+// replaceStrictRemotePortFilter gates socket_data on conn_info->port (remote / dest port in BPF).
+// When TRAFFIC_STRICT_REMOTE_PORT_FILTER is true, events for connections whose port != STRICT_REMOTE_PORT are dropped (default port 10275).
+func replaceStrictRemotePortFilter() {
+	filterOn := "false"
+	env := os.Getenv("TRAFFIC_STRICT_REMOTE_PORT_FILTER")
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		filterOn = "true"
+	}
+	source = strings.Replace(source, "FILTER_STRICT_REMOTE_PORT", filterOn, -1)
+
+	strictPort := 10275
+	trafficUtils.InitVar("TRAFFIC_STRICT_REMOTE_PORT", &strictPort)
+	if strictPort < 0 {
+		strictPort = 0
+	}
+	if strictPort > 65535 {
+		strictPort = 65535
+	}
+	source = strings.Replace(source, "STRICT_REMOTE_PORT", strconv.Itoa(strictPort), -1)
+}
+
 // replaceDisablePerfSubmit sets token DISABLE_PERF_SUBMIT in module.cc to true/false.
 // When true (env TRAFFIC_DISABLE_PERF_SUBMIT), BPF skips all perf_submit calls (no events to userspace).
 func replaceDisablePerfSubmit() {
@@ -131,6 +152,7 @@ func run() {
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceLocalTrafficFilter()
+	replaceStrictRemotePortFilter()
 	replaceDisablePerfSubmit()
 	replaceArchType()
 

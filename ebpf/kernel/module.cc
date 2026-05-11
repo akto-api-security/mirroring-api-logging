@@ -362,6 +362,15 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         }
     }
 
+    if (FILTER_STRICT_REMOTE_PORT) {
+        if (conn_info->port != STRICT_REMOTE_PORT) {
+            if (PRINT_BPF_LOGS){
+              bpf_trace_printk("Dropping non-strict-remote-port port:%u fd:%d", conn_info->port, args->fd);
+            }
+            return;
+        }
+    }
+
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
     }
