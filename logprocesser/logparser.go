@@ -25,6 +25,7 @@ type LogEntry struct {
 	StatusCode            int               `json:"status_code"`
 	RequestBodyTruncated  bool              `json:"request_body_truncated"`
 	ResponseBodyTruncated bool              `json:"response_body_truncated"`
+	LogGroupIdentifier    string            `json:"log_group_identifier"`
 }
 
 var metaInfoTagsRegex = regexp.MustCompile(`(\t[^\t\n\r]+){1,2}$`)
@@ -177,7 +178,49 @@ func extractStatusCodeFromEndpointResponse(log string, logEntry *LogEntry) {
 	}
 }
 
+const apiGatewayExecutionLogGroupPrefix = "API-Gateway-Execution-Logs_"
+
+func normalizePathTrailingSlash(p string) string {
+	if p == "" {
+		return p
+	}
+	if trimmed := strings.TrimRight(p, "/"); trimmed != "" {
+		return trimmed
+	}
+	return "/"
+}
+
+func hasHostHeader(headers map[string]string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, "host") {
+			return true
+		}
+	}
+	return false
+}
+
+// HostFromLogGroupIdentifier derives a host value from a log group ARN or name.
+func HostFromLogGroupIdentifier(identifier string) string {
+	if identifier == "" {
+		return ""
+	}
+	name := identifier
+	if idx := strings.Index(identifier, ":log-group:"); idx != -1 {
+		name = strings.TrimSpace(identifier[idx+len(":log-group:"):])
+	}
+	if name == "" {
+		return ""
+	}
+	base := name
+	if strings.HasPrefix(name, apiGatewayExecutionLogGroupPrefix) {
+		base = name[len(apiGatewayExecutionLogGroupPrefix):]
+	}
+	base = strings.TrimLeft(base, "/")
+	return strings.ReplaceAll(base, "/", ".")
+}
+
 func ParseAndProduce(log LogEntry) {
+	log.ResourcePath = normalizePathTrailingSlash(log.ResourcePath)
 	utils.DebugLog("ParseAndProduce: log: %+v", log)
 
 	if log.RequestHeaders == nil {
@@ -186,6 +229,13 @@ func ParseAndProduce(log LogEntry) {
 	if log.ResponseHeaders == nil {
 		log.ResponseHeaders = make(map[string]string)
 	}
+
+	if !hasHostHeader(log.RequestHeaders) {
+		if host := HostFromLogGroupIdentifier(log.LogGroupIdentifier); host != "" {
+			log.RequestHeaders["Host"] = host
+		}
+	}
+
 	if log.RequestBodyTruncated {
 		log.RequestHeaders["x-akto-payload-truncated"] = "true"
 	}
