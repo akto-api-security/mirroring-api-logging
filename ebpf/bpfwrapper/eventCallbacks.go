@@ -79,14 +79,19 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 }
 
 var (
+	// this also includes space lost in padding.
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
 	ignorePortsMap      = map[uint16]bool{
+		// kafka
 		9092:  true,
 		19092: true,
 		29092: true,
-		2181:  true,
+		// zookeeper
+		2181: true,
+		// mongo
 		27017: true,
-		6379:  true}
+		// redis
+		6379: true}
 	ignorePorts      = true
 	globalReader     = &bytes.Reader{}
 	globalReaderLock sync.Mutex
@@ -114,62 +119,58 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var attr structs.SocketDataEventAttr
+		ev := connections.AcquireSocketDataEvent()
 		if err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &attr)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &ev.Attr)
 		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
+			connections.ReleaseSocketDataEvent(ev)
 			continue
 		}
 
-		n := int(utils.Abs(attr.Bytes_sent))
-		msgOff := int(unsafe.Offsetof(structs.SocketDataEvent{}.Msg))
-		var payload []byte
-		if n > 0 {
-			if len(data) < msgOff+n {
-				slog.Error("socket data perf record too short", "len", len(data), "need", msgOff+n)
-				continue
-			}
-			// Single copy from perf ring into owned memory; tracker holds this slice until flush
-			// (no extra copy into a fixed [30720]byte Msg field).
-			payload = make([]byte, n)
-			copy(payload, data[msgOff:msgOff+n])
+		bytesSent := ev.Attr.Bytes_sent
+
+		eventAttributesLogicalSize := 45
+
+		if len(data) > eventAttributesLogicalSize {
+			copy(ev.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
 		}
 
-		connId := attr.ConnId
+		connId := ev.Attr.ConnId
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
+			connections.ReleaseSocketDataEvent(ev)
 			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"rc", attr.ReadEventsCount,
-				"wc", attr.WriteEventsCount)
+				"rc", ev.Attr.ReadEventsCount,
+				"wc", ev.Attr.WriteEventsCount)
 			continue
 		}
 
 		connectionFactory.CreateIfNotExists(connId)
 
-		if metaUtils.IngestLogsEnabled() && n > 0 {
-			previewLen := min(32, int32(n))
+		if metaUtils.IngestLogsEnabled() {
+			previewLen := min(32, utils.Abs(bytesSent))
 			metaUtils.LogIngest("Got data",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
 				"ip", connId.Ip,
 				"port", connId.Port,
-				"data", string(payload[:previewLen]),
-				"rc", attr.ReadEventsCount,
-				"wc", attr.WriteEventsCount,
-				"ssl", attr.Ssl,
-				"bytesSent", attr.Bytes_sent)
+				"data", string(ev.Msg[:previewLen]),
+				"rc", ev.Attr.ReadEventsCount,
+				"wc", ev.Attr.WriteEventsCount,
+				"ssl", ev.Attr.Ssl,
+				"bytesSent", bytesSent)
 		}
 
-		connectionFactory.SendEvent(connId, &connections.SocketDataPayload{Attr: attr, Data: payload})
-		connections.UpdateBufferSize(uint64(n))
+		connectionFactory.SendEvent(connId, ev)
+		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 	}
 }

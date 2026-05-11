@@ -58,14 +58,6 @@ func replaceMaxConnectionMapSize() {
 	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
 }
 
-func replaceArchType() {
-	archStr := "TARGET_ARCH_X86_64"
-	if isArmArch() {
-		archStr = "TARGET_ARCH_AARCH64"
-	}
-	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
-}
-
 func replaceLocalTrafficFilter() {
 	filterLocal := "false"
 	trafficUtils.InitVar("FILTER_LOCAL_TRAFFIC", &filterLocal)
@@ -78,27 +70,12 @@ func replaceLocalTrafficFilter() {
 	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
 }
 
-// bpfHTTPFilterCFlags returns extra clang flags when TRAFFIC_HTTP_ONLY_SOCKET_DATA is enabled.
-// HTTP filtering is compiled out by default so the unrolled process_syscall_data path stays small
-// for the verifier (readv/writev/recvmsg/sendmsg otherwise hit E2BIG / complexity limits).
-// When enabled, we also cap iovec syscall fan-out (BPF_IOVEC_LOOP_LIMIT) — tunable via
-// TRAFFIC_BPF_IOVEC_LOOP_LIMIT (default 20, clamped 8–42).
-func bpfHTTPFilterCFlags() []string {
-	var flags []string
-	env := os.Getenv("TRAFFIC_HTTP_ONLY_SOCKET_DATA")
-	if len(env) > 0 && strings.EqualFold(env, "true") {
-		flags = append(flags, "-DBPF_HTTP_FILTER_ENABLED")
-		iovecLim := 20
-		trafficUtils.InitVar("TRAFFIC_BPF_IOVEC_LOOP_LIMIT", &iovecLim)
-		if iovecLim < 8 {
-			iovecLim = 8
-		}
-		if iovecLim > 42 {
-			iovecLim = 42
-		}
-		flags = append(flags, fmt.Sprintf("-DBPF_IOVEC_LOOP_LIMIT=%d", iovecLim))
+func replaceArchType() {
+	archStr := "TARGET_ARCH_X86_64"
+	if isArmArch() {
+		archStr = "TARGET_ARCH_AARCH64"
 	}
-	return flags
+	source = strings.Replace(source, "ARCH_TYPE", archStr, -1)
 }
 
 func isArmArch() bool {
@@ -147,11 +124,7 @@ func run() {
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
-	cflags := bpfHTTPFilterCFlags()
-	if cflags == nil {
-		cflags = []string{}
-	}
-	bpfModule := bcc.NewModule(source, cflags)
+	bpfModule := bcc.NewModule(source, []string{})
 	if bpfModule == nil {
 		slog.Error("failed to create BPF module", "error", "module is nil")
 		panic("bpf module is nil")
