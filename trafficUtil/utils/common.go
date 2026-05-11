@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var printCounter = 1000
+var printCounter = 2000
 
 const (
 	DirectionInbound  = 1
@@ -16,7 +16,7 @@ const (
 )
 
 /*
-Initial 1000 logs, marking as warn.
+Initial 2000 logs, marking as warn.
 Help in checking if the module started as expected.
 */
 func PrintLog(val string, args ...any) {

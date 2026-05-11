@@ -9,6 +9,7 @@ import (
 
 	"github.com/iovisor/gobpf/bcc"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
@@ -50,11 +51,11 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 	hardFromEnv := !math.IsNaN(systemCPUHardAbs)
 
 	if hardFromEnv && systemCPUHardAbs <= 0 {
-		slog.Warn("Host system CPU limit monitor off (AKTO_SYSTEM_CPU_HARD_CORES <= 0)")
+		utils.PrintLog("Host system CPU limit monitor off (AKTO_SYSTEM_CPU_HARD_CORES <= 0)")
 		return
 	}
 	if !hardFromEnv && systemCPUHardAddCores <= 0 {
-		slog.Warn("Host system CPU limit monitor off (AKTO_SYSTEM_CPU_HARD_ADD_CORES <= 0 and no hard limit env)")
+		utils.PrintLog("Host system CPU limit monitor off (AKTO_SYSTEM_CPU_HARD_ADD_CORES <= 0 and no hard limit env)")
 		return
 	}
 
@@ -67,10 +68,10 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 	needBaseline := !softFromEnv || !hardFromEnv
 	var baseline float64
 	if needBaseline {
-		slog.Warn("Sampling host system CPU baseline before probes attach", "wait", baselineWait)
+		utils.PrintLog("Sampling host system CPU baseline before probes attach", "wait", baselineWait)
 		b, ok := trafficUtils.MeasureHostSystemCPUBaseline(baselineWait)
 		if !ok {
-			slog.Warn("Host system CPU baseline sample failed; using 0 baseline for computed limits")
+			utils.PrintLog("Host system CPU baseline sample failed; using 0 baseline for computed limits")
 			baseline = 0
 		} else {
 			baseline = b
@@ -118,7 +119,7 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 				paused = systemCPUSoftAddCores > 0 && cores >= soft
 			}
 
-			slog.Warn("host system CPU check", "systemCpuCores", cores, "softLimitCores", soft, "hardLimitCores", hard, "ingestPaused", paused)
+			utils.PrintLog("host system CPU check", "systemCpuCores", cores, "softLimitCores", soft, "hardLimitCores", hard, "ingestPaused", paused)
 
 			if cores >= hard {
 				slog.Error("host system CPU hard limit exceeded, exiting", "systemCpuCores", cores, "hardLimitCores", hard)
@@ -151,5 +152,5 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 	if needBaseline {
 		logArgs = append(logArgs, "baselineCores", baseline, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
 	}
-	slog.Warn("Host system CPU limit monitor started", logArgs...)
+	utils.PrintLog("Host system CPU limit monitor started", logArgs...)
 }
