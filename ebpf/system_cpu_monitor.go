@@ -12,6 +12,11 @@ import (
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
+const (
+	systemCPUStartupGraceDuration      = 2 * time.Minute
+	systemCPUStartupGraceHeadroomCores = 1.0
+)
+
 // Default margins when AKTO_SYSTEM_CPU_SOFT_CORES / AKTO_SYSTEM_CPU_HARD_CORES are unset
 // (limits = baseline + add, after MeasureHostSystemCPUBaseline before probes attach).
 // NaN means that limit was not set via env (see InitVar in init).
@@ -99,6 +104,7 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 	sampler := trafficUtils.NewHostSystemCPUSampler()
 
 	go func() {
+		monitorStart := time.Now()
 		_, _, _ = sampler.Step() // Prime /proc/stat baseline so the first tick yields a measurement.
 
 		ticker := time.NewTicker(interval)
@@ -111,22 +117,40 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 				continue
 			}
 
-			if cores >= hard {
-				slog.Error("host system CPU hard limit exceeded, exiting", "systemCpuCores", cores, "hardLimitCores", hard)
-				os.Exit(4)
+			inStartupGrace := time.Since(monitorStart) < systemCPUStartupGraceDuration
+			softLimit := soft
+			hardLimit := hard
+			if inStartupGrace {
+				if !softFromEnv {
+					softLimit += systemCPUStartupGraceHeadroomCores
+				}
+				if !hardFromEnv {
+					hardLimit += systemCPUStartupGraceHeadroomCores
+				}
+				if hardLimit <= softLimit {
+					hardLimit = softLimit + 1e-9
+				}
 			}
 
 			var paused bool
 			if softFromEnv {
-				paused = soft > 0 && cores >= soft
+				paused = softLimit > 0 && cores >= softLimit
 			} else {
-				paused = systemCPUSoftAddCores > 0 && cores >= soft
+				paused = systemCPUSoftAddCores > 0 && cores >= softLimit
 			}
+
+			slog.Warn("host system CPU check", "systemCpuCores", cores, "effectiveSoftLimitCores", softLimit, "effectiveHardLimitCores", hardLimit)
+
+			if cores >= hardLimit {
+				slog.Error("host system CPU hard limit exceeded, exiting", "systemCpuCores", cores, "hardLimitCores", hard, "effectiveHardLimitCores", hardLimit, "startupGraceActive", inStartupGrace)
+				os.Exit(4)
+			}
+
 			if paused != wasPaused {
 				if paused {
-					slog.Warn("host system CPU soft limit exceeded; pausing ingest and BPF perf_submit", "systemCpuCores", cores, "softLimitCores", soft)
+					slog.Warn("host system CPU soft limit exceeded; pausing ingest and BPF perf_submit", "systemCpuCores", cores, "softLimitCores", soft, "effectiveSoftLimitCores", softLimit, "startupGraceActive", inStartupGrace)
 				} else {
-					slog.Warn("host system CPU below soft limit; resuming", "systemCpuCores", cores, "softLimitCores", soft)
+					slog.Warn("host system CPU below soft limit; resuming", "systemCpuCores", cores, "softLimitCores", soft, "effectiveSoftLimitCores", softLimit, "startupGraceActive", inStartupGrace)
 				}
 				wasPaused = paused
 			}
@@ -148,5 +172,10 @@ func startHostSystemCPULimitMonitor(module *bcc.Module) {
 	if needBaseline {
 		logArgs = append(logArgs, "baselineCores", baseline, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
 	}
+	logArgs = append(logArgs,
+		"startupGraceDuration", systemCPUStartupGraceDuration,
+		"startupGraceHeadroomCores", systemCPUStartupGraceHeadroomCores,
+		"startupGraceAppliesToDefaultLimitsOnly", true,
+	)
 	slog.Warn("Host system CPU limit monitor started", logArgs...)
 }
