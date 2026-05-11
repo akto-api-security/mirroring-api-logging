@@ -219,12 +219,13 @@ func getLogEvents(ctx context.Context, client *cloudwatchlogs.Client, logGroupAr
 			logEntry, exists := logEntries[requestID]
 			if !exists {
 				logEntry = LogEntry{
-					RequestID:       requestID,
-					RequestBody:     "{}",
-					ResponseBody:    "{}",
-					QueryParams:     make(map[string]string),
-					RequestHeaders:  make(map[string]string),
-					ResponseHeaders: make(map[string]string),
+					RequestID:          requestID,
+					RequestBody:        "{}",
+					ResponseBody:       "{}",
+					QueryParams:        make(map[string]string),
+					RequestHeaders:     make(map[string]string),
+					ResponseHeaders:    make(map[string]string),
+					LogGroupIdentifier: logGroupArn,
 				}
 			}
 
