@@ -78,6 +78,17 @@ func replaceLocalTrafficFilter() {
 	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
 }
 
+// replaceHTTPFilterSocketData sets BPF compile-time flag TRAFFIC_HTTP_ONLY_SOCKET_DATA:
+// when true, kernel drops socket_data perf events until payload contains substring "HTTP".
+func replaceHTTPFilterSocketData() {
+	httpOnly := "false"
+	env := os.Getenv("TRAFFIC_HTTP_ONLY_SOCKET_DATA")
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		httpOnly = "true"
+	}
+	source = strings.Replace(source, "HTTP_FILTER_SOCKET_DATA", httpOnly, -1)
+}
+
 func isArmArch() bool {
 	arch := runtime.GOARCH
 	trafficUtils.PrintLog("arch type detected", "arch", arch)
@@ -120,6 +131,7 @@ func run() {
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceLocalTrafficFilter()
+	replaceHTTPFilterSocketData()
 	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()

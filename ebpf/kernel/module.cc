@@ -113,6 +113,11 @@ struct socket_data_event_t {
 
 BPF_HASH(conn_info_map, u64, struct conn_info_t, TRAFFIC_MAX_CONNECTION_MAP_SIZE); // 128 * 1024
 /*
+Per tgid_fd: set to 1 once payload contains ASCII "HTTP" (HTTP_FILTER_SOCKET_DATA drops data events until then).
+Separate from conn_info_t so userspace ConnInfoT layout stays unchanged.
+*/
+BPF_HASH(http_seen_map, u64, u8, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
+/*
 Stores conn_info_map's keys on a rotating basic, using the conn_counter.
 i.e. clear the one which you're on and store the new one.
 */
@@ -140,6 +145,42 @@ This should reduce the noise a lot.
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
+}
+
+/* First min(len,1024) bytes: substring "HTTP". Sets http_seen_map when found. */
+static __inline void maybe_scan_http(u64 tgid_fd, const char* buf, int len) {
+  u8 one = 1;
+  u8 *seen = http_seen_map.lookup(&tgid_fd);
+  if (seen != NULL && *seen == 1) {
+    return;
+  }
+  if (len < 4) {
+    return;
+  }
+  int lim = len;
+  if (lim > 1024) {
+    lim = 1024;
+  }
+  int j;
+#pragma unroll
+  for (j = 0; j < 1020; j++) {
+    if (j + 4 > lim) {
+      break;
+    }
+    if (buf[j] == 72 && buf[j + 1] == 84 && buf[j + 2] == 84 && buf[j + 3] == 80) {
+      http_seen_map.update(&tgid_fd, &one);
+      break;
+    }
+  }
+}
+
+/* When HTTP_FILTER_SOCKET_DATA is true, only emit socket_data_events after "HTTP" seen for this fd. */
+static __inline int should_emit_socket_data(u64 tgid_fd) {
+  if (!HTTP_FILTER_SOCKET_DATA) {
+    return 1;
+  }
+  u8 *seen = http_seen_map.lookup(&tgid_fd);
+  return (seen != NULL && *seen == 1);
 }
 
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
@@ -262,6 +303,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         struct conn_info_t *conn_info = conn_info_map.lookup(&curVal);
         if (conn_info != NULL) {
           conn_info_map.delete(&curVal);
+          http_seen_map.delete(&curVal);
           if (PRINT_BPF_LOGS){
             bpf_trace_printk("conn_info_counter deleting: %d", curVal);
           }
@@ -318,7 +360,8 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
-    conn_info_map.delete(&tgid_fd);    
+    http_seen_map.delete(&tgid_fd);
+    conn_info_map.delete(&tgid_fd);
 }
 
 static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
@@ -381,7 +424,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->port = conn_info->port;
     socket_data_event->ip = conn_info->ip; 
     socket_data_event->ssl = conn_info->ssl;
-    
+
     int bytes_sent = 0;
     size_t size_to_save = 0;
     int i =0;
@@ -408,6 +451,13 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     } else if (current_size_minus_1 < 0x7fffffff) {
       bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf + bytes_sent);
       size_to_save = MAX_MSG_SIZE;
+    }
+
+    maybe_scan_http(tgid_fd, (const char*)socket_data_event->msg, (int)size_to_save);
+
+    if (!should_emit_socket_data(tgid_fd)) {
+      bytes_sent += current_size;
+      continue;
     }
 
     if (is_send){
