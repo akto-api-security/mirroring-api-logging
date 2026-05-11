@@ -125,12 +125,13 @@ BPF_PERF_OUTPUT(socket_close_events);
 
 BPF_PERCPU_ARRAY(socket_data_event_buffer_heap, struct socket_data_event_t, 1);
 
-/* ~10s windowed count of socket_data perf_submit; separate noinline fn so LLVM does not inline into connect/accept. */
+/* ~10s windowed count of socket_data perf_submit (inline only — BPF-to-BPF calls here broke load on some kernels). */
 struct socket_data_inbound_log_t {
     u64 count;
     u64 window_start_ns;
 };
 BPF_ARRAY(socket_data_inbound_log, struct socket_data_inbound_log_t, 1);
+#define SD_INBOUND_LOG_NS (10ULL * 1000000000ULL)
 
 BPF_HASH(active_accept_args_map, u64, struct accept_args_t);
 BPF_HASH(active_close_args_map, u64, struct close_args_t);
@@ -337,32 +338,6 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     conn_info_map.delete(&tgid_fd);
 }
 
-#define SD_INBOUND_LOG_NS (10ULL * 1000000000ULL)
-
-static void __attribute__((__noinline__)) note_socket_data_inbound_before_submit(void) {
-    if (!PRINT_BPF_LOGS) {
-        return;
-    }
-    u32 k = 0;
-    struct socket_data_inbound_log_t *st = socket_data_inbound_log.lookup(&k);
-    if (st == NULL) {
-        return;
-    }
-    u64 now = bpf_ktime_get_ns();
-    if (st->window_start_ns == 0ULL) {
-        st->window_start_ns = now;
-        st->count = 1;
-        return;
-    }
-    st->count += 1;
-    if ((now - st->window_start_ns) < SD_INBOUND_LOG_NS) {
-        return;
-    }
-    bpf_trace_printk("socket_data submits (bpf ~10s window) count=%llu\n", st->count);
-    st->count = 0;
-    st->window_start_ns = now;
-}
-
 static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
     int bytes_exchanged = PT_REGS_RC(ret);
 
@@ -482,7 +457,24 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
     if (!DISABLE_PERF_SUBMIT) {
-      note_socket_data_inbound_before_submit();
+      if (PRINT_BPF_LOGS) {
+        u32 __sdl_k = 0;
+        struct socket_data_inbound_log_t *__sdl_st = socket_data_inbound_log.lookup(&__sdl_k);
+        if (__sdl_st != NULL) {
+          u64 __sdl_now = bpf_ktime_get_ns();
+          if (__sdl_st->window_start_ns == 0ULL) {
+            __sdl_st->window_start_ns = __sdl_now;
+            __sdl_st->count = 1;
+          } else {
+            __sdl_st->count += 1;
+            if ((__sdl_now - __sdl_st->window_start_ns) >= SD_INBOUND_LOG_NS) {
+              bpf_trace_printk("socket_data submits (bpf ~10s window) count=%llu\n", __sdl_st->count);
+              __sdl_st->count = 0;
+              __sdl_st->window_start_ns = __sdl_now;
+            }
+          }
+        }
+      }
       socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
     }
 
