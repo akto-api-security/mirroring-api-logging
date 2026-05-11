@@ -45,6 +45,7 @@ var moduleType = "TRAFFIC_COLLECTOR"
 
 var globalTransport *kafka.Transport
 var transportOnce sync.Once
+var KafkaDisabled = false
 
 func init() {
 
@@ -59,9 +60,16 @@ func init() {
 	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
+	utils.InitVar("KAFKA_DISABLED", &KafkaDisabled)
 }
 
 func InitKafka() {
+
+	if KafkaDisabled {
+		slog.Info("Kafka is disabled, skipping initialization")
+		return
+	}
+
 	if apiProcessor.CloudTrafficProcessorModeEnabled {
 		return
 	}
