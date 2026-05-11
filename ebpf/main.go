@@ -251,7 +251,6 @@ func run() {
 		slog.Debug("Ended attaching to processes in ticker")
 	}
 	if captureSsl == "true" || captureAll == "true" {
-		attachToProcesses()
 		go func() {
 			slog.Debug("Starting uprobe process ticker")
 			ticker := time.NewTicker(pollInterval)
