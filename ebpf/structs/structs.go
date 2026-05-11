@@ -36,11 +36,11 @@ u32 writeEventsCount;
 char msg[MAX_MSG_SIZE];
 */
 
-// MAX_MSG_SIZE must match the C define in module.bpf.c (32768).
+// MAX_MSG_SIZE must match the C define in module.bpf.c (30720).
 
 type SocketDataEvent struct {
 	Attr SocketDataEventAttr
-	Msg  [32768]byte
+	Msg  [30720]byte
 }
 
 type SocketOpenEvent struct {

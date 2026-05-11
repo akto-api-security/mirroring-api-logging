@@ -101,7 +101,7 @@ volatile const bool skip_loopback_conns = true;
 #define CHUNK_SIZE_LIMIT 4
 #endif
 
-#define MAX_MSG_SIZE 32768
+#define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT  CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT   42
 
@@ -732,6 +732,28 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
+/*
+ * Non-inline helper so the compiler cannot see through the call boundary
+ * and eliminate the bounds check.  The BPF verifier sees
+ * "if (size >= MAX_MSG_SIZE) size = MAX_MSG_SIZE" and proves
+ * size ∈ [0, MAX_MSG_SIZE] which fits in msg[MAX_MSG_SIZE].
+ *
+ * Returns the number of bytes actually read, or 0 on failure/skip.
+ */
+static __noinline u32 bounded_probe_read_user(
+        struct socket_data_event_t *event, u32 size, const void *src) {
+    if (size >= MAX_MSG_SIZE) {
+        size = MAX_MSG_SIZE;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    if (bpf_probe_read_user(event->msg, size, src) != 0) {
+        return 0;
+    }
+    return size;
+}
+
 static __always_inline void process_syscall_data(struct pt_regs* ctx,
                                            const struct data_args_t* args,
                                            u64 id, bool is_send, bool ssl) {
@@ -798,29 +820,19 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
             break;
         }
         u32 current_size;
-        if (bytes_remaining > (int)(MAX_MSG_SIZE - 1) && (i != CHUNK_LIMIT - 1)) {
-            current_size = (u32)(MAX_MSG_SIZE - 1);
+        if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
+            current_size = (u32)MAX_MSG_SIZE;
         } else {
             current_size = (u32)bytes_remaining;
         }
 
-        /*
-         * BPF verifier hint: MAX_MSG_SIZE is a power of 2 (32768),
-         * so (MAX_MSG_SIZE - 1) = 0x7FFF is a valid bitmask.  The
-         * verifier sees "var &= const" and tracks current_size in
-         * [0, 32767] which fits in msg[32768].  Since we cap
-         * current_size at MAX_MSG_SIZE-1 above, this is a no-op at
-         * runtime — it exists purely for the verifier proof.
-         */
-        current_size &= (MAX_MSG_SIZE - 1);
-
-        if (current_size > 0) {
-            if (bpf_probe_read_user(&socket_data_event->msg, current_size,
-                                    (const char *)args->buf + bytes_sent) != 0) {
-                break;
-            }
-            size_to_save = current_size;
+        u32 read_size = bounded_probe_read_user(
+            socket_data_event, current_size,
+            (const char *)args->buf + bytes_sent);
+        if (read_size == 0 && current_size > 0) {
+            break;
         }
+        size_to_save = read_size;
 
         if (is_send) {
             conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
