@@ -130,6 +130,11 @@ var (
 // noteSocketDataInboundBeforeSend counts socket_data perf records that are about to be
 // handed to the connection factory (after decode, port filter, and payload copy).
 func noteSocketDataInboundBeforeSend() {
+
+	if metaUtils.LogLevel() != slog.LevelDebug {
+		return
+	}
+
 	socketDataInboundCount++
 	now := time.Now()
 	if socketDataInboundLastLog.IsZero() {
@@ -218,7 +223,8 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 				"bytesSent", bytesSent)
 		}
 
-		noteSocketDataInboundBeforeSend()
+		// This is a debug log, so only log if the log level is debug
+		//noteSocketDataInboundBeforeSend()
 		connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
 		connections.UpdateBufferSize(uint64(n))
 	}

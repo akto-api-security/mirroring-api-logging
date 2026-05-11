@@ -17,6 +17,10 @@ var (
 	FileLoggingEnabled bool       = false
 )
 
+func LogLevel() slog.Level {
+	return level
+}
+
 func SetupLogger() {
 	slog.Warn("Setting up logger")
 	InitVar("INGEST_LOGS", &ingestLogs)
