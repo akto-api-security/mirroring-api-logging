@@ -244,6 +244,8 @@ func run() {
 		panic(err)
 	}
 
+	startHostSystemCPULimitMonitor(bpfModule)
+
 	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
 		fmt.Errorf("Error in attaching kprobes %v", err)
 	}

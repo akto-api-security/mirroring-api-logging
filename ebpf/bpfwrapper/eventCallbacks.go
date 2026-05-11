@@ -23,6 +23,10 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			return
 		}
 
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
+		}
+
 		if !connectionFactory.CanBeFilled() {
 			metaUtils.LogIngest("Connections filled")
 			continue
@@ -56,6 +60,11 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if data == nil {
 			return
 		}
+
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
+		}
+
 		var ev structs.SocketCloseEvent
 		err := func() error {
 			globalReaderLock.Lock()
@@ -142,6 +151,10 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 	for data := range inputChan {
 		if data == nil {
 			return
+		}
+
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
 		}
 
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {

@@ -120,6 +120,9 @@ BPF_ARRAY(conn_info_map_keys, u64, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
 BPF_ARRAY(conn_counter, int, 1);
 BPF_REPLACE_SOCKET_DATA_SUBMIT_MAP
 
+/* Index 0: userspace sets non-zero to suppress perf_submit (soft system-CPU limit). */
+BPF_ARRAY(perf_submit_pause, u64, 1);
+
 BPF_PERF_OUTPUT(socket_data_events);
 BPF_PERF_OUTPUT(socket_open_events);
 BPF_PERF_OUTPUT(socket_close_events);
@@ -141,6 +144,12 @@ This should reduce the noise a lot.
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
+}
+
+static __inline bool is_perf_submit_paused(void) {
+  u32 k = 0;
+  u64 *v = perf_submit_pause.lookup(&k);
+  return v != NULL && *v != 0ULL;
 }
 
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
@@ -294,7 +303,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
-    if (!DISABLE_PERF_SUBMIT) {
+    if (!DISABLE_PERF_SUBMIT && !is_perf_submit_paused()) {
       socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
     }
 }
@@ -325,7 +334,7 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     socket_close_event.ip = conn_info->ip;
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
-    if (!DISABLE_PERF_SUBMIT) {
+    if (!DISABLE_PERF_SUBMIT && !is_perf_submit_paused()) {
       socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
     }
     conn_info_map.delete(&tgid_fd);
@@ -449,7 +458,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
-    if (!DISABLE_PERF_SUBMIT) {
+    if (!DISABLE_PERF_SUBMIT && !is_perf_submit_paused()) {
 BPF_REPLACE_SOCKET_DATA_SUBMIT_INC
       socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
     }
