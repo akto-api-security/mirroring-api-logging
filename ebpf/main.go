@@ -70,6 +70,17 @@ func replaceLocalTrafficFilter() {
 	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
 }
 
+// replaceDisablePerfSubmit sets token DISABLE_PERF_SUBMIT in module.cc to true/false.
+// When true (env TRAFFIC_DISABLE_PERF_SUBMIT), BPF skips all perf_submit calls (no events to userspace).
+func replaceDisablePerfSubmit() {
+	disablePerf := "false"
+	env := os.Getenv("TRAFFIC_DISABLE_PERF_SUBMIT")
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		disablePerf = "true"
+	}
+	source = strings.Replace(source, "DISABLE_PERF_SUBMIT", disablePerf, -1)
+}
+
 func replaceArchType() {
 	archStr := "TARGET_ARCH_X86_64"
 	if isArmArch() {
@@ -120,6 +131,7 @@ func run() {
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceLocalTrafficFilter()
+	replaceDisablePerfSubmit()
 	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()

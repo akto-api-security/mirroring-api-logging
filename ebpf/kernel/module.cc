@@ -288,7 +288,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
-    socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
+    if (!DISABLE_PERF_SUBMIT) {
+      socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
+    }
 }
 
 static __inline void process_syscall_close(struct pt_regs* ret, const struct close_args_t* args, u64 id) {
@@ -317,7 +319,9 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     socket_close_event.ip = conn_info->ip;
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
-    socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
+    if (!DISABLE_PERF_SUBMIT) {
+      socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
+    }
     conn_info_map.delete(&tgid_fd);
 }
 
@@ -430,7 +434,9 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
-    socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+    if (!DISABLE_PERF_SUBMIT) {
+      socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+    }
 
     bytes_sent += current_size;
   }
