@@ -7,6 +7,7 @@ import (
 	"time"
 
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/cilium/ebpf"
 )
 
 var (
@@ -28,7 +29,7 @@ func init() {
 // startHostSystemCPULimitMonitor samples aggregate host kernel CPU (/proc/stat "system" jiffies)
 // at a configurable interval. When the soft limit is exceeded, Go-side ingest is paused
 // (callbacks skip events). When the hard limit is exceeded, the process exits.
-func startHostSystemCPULimitMonitor() {
+func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
 	softFromEnv := !math.IsNaN(systemCPUSoftAbs)
 	hardFromEnv := !math.IsNaN(systemCPUHardAbs)
 
@@ -115,6 +116,7 @@ func startHostSystemCPULimitMonitor() {
 			}
 
 			trafficUtils.SetSystemCPUIngestPaused(paused)
+			setBPFSystemCPUIngestPaused(coll, paused)
 		}
 	}()
 
@@ -129,4 +131,22 @@ func startHostSystemCPULimitMonitor() {
 		logArgs = append(logArgs, "baselineCores", baseline, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
 	}
 	trafficUtils.PrintLog("Host system CPU limit monitor started", logArgs...)
+}
+
+func setBPFSystemCPUIngestPaused(coll *ebpf.Collection, paused bool) {
+	if coll == nil {
+		return
+	}
+	m, ok := coll.Maps["system_cpu_ingest_paused"]
+	if !ok {
+		return
+	}
+	key := uint32(0)
+	value := uint8(0)
+	if paused {
+		value = 1
+	}
+	if err := m.Update(key, value, ebpf.UpdateAny); err != nil {
+		slog.Warn("failed to update BPF system CPU ingest pause flag", "error", err)
+	}
 }

@@ -25,6 +25,8 @@ import (
 	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
+const socketDataRingbufShardCount = 8
+
 func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 	var printBpfLogs bool
 	trafficUtils.InitVar("PRINT_BPF_LOGS", &printBpfLogs)
@@ -74,13 +76,36 @@ func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 // replaceRingBufSizes overrides ring buffer max_entries from env vars (in MB).
 // Values must be powers of 2; the BPF C defaults are used when env vars are unset.
 func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
+	dataTotalMB := 512
+	trafficUtils.InitVar("TRAFFIC_RINGBUF_DATA_MB", &dataTotalMB)
+	if dataTotalMB > 0 {
+		if dataTotalMB%socketDataRingbufShardCount != 0 {
+			slog.Warn("data ring buffer total size must divide evenly across shards, ignoring", "sizeMB", dataTotalMB, "shards", socketDataRingbufShardCount)
+		} else {
+			dataShardMB := dataTotalMB / socketDataRingbufShardCount
+			sizeBytes := uint32(dataShardMB) * 1024 * 1024
+			if sizeBytes&(sizeBytes-1) != 0 {
+				slog.Warn("data ring buffer shard size must be a power of 2, ignoring", "sizeMB", dataShardMB)
+			} else {
+				for i := 0; i < socketDataRingbufShardCount; i++ {
+					mapName := fmt.Sprintf("socket_data_events_%d", i)
+					m, ok := spec.Maps[mapName]
+					if !ok {
+						continue
+					}
+					m.MaxEntries = sizeBytes
+					slog.Info("data ring buffer shard size overridden", "map", mapName, "sizeMB", dataShardMB)
+				}
+			}
+		}
+	}
+
 	type rbConf struct {
 		envVar    string
 		mapName   string
 		defaultMB int
 	}
 	confs := []rbConf{
-		{"TRAFFIC_RINGBUF_DATA_MB", "socket_data_events", 512},
 		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 64},
 		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 64},
 	}
@@ -221,7 +246,14 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 	trafficUtils.InitVar("TRAFFIC_EBPF_MAP_MEMORY_INTERVAL", &interval)
 
 	mapNames := []string{
-		"socket_data_events",
+		"socket_data_events_0",
+		"socket_data_events_1",
+		"socket_data_events_2",
+		"socket_data_events_3",
+		"socket_data_events_4",
+		"socket_data_events_5",
+		"socket_data_events_6",
+		"socket_data_events_7",
 		"socket_open_events",
 		"socket_close_events",
 		"socket_data_submit_total",
@@ -230,9 +262,9 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 		"socket_open_submit_failed_total",
 		"socket_close_submit_total",
 		"socket_close_submit_failed_total",
+		"system_cpu_ingest_paused",
 		"conn_info_map",
 		"conn_info_map_keys",
-		"socket_data_event_buffer_heap",
 		"active_ssl_read_args_map",
 		"active_ssl_write_args_map",
 		"node_tlswrap_symaddrs_map",
@@ -391,15 +423,20 @@ func run() {
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
 
-	startHostSystemCPULimitMonitor()
+	startHostSystemCPULimitMonitor(coll)
 
 	// -----------------------------------------------------------------------
-	// Perf-buffer consumers — launched before kprobes so buffers are ready.
+	// Ring-buffer consumers — launched before kprobes so buffers are ready.
 	// -----------------------------------------------------------------------
 	callbacks := []*bpfwrapper.ProbeChannel{
 		bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback),
-		bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback),
 		bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback),
+	}
+	for i := 0; i < socketDataRingbufShardCount; i++ {
+		callbacks = append(callbacks, bpfwrapper.NewProbeChannel(
+			fmt.Sprintf("socket_data_events_%d", i),
+			bpfwrapper.SocketDataEventCallback,
+		))
 	}
 	if err := bpfwrapper.LaunchPerfBufferConsumers(coll, connectionFactory, callbacks); err != nil {
 		slog.Error("failed to launch perf buffer consumers", "error", err)
