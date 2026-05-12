@@ -79,6 +79,14 @@ func InitVar(envVarName string, targetVar interface{}) {
 				*v = temp
 				slog.Warn("Setting env value", "name", envVarName, "value", *v)
 			}
+		case *float64:
+			temp, err := strconv.ParseFloat(envVar, 64)
+			if err == nil {
+				*v = temp
+				slog.Warn("Setting env value", "name", envVarName, "value", *v)
+			} else {
+				slog.Warn("invalid float env, ignoring", "name", envVarName, "value", envVar, "error", err)
+			}
 		default:
 			slog.Warn("Unsupported type for targetVar", "type", v)
 		}

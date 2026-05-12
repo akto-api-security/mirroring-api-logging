@@ -64,6 +64,45 @@ func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 	}
 }
 
+// replaceStrictRemotePortFilter gates socket_data on conn_info->port (remote / dest port in BPF).
+// When TRAFFIC_STRICT_REMOTE_PORT_FILTER is true, events for connections whose port != STRICT_REMOTE_PORT
+// are dropped (default port 10275).
+func replaceStrictRemotePortFilter(spec *ebpf.CollectionSpec) {
+	var filterOn bool
+	trafficUtils.InitVar("TRAFFIC_STRICT_REMOTE_PORT_FILTER", &filterOn)
+	if v, ok := spec.Variables["filter_strict_remote_port"]; ok {
+		if err := v.Set(filterOn); err != nil {
+			slog.Warn("failed to set filter_strict_remote_port variable", "error", err)
+		}
+	}
+
+	strictPort := 10275
+	trafficUtils.InitVar("TRAFFIC_STRICT_REMOTE_PORT", &strictPort)
+	if strictPort < 0 {
+		strictPort = 0
+	}
+	if strictPort > 65535 {
+		strictPort = 65535
+	}
+	if v, ok := spec.Variables["strict_remote_port"]; ok {
+		if err := v.Set(uint16(strictPort)); err != nil {
+			slog.Warn("failed to set strict_remote_port variable", "error", err)
+		}
+	}
+}
+
+// replaceDisableRingSubmit sets the BPF global disable_ring_submit to true/false.
+// When true (env TRAFFIC_DISABLE_PERF_SUBMIT), BPF skips all ringbuf_output calls.
+func replaceDisableRingSubmit(spec *ebpf.CollectionSpec) {
+	var disableRingSubmit bool
+	trafficUtils.InitVar("TRAFFIC_DISABLE_PERF_SUBMIT", &disableRingSubmit)
+	if v, ok := spec.Variables["disable_ring_submit"]; ok {
+		if err := v.Set(disableRingSubmit); err != nil {
+			slog.Warn("failed to set disable_ring_submit variable", "error", err)
+		}
+	}
+}
+
 // startSocketDataSubmitStatsReporter reads BPF map socket_data_submit_total every 10s when
 // TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. The kernel increments once per socket_data ringbuf submit.
 func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
@@ -138,6 +177,8 @@ func run() {
 	// Configure runtime parameters on the spec before loading into the kernel.
 	replaceBpfLogsMacros(spec)
 	replaceMaxConnectionMapSize(spec)
+	replaceStrictRemotePortFilter(spec)
+	replaceDisableRingSubmit(spec)
 
 	// If the kernel supports uprobe_multi (6.6+), mark all SEC("uprobe")
 	// programs with the multi attach type so they can be attached via
@@ -184,6 +225,8 @@ func run() {
 
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
+
+	startHostSystemCPULimitMonitor()
 
 	// -----------------------------------------------------------------------
 	// Perf-buffer consumers — launched before kprobes so buffers are ready.
@@ -277,11 +320,11 @@ func run() {
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
 	if doProfiling {
-		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			captureMemoryProfile() // Capture memory profile every time the ticker ticks
+			captureMemoryProfile()
 		}
 	}
 
@@ -306,10 +349,17 @@ func run() {
 }
 
 func captureMemoryProfile() {
-	f, _ := os.Create("mem.prof") // Create memory profile file
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("mem_%s.prof", timestamp)
+	f, err := os.Create(fileName)
+	if err != nil {
+		slog.Error("failed to create memory profile", "error", err)
+		return
+	}
 	defer f.Close()
 
-	pprof.WriteHeapProfile(f) // Write memory profile
+	pprof.WriteHeapProfile(f)
+	slog.Info("memory profile captured", "filename", fileName)
 }
 
 func captureCpuProfile() {

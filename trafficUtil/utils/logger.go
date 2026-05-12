@@ -53,6 +53,7 @@ func SetupLogger() {
 	SetupAllFileLoggers()
 }
 
+func LogLevel() slog.Level     { return level }
 func IngestLogsEnabled() bool  { return ingestLogs }
 func ProcessLogsEnabled() bool { return processLogs }
 

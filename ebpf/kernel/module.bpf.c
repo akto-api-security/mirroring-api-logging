@@ -91,6 +91,12 @@ volatile const bool log_socket_data_submit_stats = false;
  * This prevents duplicate capture when a reverse-proxy (e.g. nginx) forwards to a backend
  * on the same host via localhost.  Set to false via env TRAFFIC_CAPTURE_LOOPBACK=true. */
 volatile const bool skip_loopback_conns = true;
+/* When true (env TRAFFIC_STRICT_REMOTE_PORT_FILTER), only capture connections whose remote
+ * port matches strict_remote_port (default 10275). */
+volatile const bool filter_strict_remote_port = false;
+volatile const __u16 strict_remote_port = 10275;
+/* When true (env TRAFFIC_DISABLE_PERF_SUBMIT), skip all ringbuf_output calls. */
+volatile const bool disable_ring_submit = false;
 
 /*
  * CHUNK_SIZE_LIMIT must be a compile-time constant because it is used as the
@@ -695,8 +701,10 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     }
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
-    bpf_ringbuf_output(&socket_open_events, &socket_open_event,
-                       sizeof(struct socket_open_event_t), 0);
+    if (!disable_ring_submit) {
+        bpf_ringbuf_output(&socket_open_events, &socket_open_event,
+                           sizeof(struct socket_open_event_t), 0);
+    }
 }
 
 static __always_inline void process_syscall_close(struct pt_regs* ctx,
@@ -727,8 +735,10 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
     socket_close_event.ip            = conn_info->ip;
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
-    bpf_ringbuf_output(&socket_close_events, &socket_close_event,
-                       sizeof(struct socket_close_event_t), 0);
+    if (!disable_ring_submit) {
+        bpf_ringbuf_output(&socket_close_events, &socket_close_event,
+                           sizeof(struct socket_close_event_t), 0);
+    }
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
@@ -788,6 +798,14 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
     }
 
     if (conn_info->ssl != ssl) {
+        return;
+    }
+
+    if (filter_strict_remote_port && conn_info->port != strict_remote_port) {
+        return;
+    }
+
+    if (disable_ring_submit) {
         return;
     }
 

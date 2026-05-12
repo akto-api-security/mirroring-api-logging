@@ -27,8 +27,6 @@ type Tracker struct {
 	// source IP-Port / local IP-Port
 	srcIp   uint32
 	srcPort uint16
-
-	foundHTTP bool
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -38,7 +36,6 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		sentParts: make(map[int][][]byte),
 		mutex:     sync.RWMutex{},
 		ssl:       false,
-		foundHTTP: false,
 	}
 }
 

@@ -96,9 +96,12 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
-	sequenceCheckSkip             = false
-	workerChanBuffSize            = 10
+	sequenceCheckSkip = false
 )
+
+func init() {
+	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
+}
 
 func init() {
 	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
@@ -108,8 +111,6 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
-	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
-	utils.InitVar("WORKER_CHAN_BUFF_SIZE", &workerChanBuffSize)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -189,10 +190,10 @@ func BufferCheck() bool {
 		lastReset = uint64(time.Now().UnixMilli())
 		currentTotalBuffer = int64(0)
 		lastPrint = int64(0)
-		slog.Debug("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
+		utils.LogIngest("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
 	}
 
-	bufferSampleCheck := currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
+	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
 	return bufferSampleCheck
 }
 
@@ -226,7 +227,7 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 		now := uint64(time.Now().UnixNano())
 		tracker.openTimestamp = now
 		factory.connections[connectionID] = tracker
-		ch := make(chan interface{}, workerChanBuffSize)
+		ch := make(chan interface{}, 10)
 		factory.processor[connectionID] = ch
 		factory.StartWorker(connectionID, tracker, ch)
 	}
@@ -280,17 +281,17 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					} else {
 						resetTimer(inactivityTimer, inactivityThreshold)
 					}
-				case *structs.SocketOpenEvent:
-					if logEnabled {
-						utils.LogProcessing("Received open event", structs.ConnIDLogArgs(connID)...)
-					}
-					tracker.AddOpenEvent(*e)
-					resetTimer(inactivityTimer, inactivityThreshold)
-				case *structs.SocketCloseEvent:
-					if logEnabled {
-						utils.LogProcessing("Received close event", structs.ConnIDLogArgs(connID)...)
-					}
-					tracker.AddCloseEvent(*e)
+			case structs.SocketOpenEvent:
+				if logEnabled {
+					utils.LogProcessing("Received open event", structs.ConnIDLogArgs(connID)...)
+				}
+				tracker.AddOpenEvent(e)
+				resetTimer(inactivityTimer, inactivityThreshold)
+			case structs.SocketCloseEvent:
+				if logEnabled {
+					utils.LogProcessing("Received close event", structs.ConnIDLogArgs(connID)...)
+				}
+				tracker.AddCloseEvent(e)
 
 					time.AfterFunc(100*time.Millisecond, func() {
 						delayedDeleteChan <- struct{}{}
@@ -351,8 +352,8 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
 		lastMemCheck = time.Now().UnixMilli()
 		mem := utils.LogMemoryStats()
-		slog.Debug("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
-		slog.Debug("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
+		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})
@@ -380,19 +381,41 @@ func (factory *Factory) getTracker(connectionID structs.ConnID) (*Tracker, bool)
 	return tracker, exists
 }
 
-// SendEvent sends any type of event (open, data, close) to the appropriate worker via the channel.
-// Holds RLock across lookup+send so DeleteWorker (which needs Lock to close the channel) cannot
-// race — no recover() needed.
-func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}) {
+func (factory *Factory) getChannel(connectionID structs.ConnID) (chan interface{}, bool) {
 	factory.mutex.RLock()
+	defer factory.mutex.RUnlock()
 	ch, exists := factory.processor[connectionID]
-	if !exists {
-		factory.mutex.RUnlock()
-		return
+	return ch, exists
+}
+
+// SendEvent sends any type of event (open, data, close) to the appropriate worker via the channel.
+func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}) {
+	ch, exists := factory.getChannel(connectionID)
+
+	if exists {
+		if utils.ProcessLogsEnabled() {
+			utils.LogProcessing("Received event", structs.ConnIDLogArgs(connectionID)...)
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				if utils.ProcessLogsEnabled() {
+					utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
+				}
+			}
+		}()
+		select {
+		case ch <- event:
+			if utils.ProcessLogsEnabled() {
+				utils.LogProcessing("Sent event", structs.ConnIDLogArgs(connectionID)...)
+			}
+		default:
+			if utils.ProcessLogsEnabled() {
+				utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
+			}
+		}
+	} else {
+		if utils.ProcessLogsEnabled() {
+			utils.LogProcessing("No worker found for", "connectionId", connectionID)
+		}
 	}
-	select {
-	case ch <- event:
-	default:
-	}
-	factory.mutex.RUnlock()
 }

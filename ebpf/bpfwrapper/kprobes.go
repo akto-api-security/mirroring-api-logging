@@ -6,6 +6,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+
+	trafficUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 // ProbeType represents whether the probe is an entry or a return.
@@ -88,7 +90,7 @@ func AttachKprobes(coll *ebpf.Collection, kprobeList []Kprobe) ([]link.Link, err
 
 		switch probe.Type {
 		case EntryType:
-			slog.Debug("Attaching kprobe", "hook", probe.HookName, "function", functionToHook)
+			trafficUtils.PrintLog("Attaching kprobe", "hook", probe.HookName, "function", functionToHook)
 			l, err := link.Kprobe(functionToHook, prog, nil)
 			if err != nil {
 				slog.Error("failed to attach kprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
@@ -97,7 +99,7 @@ func AttachKprobes(coll *ebpf.Collection, kprobeList []Kprobe) ([]link.Link, err
 			links = append(links, l)
 
 		case ReturnType:
-			slog.Debug("Attaching kretprobe", "hook", probe.HookName, "function", functionToHook)
+			trafficUtils.PrintLog("Attaching kretprobe", "hook", probe.HookName, "function", functionToHook)
 			l, err := link.Kretprobe(functionToHook, prog, nil)
 			if err != nil {
 				slog.Error("failed to attach kretprobe", "hook", probe.HookName, "function", functionToHook, "error", err)

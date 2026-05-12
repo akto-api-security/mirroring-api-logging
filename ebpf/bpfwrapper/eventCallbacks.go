@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"log/slog"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -14,106 +15,75 @@ import (
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-var (
-	logSocketDataUserspace   = false
-	socketDataInboundCount   uint64
-	socketDataInboundLastLog time.Time
-	captureLoopback          = false
-)
-
-const socketDataUserspaceLogInterval = 10 * time.Second
-
-// noteSocketDataInboundBeforeSend counts decoded socket_data records handed to the connection
-// factory (same goroutine as the socket_data ringbuf reader — no lock.)
-func noteSocketDataInboundBeforeSend() {
-	if !logSocketDataUserspace {
-		return
-	}
-	socketDataInboundCount++
-	now := time.Now()
-	if socketDataInboundLastLog.IsZero() {
-		socketDataInboundLastLog = now
-		return
-	}
-	d := now.Sub(socketDataInboundLastLog)
-	if d < socketDataUserspaceLogInterval {
-		return
-	}
-	slog.Warn("socket_data events reaching userspace (before SendEvent)",
-		"countInWindow", socketDataInboundCount,
-		"window", d.String())
-	socketDataInboundCount = 0
-	socketDataInboundLastLog = now
-}
-
 func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-	reader := &bytes.Reader{}
 
 	for data := range inputChan {
 		if data == nil {
 			return
 		}
 
-		if !connectionFactory.CanBeFilled() {
-			slog.Warn("Connections filled")
+		if metaUtils.SystemCPUIngestPaused() {
 			continue
 		}
 
-		var event structs.SocketOpenEvent
-		reader.Reset(data)
-		err := binary.Read(reader, binary.NativeEndian, &event)
+		if !connectionFactory.CanBeFilled() {
+			metaUtils.LogIngest("Connections filled")
+			continue
+		}
+
+		var ev structs.SocketOpenEvent
+		err := func() error {
+			globalReaderLock.Lock()
+			defer globalReaderLock.Unlock()
+			globalReader.Reset(data)
+			return binary.Read(globalReader, binary.NativeEndian, &ev)
+		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket open", "error", err)
 			continue
 		}
-		connId := event.ConnId
-
-		if !captureLoopback && isLoopbackIP(connId.Ip) {
-			if metaUtils.IngestLogsEnabled() {
-				metaUtils.LogIngest("Skipping loopback socket open",
-					"fd", connId.Fd, "id", connId.Id, "ip", connId.Ip)
-			}
-			continue
-		}
-
-		if metaUtils.IngestLogsEnabled() {
-			metaUtils.LogIngest("Received socket open event",
-				"fd", connId.Fd,
-				"id", connId.Id,
-				"timestamp", connId.Conn_start_ns,
-				"ip", connId.Ip,
-				"port", connId.Port)
-		}
+		connId := ev.ConnId
+		metaUtils.LogIngest("Received socket open event",
+			"fd", connId.Fd,
+			"id", connId.Id,
+			"timestamp", connId.Conn_start_ns,
+			"ip", connId.Ip,
+			"port", connId.Port)
 		connectionFactory.CreateIfNotExists(connId)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, ev)
 	}
 }
 
 func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-	reader := &bytes.Reader{}
-
 	for data := range inputChan {
 		if data == nil {
 			return
 		}
-		var event structs.SocketCloseEvent
-		reader.Reset(data)
-		err := binary.Read(reader, binary.NativeEndian, &event)
+
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
+		}
+
+		var ev structs.SocketCloseEvent
+		err := func() error {
+			globalReaderLock.Lock()
+			defer globalReaderLock.Unlock()
+			globalReader.Reset(data)
+			return binary.Read(globalReader, binary.NativeEndian, &ev)
+		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket close", "error", err)
 			continue
 		}
 
-		connId := event.ConnId
-		if metaUtils.IngestLogsEnabled() {
-			metaUtils.LogIngest("Received close on",
-				"fd", connId.Fd,
-				"id", connId.Id,
-				"timestamp", connId.Conn_start_ns,
-				"ip", connId.Ip,
-				"port", connId.Port)
-		}
-		connectionFactory.SendEvent(connId, &event)
+		connId := ev.ConnId
+		metaUtils.LogIngest("Received close on",
+			"fd", connId.Fd,
+			"id", connId.Id,
+			"timestamp", connId.Conn_start_ns,
+			"ip", connId.Ip,
+			"port", connId.Port)
+		connectionFactory.SendEvent(connId, ev)
 	}
 }
 
@@ -131,19 +101,13 @@ var (
 		27017: true,
 		// redis
 		6379: true}
-	ignorePorts = true
+	ignorePorts      = true
+	globalReader     = &bytes.Reader{}
+	globalReaderLock sync.Mutex
 )
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
-	metaUtils.InitVar("TRAFFIC_LOG_SOCKET_DATA_USERSPACE", &logSocketDataUserspace)
-	metaUtils.InitVar("TRAFFIC_CAPTURE_LOOPBACK", &captureLoopback)
-}
-
-// isLoopbackIP returns true when the IP (stored as a u32 in network byte order
-// read on a little-endian host) falls in 127.0.0.0/8.
-func isLoopbackIP(ip uint32) bool {
-	return (ip & 0xFF) == 0x7F
 }
 
 func min(a, b int32) int32 {
@@ -153,36 +117,66 @@ func min(a, b int32) int32 {
 	return b
 }
 
+const socketDataInboundLogInterval = 10 * time.Second
+
+var (
+	socketDataInboundCount   uint64
+	socketDataInboundLastLog time.Time
+)
+
+func noteSocketDataInboundBeforeSend() {
+
+	if metaUtils.LogLevel() != slog.LevelDebug {
+		return
+	}
+
+	socketDataInboundCount++
+	now := time.Now()
+	if socketDataInboundLastLog.IsZero() {
+		socketDataInboundLastLog = now
+		return
+	}
+	d := now.Sub(socketDataInboundLastLog)
+	if d < socketDataInboundLogInterval {
+		return
+	}
+	slog.Debug("socket_data events reaching eventCallback",
+		"countInWindow", socketDataInboundCount,
+		"window", d.String())
+	socketDataInboundCount = 0
+	socketDataInboundLastLog = now
+}
+
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-	reader := &bytes.Reader{}
-
-	const eventAttributesLogicalSize = 45
-
 	for data := range inputChan {
 		if data == nil {
 			return
 		}
 
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
+		}
+
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			slog.Warn("Connections filled")
+			metaUtils.LogIngest("Connections filled")
 			continue
 		}
 
 		var attr structs.SocketDataEventAttr
-		reader.Reset(data[:eventAttributesSize])
-		if err := binary.Read(reader, binary.NativeEndian, &attr); err != nil {
+		if err := func() error {
+			globalReaderLock.Lock()
+			defer globalReaderLock.Unlock()
+			globalReader.Reset(data[:eventAttributesSize])
+			return binary.Read(globalReader, binary.NativeEndian, &attr)
+		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
 			continue
 		}
 
 		bytesSent := attr.Bytes_sent
 		n := int(utils.Abs(bytesSent))
+
 		connId := attr.ConnId
-
-		if !captureLoopback && isLoopbackIP(connId.Ip) {
-			continue
-		}
-
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
 			if metaUtils.IngestLogsEnabled() {
@@ -196,25 +190,23 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
+		const eventAttributesLogicalSize = 45
+		msgOff := eventAttributesLogicalSize
 		var payload []byte
 		if n > 0 {
-			if len(data) < eventAttributesLogicalSize+n {
-				slog.Error("socket data ring record too short", "len", len(data), "need", eventAttributesLogicalSize+n)
+			if len(data) < msgOff+n {
+				slog.Error("socket data ring record too short", "len", len(data), "need", msgOff+n)
 				continue
 			}
 			payload = make([]byte, n)
-			copy(payload, data[eventAttributesLogicalSize:eventAttributesLogicalSize+n])
+			copy(payload, data[msgOff:msgOff+n])
 		}
 
 		connectionFactory.CreateIfNotExists(connId)
 
-		noteSocketDataInboundBeforeSend()
-		connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
-		connections.UpdateBufferSize(uint64(n))
-
-		if logSocketDataUserspace && n > 0 {
+		if metaUtils.IngestLogsEnabled() && n > 0 {
 			previewLen := min(32, int32(n))
-			slog.Warn("Got data",
+			metaUtils.LogIngest("Got data",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
@@ -226,5 +218,9 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 				"ssl", attr.Ssl,
 				"bytesSent", bytesSent)
 		}
+
+		noteSocketDataInboundBeforeSend()
+		connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
+		connections.UpdateBufferSize(uint64(n))
 	}
 }

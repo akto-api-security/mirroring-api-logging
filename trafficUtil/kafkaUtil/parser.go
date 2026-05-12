@@ -597,7 +597,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		return
 	}
 
-	shouldPrint := dataPrintMode || (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token"))
+	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
 	if shouldPrint {
 		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
 	}
@@ -697,8 +697,6 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			return
 		}
 
-		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
-
 		if apiProcessor.CloudProcessorInstance != nil {
 			apiProcessor.CloudProcessorInstance.Produce(value)
 		} else if KafkaWriteAvailable() {
@@ -709,6 +707,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 				go Produce(bgCtx, payload)
 			}
 		}
+
+		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
 	}
 }
 
@@ -728,7 +728,7 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 			badRequests++
 		}
 
-		if goodRequests%100 == 0 || badRequests%100 == 0 {
+		if goodRequests%10 == 0 || badRequests%10 == 0 {
 			slog.Debug("Good requests", append(TrafficConnIDLogArgs(ctx.ConnID), "count", goodRequests, "badRequests", badRequests)...)
 		}
 	}
