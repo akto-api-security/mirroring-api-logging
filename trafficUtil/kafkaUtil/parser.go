@@ -19,6 +19,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	bloomfilter "github.com/bits-and-blooms/bloom/v3"
 )
 
 // TrafficConnID mirrors ebpf/structs.ConnID fields used for log correlation (eBPF mirroring path).
@@ -39,7 +40,6 @@ func TrafficConnIDLogArgs(c *TrafficConnID) []any {
 }
 
 // TrafficContext holds metadata about the captured traffic.
-// This consolidates the many parameters previously passed to ParseAndProduce.
 type TrafficContext struct {
 	SourceIP            string
 	DestIP              string
@@ -88,7 +88,6 @@ type PayloadInput struct {
 	Context      TrafficContext
 }
 
-// buildProtobufPayload creates the protobuf payload for the threat client.
 func buildProtobufPayload(input PayloadInput) *trafficpb.HttpResponseParam {
 	return &trafficpb.HttpResponseParam{
 		Method:          input.Request.Method,
@@ -110,7 +109,6 @@ func buildProtobufPayload(input PayloadInput) *trafficpb.HttpResponseParam {
 	}
 }
 
-// buildJSONPayload creates the JSON map payload (legacy format, TODO: remove).
 func buildJSONPayload(input PayloadInput) map[string]string {
 	reqHeaderString, _ := json.Marshal(input.Headers.Request.StringMap)
 	respHeaderString, _ := json.Marshal(input.Headers.Response.StringMap)
@@ -140,7 +138,6 @@ func buildJSONPayload(input PayloadInput) map[string]string {
 	}
 }
 
-// resolvePodLabels resolves pod labels for inbound traffic and adds them to the value map.
 func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host string) {
 
 	if PodInformerInstance == nil {
@@ -177,7 +174,30 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 	slog.Debug("Pod labels", append(TrafficConnIDLogArgs(ctx.ConnID), "podName", ctx.HostName, "labels", podLabels)...)
 }
 
-// convertHeaders converts HTTP headers to both protobuf and string map formats in a single pass.
+func mergeInjectTags(value map[string]string) {
+	if len(injectTagsMap) == 0 {
+		return
+	}
+
+	merged := map[string]string{}
+	for k, v := range injectTagsMap {
+		merged[k] = v
+	}
+
+	if existing, ok := value["tag"]; ok && existing != "" {
+		podLabelMap := map[string]string{}
+		if err := json.Unmarshal([]byte(existing), &podLabelMap); err == nil {
+			for k, v := range podLabelMap {
+				merged[k] = v
+			}
+		}
+	}
+
+	if b, err := json.Marshal(merged); err == nil {
+		value["tag"] = string(b)
+	}
+}
+
 func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) ConvertedHeaders {
 	result := ConvertedHeaders{
 		Request: HeaderSet{
@@ -190,7 +210,6 @@ func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) Co
 		},
 	}
 
-	// Convert request headers
 	for name, values := range req.Header {
 		for _, value := range values {
 			result.Request.Protobuf[strings.ToLower(name)] = &trafficpb.StringList{
@@ -205,7 +224,6 @@ func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) Co
 	result.Request.Protobuf["host"] = &trafficpb.StringList{Values: []string{req.Host}}
 	result.Request.StringMap["host"] = req.Host
 
-	// Convert response headers
 	for name, values := range resp.Header {
 		for _, value := range values {
 			result.Response.Protobuf[strings.ToLower(name)] = &trafficpb.StringList{
@@ -218,7 +236,6 @@ func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) Co
 	return result
 }
 
-// shouldProcessRequest checks all filter conditions and returns true if the request should be processed.
 func shouldProcessRequest(req *http.Request, reqHeaders map[string]string, ctx TrafficContext) bool {
 	if !IsValidMethod(req.Method) {
 		return false
@@ -252,10 +269,12 @@ var (
 	goodRequests               = 0
 	badRequests                = 0
 	debugMode                  = false
+	dataPrintMode              = false
 	outputBandwidthLimitPerMin = -1
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
+	injectTagsMap              = map[string]string{}
 	methodsMap                 = map[string]bool{
 		"GET":     true,
 		"HEAD":    true,
@@ -267,20 +286,33 @@ var (
 		"TRACE":   true,
 		"TRACK":   true,
 		"PATCH":   true}
-	DebugStrings  = []string{}
-	dataPrintMode = false
+	DebugStrings = []string{}
 
-	EventChanBuffSize = 20000
+	EventChanBuffSize = 100000
+
+	lruCache            *LRUCache
+	lruCacheCapacity    = 100000
+	bloomFilterCapacity = 1000000
+	bloomFilterFPRate   = 0.01
+	timeBucketDuration  = 10 * time.Minute
+	memSamplingEnabled  = false
 )
+
+var bloomFilter *bloomfilter.BloomFilter
 
 const ONE_MINUTE = 60
 
 func init() {
-	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
 	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
-	// convert MB to B
+	utils.InitVar("AKTO_MEM_SAMPLING_ENABLED", &memSamplingEnabled)
+	utils.InitVar("LRU_CACHE_CAPACITY", &lruCacheCapacity)
+	utils.InitVar("BLOOM_FILTER_CAPACITY", &bloomFilterCapacity)
+	utils.InitVar("BLOOM_FILTER_FP_RATE", &bloomFilterFPRate)
+	utils.InitVar("TIME_BUCKET_DURATION_MINUTES", &timeBucketDuration)
+	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
+
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
 	}
@@ -291,7 +323,36 @@ func init() {
 	}
 	slog.Info("debugStrings", "DebugStrings", DebugStrings)
 
-	// Start ticker to read debug URLs from file every 30 seconds
+	if memSamplingEnabled {
+		bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+
+		lruCache = NewLRUCache(lruCacheCapacity)
+
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				bloomFilter.ClearAll()
+			}
+		}()
+	}
+
+	injectTagsEnv := ""
+	utils.InitVar("AKTO_INJECT_TAGS", &injectTagsEnv)
+	if injectTagsEnv != "" {
+		for _, pair := range strings.Split(injectTagsEnv, ";") {
+			pair = strings.TrimSpace(pair)
+			if idx := strings.IndexByte(pair, '='); idx > 0 {
+				k := strings.TrimSpace(pair[:idx])
+				v := strings.TrimSpace(pair[idx+1:])
+				if k != "" {
+					injectTagsMap[k] = v
+				}
+			}
+		}
+		slog.Info("AKTO_INJECT_TAGS loaded", "tags", injectTagsMap)
+	}
+
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -302,12 +363,10 @@ func init() {
 	}()
 }
 
-// Reads /ebpf/debug-urls.txt and updates DebugStrings with any new URLs found in the file (one per line)
 func UpdateDebugStringsFromFile() {
 	filePath := "/ebpf/debug-urls.txt"
 	f, err := os.Open(filePath)
 	if err != nil {
-		// File may not exist, that's fine
 		return
 	}
 	defer f.Close()
@@ -325,7 +384,6 @@ func UpdateDebugStringsFromFile() {
 	}
 
 	if len(fileUrls) > 0 {
-		// Merge with env DebugStrings, avoid duplicates
 		urlSet := make(map[string]struct{})
 		for _, u := range DebugStrings {
 			urlSet[u] = struct{}{}
@@ -349,7 +407,6 @@ func UpdateDebugStringsFromFile() {
 }
 
 func checkDebugUrlAndPrint(url string, host string, message string) {
-	// url or host. [array string]
 	if len(DebugStrings) > 0 {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
@@ -398,105 +455,68 @@ func IsValidMethod(method string) bool {
 	return ok
 }
 
-var httpRequestMethods = [][]byte{
-	[]byte("GET "), []byte("HEAD "), []byte("POST "),
-	[]byte("PUT "), []byte("DELETE "), []byte("CONNECT "),
-	[]byte("OPTIONS "), []byte("TRACE "), []byte("TRACK "),
-	[]byte("PATCH "),
-}
-
-var httpVersionTag = []byte(" HTTP/")
-var httpStatusLinePrefix = []byte("HTTP/")
-
-// findHTTPRequestBoundaries returns byte offsets where HTTP request lines begin.
-// Uses bytes.Index for efficient scanning instead of byte-by-byte iteration.
-func findHTTPRequestBoundaries(buf []byte) []int {
-	var offsets []int
-	for i := 0; i < len(buf); {
-		idx := bytes.Index(buf[i:], httpVersionTag)
-		if idx < 0 {
-			break
-		}
-		pos := i + idx
-
-		lineStart := pos
-		for lineStart > 0 && buf[lineStart-1] != '\n' {
-			lineStart--
-		}
-
-		for _, method := range httpRequestMethods {
-			if bytes.HasPrefix(buf[lineStart:], method) {
-				offsets = append(offsets, lineStart)
-				break
-			}
-		}
-
-		i = pos + len(httpVersionTag)
+// shouldParseBody uses Bloom Filter + LRU Cache to decide if body should be parsed.
+// Only applies optimization if memSamplingEnabled is true.
+func shouldParseBody(method, host, path string) bool {
+	if !memSamplingEnabled {
+		return true
 	}
-	return offsets
-}
 
-// findHTTPResponseBoundaries returns byte offsets where HTTP status lines begin.
-// Validates the version+status format to avoid matching "HTTP/" inside bodies.
-func findHTTPResponseBoundaries(buf []byte) []int {
-	var offsets []int
-	for i := 0; i < len(buf); {
-		idx := bytes.Index(buf[i:], httpStatusLinePrefix)
-		if idx < 0 {
-			break
-		}
-		pos := i + idx
+	key := buildSignatureKey(method, host, path)
 
-		if pos == 0 || buf[pos-1] == '\n' {
-			remaining := buf[pos:]
-			// "HTTP/1.0 NNN" or "HTTP/1.1 NNN" (need at least 13 bytes)
-			if len(remaining) >= 13 &&
-				remaining[5] == '1' && remaining[6] == '.' &&
-				(remaining[7] == '0' || remaining[7] == '1') &&
-				remaining[8] == ' ' &&
-				remaining[9] >= '1' && remaining[9] <= '5' {
-				offsets = append(offsets, pos)
-			} else if len(remaining) >= 8 && remaining[5] == '2' && remaining[6] == ' ' {
-				offsets = append(offsets, pos)
-			}
-		}
-
-		i = pos + len(httpStatusLinePrefix)
+	if !bloomFilter.TestString(key) {
+		bloomFilter.AddString(key)
+		lruCache.Put(key, getTimeBucket())
+		return true
 	}
-	return offsets
+
+	if timeBucket, found := lruCache.Get(key); found {
+		if isTimeBucketExpired(timeBucket) {
+			lruCache.Put(key, getTimeBucket())
+			return true
+		}
+		return false
+	}
+
+	lruCache.Put(key, getTimeBucket())
+	return true
 }
 
-// parseHTTPTraffic parses HTTP requests and responses from raw byte buffers.
-// Splits at HTTP message boundaries so truncated bodies on keep-alive connections
-// cannot bleed into adjacent messages.
+// parseHTTPTraffic parses HTTP requests and responses from raw byte buffers sequentially.
 func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx TrafficContext) *ParsedTraffic {
-	reqBoundaries := findHTTPRequestBoundaries(reqBuffer)
+	reader := bufio.NewReader(bytes.NewReader(reqBuffer))
 	requests := []http.Request{}
 	requestBodies := []string{}
+	parseBodyFlags := []bool{}
 
-	for i, start := range reqBoundaries {
-		end := len(reqBuffer)
-		if i+1 < len(reqBoundaries) {
-			end = reqBoundaries[i+1]
-		}
-
-		reader := bufio.NewReader(bytes.NewReader(reqBuffer[start:end]))
+	for {
 		req, err := http.ReadRequest(reader)
-		if err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			utils.PrintLog(fmt.Sprintf("HTTP-request error: %s \n", err))
+			return nil
+		}
+
+		parseBody := shouldParseBody(req.Method, req.Host, req.URL.Path)
+
+		var body []byte
+		if parseBody {
+			body, err = io.ReadAll(req.Body)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+				body = []byte{}
 			}
-			continue
-		}
-		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
+		} else {
+			io.Copy(io.Discard, req.Body)
 			body = []byte{}
+			req.Header.Set("x-akto-skip-sample-update", "true")
 		}
+		req.Body.Close()
 
 		requests = append(requests, *req)
 		requestBodies = append(requestBodies, string(body))
+		parseBodyFlags = append(parseBodyFlags, parseBody)
 	}
 
 	if shouldPrint {
@@ -507,53 +527,54 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 		return nil
 	}
 
-	respBoundaries := findHTTPResponseBoundaries(respBuffer)
+	reader = bufio.NewReader(bytes.NewReader(respBuffer))
 	responses := []http.Response{}
 	responseBodies := []string{}
 
-	for i, start := range respBoundaries {
-		end := len(respBuffer)
-		if i+1 < len(respBoundaries) {
-			end = respBoundaries[i+1]
-		}
-
-		reader := bufio.NewReader(bytes.NewReader(respBuffer[start:end]))
+	for i := 0; ; i++ {
 		resp, err := http.ReadResponse(reader, nil)
-		if err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
-			}
-			continue
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		} else if err != nil {
+			utils.PrintLog(fmt.Sprintf("HTTP-Response error: %s\n", err))
+			return nil
 		}
 
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
+		var body []byte
+		shouldParseRespBody := i < len(parseBodyFlags) && parseBodyFlags[i]
+
+		if shouldParseRespBody {
+			body, err = io.ReadAll(resp.Body)
+			if err != nil {
+				utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
+				body = []byte{}
+			}
+
+			encoding := resp.Header["Content-Encoding"]
+			var r io.Reader
+			r = bytes.NewBuffer(body)
+			if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
+				r, err = gzip.NewReader(r)
+				if err != nil {
+					utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
+					body = []byte{}
+				}
+			}
+			if err == nil {
+				body, err = io.ReadAll(r)
+				if err != nil {
+					utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
+					body = []byte{}
+				}
+				if _, ok := r.(*gzip.Reader); ok {
+					r.(*gzip.Reader).Close()
+				}
+			}
+		} else {
+			io.Copy(io.Discard, resp.Body)
 			body = []byte{}
 		}
-
-		// Handle gzip/deflate decompression
-		encoding := resp.Header["Content-Encoding"]
-		var r io.Reader
-		r = bytes.NewBuffer(body)
-		if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
-			r, err = gzip.NewReader(r)
-			if err != nil {
-				utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
-				body = []byte{}
-			}
-		}
-		if err == nil {
-			body, err = io.ReadAll(r)
-			if err != nil {
-				utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
-				body = []byte{}
-			}
-			if _, ok := r.(*gzip.Reader); ok {
-				r.(*gzip.Reader).Close()
-			}
-		}
+		resp.Body.Close()
 
 		responses = append(responses, *resp)
 		responseBodies = append(responseBodies, string(body))
@@ -572,14 +593,17 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
-
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
 
-	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
+	shouldPrint := dataPrintMode || (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token"))
 	if shouldPrint {
 		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
+	}
+
+	if KafkaDisabled() {
+		return
 	}
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
@@ -621,18 +645,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		url := req.URL.String()
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
 
-		// Convert headers in a single pass (both protobuf and string map formats)
 		headers := convertHeaders(req, resp, shouldPrint)
 
-		// Check all filter conditions
 		if !shouldProcessRequest(req, headers.Request.StringMap, ctx) {
 			continue
 		}
 
-		// Get source IP from headers
 		ip := GetSourceIp(headers.Request.Protobuf, ctx.SourceIP)
 
-		// Build payloads
 		input := PayloadInput{
 			Request:      req,
 			Response:     resp,
@@ -642,29 +662,35 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			SourceIP:     ip,
 			Context:      ctx,
 		}
-		payload := buildProtobufPayload(input)
+
 		value := buildJSONPayload(input)
 
-		// Debug logging
-		log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
-			ctx.Direction,
-			headers.Request.StringMap["host"],
-			value["path"],
-			ctx.SourceIP,
-			ctx.DestIP,
-			value["socket_id"],
-			ctx.ProcessID,
-			ctx.HostName,
-		)
-		checkDebugUrlAndPrint(url, req.Host, log)
+		if len(DebugStrings) > 0 {
+			log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
+				ctx.Direction,
+				headers.Request.StringMap["host"],
+				value["path"],
+				ctx.SourceIP,
+				ctx.DestIP,
+				value["socket_id"],
+				ctx.ProcessID,
+				ctx.HostName,
+			)
+			checkDebugUrlAndPrint(url, req.Host, log)
+		}
 
-		// Resolve pod labels for inbound traffic
 		resolvePodLabels(value, ctx, url, req.Host)
 
-		out, _ := json.Marshal(value)
+		mergeInjectTags(value)
 
-		// calculating the size of outgoing bytes and requests (1) and saving it in outgoingCounterMap
-		// this number is the closest (slightly higher) to the actual connection transfer bytes.
+		checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
+		out, err := json.Marshal(value)
+		if err != nil {
+			slog.Error("Failed to json marshal the payload", append(TrafficConnIDLogArgs(ctx.ConnID), "error", err)...)
+			checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
+			return
+		}
+
 		outgoingBytes := len(out)
 
 		if checkAndUpdateBandwidthProcessed(outgoingBytes) {
@@ -675,11 +701,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 		if apiProcessor.CloudProcessorInstance != nil {
 			apiProcessor.CloudProcessorInstance.Produce(value)
-
 		} else if KafkaWriteAvailable() {
-			// Produce to kafka with collection_details header (same gate as Produce/ProduceStr)
 			go ProduceStr(bgCtx, string(out), url, req.Host, req.Method)
-			go Produce(bgCtx, payload)
+
+			if utils.ThreatEnabled {
+				payload := buildProtobufPayload(input)
+				go Produce(bgCtx, payload)
+			}
 		}
 	}
 }

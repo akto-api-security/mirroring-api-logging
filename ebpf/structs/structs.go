@@ -43,6 +43,13 @@ type SocketDataEvent struct {
 	Msg  [30720]byte
 }
 
+// SocketDataPayload is one socket_data ring buffer sample: decoded attr plus an owned
+// payload slice (single copy from the ring). Chunks are merged at flush in the tracker.
+type SocketDataPayload struct {
+	Attr SocketDataEventAttr
+	Data []byte
+}
+
 type SocketOpenEvent struct {
 	ConnId ConnID
 	// source IP and port

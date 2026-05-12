@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"log/slog"
-	"sync"
 	"time"
 	"unsafe"
 
@@ -48,6 +47,7 @@ func noteSocketDataInboundBeforeSend() {
 }
 
 func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
+	reader := &bytes.Reader{}
 
 	for data := range inputChan {
 		if data == nil {
@@ -60,12 +60,8 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		}
 
 		var event structs.SocketOpenEvent
-		err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data)
-			return binary.Read(globalReader, binary.NativeEndian, &event)
-		}()
+		reader.Reset(data)
+		err := binary.Read(reader, binary.NativeEndian, &event)
 		if err != nil {
 			slog.Error("Failed to decode received data on socket open", "error", err)
 			continue
@@ -90,17 +86,15 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 }
 
 func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
+	reader := &bytes.Reader{}
+
 	for data := range inputChan {
 		if data == nil {
 			return
 		}
 		var event structs.SocketCloseEvent
-		err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data)
-			return binary.Read(globalReader, binary.NativeEndian, &event)
-		}()
+		reader.Reset(data)
+		err := binary.Read(reader, binary.NativeEndian, &event)
 		if err != nil {
 			slog.Error("Failed to decode received data on socket close", "error", err)
 			continue
@@ -131,9 +125,7 @@ var (
 		27017: true,
 		// redis
 		6379: true}
-	ignorePorts      = true
-	globalReader     = &bytes.Reader{}
-	globalReaderLock sync.Mutex
+	ignorePorts = true
 )
 
 func init() {
@@ -156,6 +148,10 @@ func min(a, b int32) int32 {
 }
 
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
+	reader := &bytes.Reader{}
+
+	const eventAttributesLogicalSize = 45
+
 	for data := range inputChan {
 		if data == nil {
 			return
@@ -166,34 +162,16 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var event structs.SocketDataEvent
-
-		// binary.Read require the input data to be at the same size of the object.
-		// Since the Msg field might be mostly empty, binary.read fails.
-		// So we split the loading into the fixed size attribute parts, and copying the message separately.
-
-		// slog.Debug("data", "data", data)
-
-		if err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, binary.NativeEndian, &event.Attr)
-		}(); err != nil {
+		var attr structs.SocketDataEventAttr
+		reader.Reset(data[:eventAttributesSize])
+		if err := binary.Read(reader, binary.NativeEndian, &attr); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
 			continue
 		}
 
-		bytesSent := event.Attr.Bytes_sent
-
-		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 45
-
-		if len(data) > eventAttributesLogicalSize {
-			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
-		}
-
-		connId := event.Attr.ConnId
+		bytesSent := attr.Bytes_sent
+		n := int(utils.Abs(bytesSent))
+		connId := attr.ConnId
 
 		if !captureLoopback && isLoopbackIP(connId.Ip) {
 			continue
@@ -205,29 +183,40 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount)
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount)
 			continue
+		}
+
+		var payload []byte
+		if n > 0 {
+			if len(data) < eventAttributesLogicalSize+n {
+				slog.Error("socket data ring record too short", "len", len(data), "need", eventAttributesLogicalSize+n)
+				continue
+			}
+			payload = make([]byte, n)
+			copy(payload, data[eventAttributesLogicalSize:eventAttributesLogicalSize+n])
 		}
 
 		connectionFactory.CreateIfNotExists(connId)
 
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
-
 		noteSocketDataInboundBeforeSend()
-		connectionFactory.SendEvent(connId, &event)
-		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
+		connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
+		connections.UpdateBufferSize(uint64(n))
 
-		metaUtils.LogIngest("Got data",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port,
-			"data", dataStr,
-			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
-			"ssl", event.Attr.Ssl,
-			"bytesSent", bytesSent)
+		if logSocketDataUserspace && n > 0 {
+			previewLen := min(32, int32(n))
+			slog.Warn("Got data",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"ip", connId.Ip,
+				"port", connId.Port,
+				"data", string(payload[:previewLen]),
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount,
+				"ssl", attr.Ssl,
+				"bytesSent", bytesSent)
+		}
 	}
 }

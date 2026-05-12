@@ -566,3 +566,12 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 	kafkaWriter.Transport = getGlobalTransport()
 	return &kafkaWriter
 }
+
+func Close() {
+	kafkaWriterMutex.Lock()
+	defer kafkaWriterMutex.Unlock()
+	if kafkaWriter != nil {
+		kafkaWriter.Close()
+		kafkaWriter = nil
+	}
+}

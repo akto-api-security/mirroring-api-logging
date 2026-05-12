@@ -34,42 +34,46 @@ func NewFactory() *Factory {
 	}
 }
 
-func convertToSingleByteArr(connID structs.ConnID, bufMap map[int][]byte) []byte {
+func previewFirstChunk(chunks [][]byte) string {
+	if len(chunks) == 0 || len(chunks[0]) == 0 {
+		return ""
+	}
+	b := chunks[0]
+	if len(b) > 64 {
+		return string(b[:64])
+	}
+	return string(b)
+}
 
-	if len(bufMap) == 0 {
+// joinPartsMap merges ordered chunks per sequence key into one []byte at flush.
+func joinPartsMap(connID structs.ConnID, partsMap map[int][][]byte) []byte {
+	if len(partsMap) == 0 {
 		return make([]byte, 0)
 	}
 
 	var keys []int
-	for k := range bufMap {
+	for k := range partsMap {
 		keys = append(keys, k)
 	}
 	sort.Ints(keys)
 
-	// Append []byte values into a single slice
 	var combined []byte
-
 	kPrev := -1
 	for _, k := range keys {
 		if kPrev == -1 {
-			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the
-			// read,write count will not be 1, they will simply continue from the last request
-			// This can only be replicated when there is a time gap/inactivityThreshold between requests
-			// on the same underlying connection
 			if !sequenceCheckSkip && k != 1 {
-				utils.LogProcessing("Bad start sequence", append(structs.ConnIDLogArgs(connID), "key", k, "value", string(bufMap[k]))...)
+				utils.LogProcessing("Bad start sequence", append(structs.ConnIDLogArgs(connID), "key", k, "value", previewFirstChunk(partsMap[k]))...)
 				break
 			}
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
-				utils.LogProcessing("Missing sequence", append(structs.ConnIDLogArgs(connID), "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))...)
+				utils.LogProcessing("Missing sequence", append(structs.ConnIDLogArgs(connID), "prev", kPrev, "current", k, "value", previewFirstChunk(partsMap[k]), "prevValue", previewFirstChunk(partsMap[kPrev]))...)
 				break
 			}
 			kPrev = k
 		}
-		combined = append(combined, bufMap[k]...)
+		combined = append(combined, bytes.Join(partsMap[k], nil)...)
 	}
 
 	return combined
@@ -107,11 +111,11 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
 
-	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
+	if len(tracker.sentParts) == 0 || len(tracker.recvParts) == 0 {
 		return
 	}
-	receiveBuffer := convertToSingleByteArr(connID, tracker.recvBuf)
-	sentBuffer := convertToSingleByteArr(connID, tracker.sentBuf)
+	receiveBuffer := joinPartsMap(connID, tracker.recvParts)
+	sentBuffer := joinPartsMap(connID, tracker.sentParts)
 
 	originalInt := uint32(connID.Ip)
 	// Convert integer to little-endian byte slice
@@ -169,6 +173,10 @@ func init() {
 }
 
 func BufferCheck() bool {
+	if sampleBufferPerMin == -1 {
+		return true
+	}
+
 	bufferMutex.Lock()
 	defer bufferMutex.Unlock()
 
@@ -179,15 +187,19 @@ func BufferCheck() bool {
 		slog.Debug("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
 	}
 
-	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
+	bufferSampleCheck := currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
 	return bufferSampleCheck
 }
 
 func UpdateBufferSize(bufferSize uint64) {
+	if sampleBufferPerMin == -1 {
+		return
+	}
+
 	bufferMutex.Lock()
 	defer bufferMutex.Unlock()
 
-	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
+	if currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
 		currentTotalBuffer += int64(bufferSize)
 		if currentTotalBuffer/(1024*1024) > lastPrint {
 			lastPrint = currentTotalBuffer / (1024 * 1024)
@@ -245,9 +257,9 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case event := <-ch:
 				// Handle event based on its type
 				switch e := event.(type) {
-				case *structs.SocketDataEvent:
+				case *structs.SocketDataPayload:
 					utils.LogProcessing("Received data event", structs.ConnIDLogArgs(connID)...)
-					tracker.AddDataEvent(*e)
+					tracker.AddDataPayload(e)
 					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", structs.ConnIDLogArgs(connID)...)
 						factory.StopProcessing(connID)
