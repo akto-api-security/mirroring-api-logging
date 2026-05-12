@@ -111,6 +111,14 @@ volatile const bool disable_ring_submit = false;
 #define CHUNK_LIMIT  CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT   42
 
+static __always_inline void increment_counter(void *counter_map) {
+    u32 key = 0;
+    u64 *total = bpf_map_lookup_elem(counter_map, &key);
+    if (total != NULL) {
+        (*total) += 1;
+    }
+}
+
 /*
  * Default connection map size.  The Go loader can resize individual maps via
  * CollectionSpec.Maps[name].MaxEntries before calling LoadAndAssign.
@@ -313,18 +321,53 @@ struct {
 } socket_data_submit_total SEC(".maps");
 
 struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_data_submit_failed_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_open_submit_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_open_submit_failed_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_close_submit_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_close_submit_failed_total SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 512 * 1024 * 1024);
+    __uint(max_entries, 1024 * 1024 * 1024);
 } socket_data_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 128 * 1024 * 1024);
+    __uint(max_entries, 64 * 1024 * 1024);
 } socket_open_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 128 * 1024 * 1024);
+    __uint(max_entries, 64 * 1024 * 1024);
 } socket_close_events SEC(".maps");
 
 struct {
@@ -671,28 +714,36 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     bpf_map_update_elem(&conn_info_map_keys, &val_key, &tgid_fd, BPF_ANY);
     bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn_info, BPF_ANY);
 
-    struct socket_open_event_t socket_open_event = {};
-    socket_open_event.id            = conn_info.id;
-    socket_open_event.fd            = conn_info.fd;
-    socket_open_event.conn_start_ns = conn_info.conn_start_ns;
-    socket_open_event.port          = conn_info.port;
-    socket_open_event.ip            = conn_info.ip;
-    socket_open_event.src_ip        = srcIp;
-    socket_open_event.src_port      = lport;
+    struct socket_open_event_t *socket_open_event = NULL;
 
-    if (print_bpf_logs) {
-        bpf_printk("accept call: %llu %d %d",
-                         socket_open_event.id, socket_open_event.fd, isConnect);
-        bpf_printk("accept call 2: %llu %d %d",
-                         socket_open_event.ip, socket_open_event.port, isConnect);
-        bpf_printk("accept call 3: %llu %d %d",
-                         socket_open_event.src_ip, socket_open_event.src_port, isConnect);
-    }
-
-    socket_open_event.socket_open_ns = conn_info.conn_start_ns;
     if (!disable_ring_submit) {
-        bpf_ringbuf_output(&socket_open_events, &socket_open_event,
-                           sizeof(struct socket_open_event_t), 0);
+        increment_counter(&socket_open_submit_total);
+        socket_open_event = bpf_ringbuf_reserve(&socket_open_events,
+                                                sizeof(struct socket_open_event_t), 0);
+        if (socket_open_event == NULL) {
+            increment_counter(&socket_open_submit_failed_total);
+            return;
+        }
+
+        socket_open_event->id             = conn_info.id;
+        socket_open_event->fd             = conn_info.fd;
+        socket_open_event->conn_start_ns  = conn_info.conn_start_ns;
+        socket_open_event->port           = conn_info.port;
+        socket_open_event->ip             = conn_info.ip;
+        socket_open_event->src_ip         = srcIp;
+        socket_open_event->src_port       = lport;
+        socket_open_event->socket_open_ns = conn_info.conn_start_ns;
+
+        if (print_bpf_logs) {
+            bpf_printk("accept call: %llu %d %d",
+                             socket_open_event->id, socket_open_event->fd, isConnect);
+            bpf_printk("accept call 2: %llu %d %d",
+                             socket_open_event->ip, socket_open_event->port, isConnect);
+            bpf_printk("accept call 3: %llu %d %d",
+                             socket_open_event->src_ip, socket_open_event->src_port, isConnect);
+        }
+
+        bpf_ringbuf_submit(socket_open_event, 0);
     }
 }
 
@@ -716,17 +767,21 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
         return;
     }
 
-    struct socket_close_event_t socket_close_event = {};
-    socket_close_event.id            = conn_info->id;
-    socket_close_event.fd            = conn_info->fd;
-    socket_close_event.conn_start_ns = conn_info->conn_start_ns;
-    socket_close_event.port          = conn_info->port;
-    socket_close_event.ip            = conn_info->ip;
-
-    socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     if (!disable_ring_submit) {
-        bpf_ringbuf_output(&socket_close_events, &socket_close_event,
-                           sizeof(struct socket_close_event_t), 0);
+        increment_counter(&socket_close_submit_total);
+        struct socket_close_event_t *socket_close_event =
+            bpf_ringbuf_reserve(&socket_close_events, sizeof(struct socket_close_event_t), 0);
+        if (socket_close_event == NULL) {
+            increment_counter(&socket_close_submit_failed_total);
+        } else {
+            socket_close_event->id              = conn_info->id;
+            socket_close_event->fd              = conn_info->fd;
+            socket_close_event->conn_start_ns   = conn_info->conn_start_ns;
+            socket_close_event->port            = conn_info->port;
+            socket_close_event->ip              = conn_info->ip;
+            socket_close_event->socket_close_ns = bpf_ktime_get_ns();
+            bpf_ringbuf_submit(socket_close_event, 0);
+        }
     }
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
@@ -864,14 +919,13 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         socket_data_event->bytes_sent  = is_send ? 1 : -1;
         socket_data_event->bytes_sent *= size_to_save;
         if (log_socket_data_submit_stats) {
-            u32 __sd_k = 0;
-            u64 *__sd_tot = bpf_map_lookup_elem(&socket_data_submit_total, &__sd_k);
-            if (__sd_tot != NULL) {
-                (*__sd_tot) += 1;
-            }
+            increment_counter(&socket_data_submit_total);
         }
-        bpf_ringbuf_output(&socket_data_events, socket_data_event,
-                           sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save, 0);
+        long ret = bpf_ringbuf_output(&socket_data_events, socket_data_event,
+                                      sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save, 0);
+        if (ret != 0 && log_socket_data_submit_stats) {
+            increment_counter(&socket_data_submit_failed_total);
+        }
 
         bytes_sent += current_size;
     }

@@ -80,9 +80,9 @@ func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
 		defaultMB int
 	}
 	confs := []rbConf{
-		{"TRAFFIC_RINGBUF_DATA_MB", "socket_data_events", 0},
-		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 0},
-		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 0},
+		{"TRAFFIC_RINGBUF_DATA_MB", "socket_data_events", 1024},
+		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 32},
+		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 32},
 	}
 	for _, c := range confs {
 		sizeMB := c.defaultMB
@@ -143,40 +143,69 @@ func replaceDisableRingSubmit(spec *ebpf.CollectionSpec) {
 	}
 }
 
-// startSocketDataSubmitStatsReporter reads BPF map socket_data_submit_total every 10s when
-// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. The kernel increments once per socket_data ringbuf submit.
+// startSocketDataSubmitStatsReporter reads BPF submit counters every 10s when
+// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. The kernel increments these around
+// ringbuf_output, so failures indicate event loss before userspace can read.
 func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 	var logBPFSubmits bool
 	trafficUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logBPFSubmits)
 	if !logBPFSubmits {
 		return
 	}
-	dataMap, ok := coll.Maps["socket_data_submit_total"]
-	if !ok {
-		slog.Warn("BPF map socket_data_submit_total not found; rebuild kernel/module.bpf.o with latest module.bpf.c")
+
+	type counterSpec struct {
+		name string
+		m    *ebpf.Map
+		prev uint64
+		seen bool
+	}
+	counterNames := []string{
+		"socket_data_submit_total",
+		"socket_data_submit_failed_total",
+		"socket_open_submit_total",
+		"socket_open_submit_failed_total",
+		"socket_close_submit_total",
+		"socket_close_submit_failed_total",
+	}
+	counters := make([]counterSpec, 0, len(counterNames))
+	for _, name := range counterNames {
+		m, ok := coll.Maps[name]
+		if !ok {
+			slog.Warn("BPF submit counter map not found; rebuild kernel/module.bpf.o with latest module.bpf.c", "map", name)
+			continue
+		}
+		counters = append(counters, counterSpec{name: name, m: m})
+	}
+	if len(counters) == 0 {
 		return
 	}
+
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		var prev uint64
-		primed := false
 		key := uint32(0)
 		for range ticker.C {
-			var total uint64
-			if err := dataMap.Lookup(key, &total); err != nil {
+			args := make([]any, 0, 2+len(counters)*2)
+			for i := range counters {
+				var total uint64
+				if err := counters[i].m.Lookup(key, &total); err != nil {
+					continue
+				}
+				delta := uint64(0)
+				if counters[i].seen {
+					delta = total - counters[i].prev
+				}
+				counters[i].prev = total
+				counters[i].seen = true
+				args = append(args,
+					counters[i].name+"Delta", delta,
+					counters[i].name+"Total", total,
+				)
+			}
+			if len(args) == 0 {
 				continue
 			}
-			if !primed {
-				prev = total
-				primed = true
-				continue
-			}
-			delta := total - prev
-			prev = total
-			slog.Warn("BPF socket_data ringbuf_submit stats",
-				"countInWindow", delta,
-				"cumulativeSubmits", total)
+			slog.Warn("BPF ringbuf submit stats", args...)
 		}
 	}()
 }
@@ -195,6 +224,12 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 		"socket_data_events",
 		"socket_open_events",
 		"socket_close_events",
+		"socket_data_submit_total",
+		"socket_data_submit_failed_total",
+		"socket_open_submit_total",
+		"socket_open_submit_failed_total",
+		"socket_close_submit_total",
+		"socket_close_submit_failed_total",
 		"conn_info_map",
 		"conn_info_map_keys",
 		"socket_data_event_buffer_heap",
