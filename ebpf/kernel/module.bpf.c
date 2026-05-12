@@ -875,7 +875,49 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
  *
  * Returns the number of bytes actually read, or 0 on failure/skip.
  */
-static __noinline u32 bounded_probe_read_user(
+static __noinline u32 bounded_probe_read_user_1kb(
+        struct socket_data_event_t *event, u32 size, const void *src) {
+    if (size >= SOCKET_DATA_MSG_1KB) {
+        size = SOCKET_DATA_MSG_1KB;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    if (bpf_probe_read_user(event->msg, size, src) != 0) {
+        return 0;
+    }
+    return size;
+}
+
+static __noinline u32 bounded_probe_read_user_4kb(
+        struct socket_data_event_t *event, u32 size, const void *src) {
+    if (size >= SOCKET_DATA_MSG_4KB) {
+        size = SOCKET_DATA_MSG_4KB;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    if (bpf_probe_read_user(event->msg, size, src) != 0) {
+        return 0;
+    }
+    return size;
+}
+
+static __noinline u32 bounded_probe_read_user_16kb(
+        struct socket_data_event_t *event, u32 size, const void *src) {
+    if (size >= SOCKET_DATA_MSG_16KB) {
+        size = SOCKET_DATA_MSG_16KB;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    if (bpf_probe_read_user(event->msg, size, src) != 0) {
+        return 0;
+    }
+    return size;
+}
+
+static __noinline u32 bounded_probe_read_user_max(
         struct socket_data_event_t *event, u32 size, const void *src) {
     if (size >= MAX_MSG_SIZE) {
         size = MAX_MSG_SIZE;
@@ -964,14 +1006,35 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         }
 
         struct socket_data_event_t* socket_data_event;
+        u32 read_size = 0;
         if (current_size <= SOCKET_DATA_MSG_1KB) {
             socket_data_event = reserve_socket_data_event_1kb();
+            if (socket_data_event != NULL) {
+                read_size = bounded_probe_read_user_1kb(
+                    socket_data_event, current_size,
+                    (const char *)args->buf + bytes_sent);
+            }
         } else if (current_size <= SOCKET_DATA_MSG_4KB) {
             socket_data_event = reserve_socket_data_event_4kb();
+            if (socket_data_event != NULL) {
+                read_size = bounded_probe_read_user_4kb(
+                    socket_data_event, current_size,
+                    (const char *)args->buf + bytes_sent);
+            }
         } else if (current_size <= SOCKET_DATA_MSG_16KB) {
             socket_data_event = reserve_socket_data_event_16kb();
+            if (socket_data_event != NULL) {
+                read_size = bounded_probe_read_user_16kb(
+                    socket_data_event, current_size,
+                    (const char *)args->buf + bytes_sent);
+            }
         } else {
             socket_data_event = reserve_socket_data_event_max();
+            if (socket_data_event != NULL) {
+                read_size = bounded_probe_read_user_max(
+                    socket_data_event, current_size,
+                    (const char *)args->buf + bytes_sent);
+            }
         }
         if (socket_data_event == NULL) {
             if (log_socket_data_submit_stats) {
@@ -988,9 +1051,6 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         socket_data_event->ip            = conn_info->ip;
         socket_data_event->ssl           = conn_info->ssl;
 
-        u32 read_size = bounded_probe_read_user(
-            socket_data_event, current_size,
-            (const char *)args->buf + bytes_sent);
         if (read_size == 0 && current_size > 0) {
             bpf_ringbuf_discard(socket_data_event, 0);
             break;
