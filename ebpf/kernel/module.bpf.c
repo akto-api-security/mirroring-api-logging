@@ -874,11 +874,13 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
  * size ∈ [0, MAX_MSG_SIZE] which fits in msg[MAX_MSG_SIZE].
  *
  * Returns the number of bytes actually read, or 0 on failure/skip.
+ * Each bucket has its own helper so the verifier can prove the helper size
+ * argument fits inside the matching reserved ringbuf record.
  */
 static __noinline u32 bounded_probe_read_user_1kb(
         struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size >= SOCKET_DATA_MSG_1KB) {
-        size = SOCKET_DATA_MSG_1KB;
+    if (size > SOCKET_DATA_MSG_1KB) {
+        return 0;
     }
     if (size == 0) {
         return 0;
@@ -891,8 +893,8 @@ static __noinline u32 bounded_probe_read_user_1kb(
 
 static __noinline u32 bounded_probe_read_user_4kb(
         struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size >= SOCKET_DATA_MSG_4KB) {
-        size = SOCKET_DATA_MSG_4KB;
+    if (size > SOCKET_DATA_MSG_4KB) {
+        return 0;
     }
     if (size == 0) {
         return 0;
@@ -905,8 +907,8 @@ static __noinline u32 bounded_probe_read_user_4kb(
 
 static __noinline u32 bounded_probe_read_user_16kb(
         struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size >= SOCKET_DATA_MSG_16KB) {
-        size = SOCKET_DATA_MSG_16KB;
+    if (size > SOCKET_DATA_MSG_16KB) {
+        return 0;
     }
     if (size == 0) {
         return 0;
@@ -919,8 +921,8 @@ static __noinline u32 bounded_probe_read_user_16kb(
 
 static __noinline u32 bounded_probe_read_user_max(
         struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size >= MAX_MSG_SIZE) {
-        size = MAX_MSG_SIZE;
+    if (size > MAX_MSG_SIZE) {
+        return 0;
     }
     if (size == 0) {
         return 0;
