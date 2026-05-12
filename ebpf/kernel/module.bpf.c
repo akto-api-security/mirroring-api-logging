@@ -112,14 +112,6 @@ volatile const bool disable_ring_submit = false;
 #define LOOP_LIMIT   42
 #define SOCKET_DATA_RINGBUF_SHARDS 8
 #define SOCKET_DATA_RINGBUF_SHARD_SIZE (64 * 1024 * 1024)
-#define SOCKET_DATA_MSG_1KB 1024
-#define SOCKET_DATA_MSG_4KB 4096
-#define SOCKET_DATA_MSG_16KB 16384
-#define SOCKET_DATA_EVENT_HEADER_SIZE (sizeof(struct socket_data_event_t) - MAX_MSG_SIZE)
-#define SOCKET_DATA_EVENT_SIZE_1KB (SOCKET_DATA_EVENT_HEADER_SIZE + SOCKET_DATA_MSG_1KB)
-#define SOCKET_DATA_EVENT_SIZE_4KB (SOCKET_DATA_EVENT_HEADER_SIZE + SOCKET_DATA_MSG_4KB)
-#define SOCKET_DATA_EVENT_SIZE_16KB (SOCKET_DATA_EVENT_HEADER_SIZE + SOCKET_DATA_MSG_16KB)
-#define SOCKET_DATA_EVENT_SIZE_MAX (SOCKET_DATA_EVENT_HEADER_SIZE + MAX_MSG_SIZE)
 
 static __always_inline void increment_counter(void *counter_map) {
     u32 key = 0;
@@ -423,6 +415,13 @@ struct {
 } system_cpu_ingest_paused SEC(".maps");
 
 struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct socket_data_event_t);
+} socket_data_event_buffer_heap SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 65536);
     __type(key, u64);
@@ -559,7 +558,7 @@ struct go_regabi_regs {
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, u32);
     __type(value, struct go_regabi_regs);
@@ -589,35 +588,21 @@ static __always_inline bool is_system_cpu_ingest_paused(void) {
     return paused != NULL && *paused != 0;
 }
 
-#define DEFINE_SOCKET_DATA_RESERVE_HELPER(name, record_size)                         \
-static __always_inline struct socket_data_event_t *name(void) {                     \
-    u32 shard = bpf_get_smp_processor_id() & (SOCKET_DATA_RINGBUF_SHARDS - 1);      \
-    switch (shard) {                                                                \
-    case 0:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_0, record_size, 0);          \
-    case 1:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_1, record_size, 0);          \
-    case 2:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_2, record_size, 0);          \
-    case 3:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_3, record_size, 0);          \
-    case 4:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_4, record_size, 0);          \
-    case 5:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_5, record_size, 0);          \
-    case 6:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_6, record_size, 0);          \
-    case 7:                                                                         \
-        return bpf_ringbuf_reserve(&socket_data_events_7, record_size, 0);          \
-    default:                                                                        \
-        return bpf_ringbuf_reserve(&socket_data_events_0, record_size, 0);          \
-    }                                                                               \
+static __always_inline long output_to_data_shard(
+        void *data, u64 size) {
+    u32 shard = bpf_get_smp_processor_id() & (SOCKET_DATA_RINGBUF_SHARDS - 1);
+    switch (shard) {
+    case 0: return bpf_ringbuf_output(&socket_data_events_0, data, size, 0);
+    case 1: return bpf_ringbuf_output(&socket_data_events_1, data, size, 0);
+    case 2: return bpf_ringbuf_output(&socket_data_events_2, data, size, 0);
+    case 3: return bpf_ringbuf_output(&socket_data_events_3, data, size, 0);
+    case 4: return bpf_ringbuf_output(&socket_data_events_4, data, size, 0);
+    case 5: return bpf_ringbuf_output(&socket_data_events_5, data, size, 0);
+    case 6: return bpf_ringbuf_output(&socket_data_events_6, data, size, 0);
+    case 7: return bpf_ringbuf_output(&socket_data_events_7, data, size, 0);
+    default: return bpf_ringbuf_output(&socket_data_events_0, data, size, 0);
+    }
 }
-
-DEFINE_SOCKET_DATA_RESERVE_HELPER(reserve_socket_data_event_1kb, SOCKET_DATA_EVENT_SIZE_1KB)
-DEFINE_SOCKET_DATA_RESERVE_HELPER(reserve_socket_data_event_4kb, SOCKET_DATA_EVENT_SIZE_4KB)
-DEFINE_SOCKET_DATA_RESERVE_HELPER(reserve_socket_data_event_16kb, SOCKET_DATA_EVENT_SIZE_16KB)
-DEFINE_SOCKET_DATA_RESERVE_HELPER(reserve_socket_data_event_max, SOCKET_DATA_EVENT_SIZE_MAX)
 
 static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
@@ -874,73 +859,8 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
  * size ∈ [0, MAX_MSG_SIZE] which fits in msg[MAX_MSG_SIZE].
  *
  * Returns the number of bytes actually read, or 0 on failure/skip.
- * Each bucket has its own helper so the verifier can prove the helper size
- * argument fits inside the matching reserved ringbuf record.
  */
-static __noinline u32 bounded_probe_read_user_1kb(
-        struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size > SOCKET_DATA_MSG_1KB) {
-        return 0;
-    }
-    if (size == SOCKET_DATA_MSG_1KB) {
-        if (bpf_probe_read_user(event->msg, SOCKET_DATA_MSG_1KB, src) != 0) {
-            return 0;
-        }
-        return SOCKET_DATA_MSG_1KB;
-    }
-    size &= (SOCKET_DATA_MSG_1KB - 1);
-    if (size == 0) {
-        return 0;
-    }
-    if (bpf_probe_read_user(event->msg, size, src) != 0) {
-        return 0;
-    }
-    return size;
-}
-
-static __noinline u32 bounded_probe_read_user_4kb(
-        struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size > SOCKET_DATA_MSG_4KB) {
-        return 0;
-    }
-    if (size == SOCKET_DATA_MSG_4KB) {
-        if (bpf_probe_read_user(event->msg, SOCKET_DATA_MSG_4KB, src) != 0) {
-            return 0;
-        }
-        return SOCKET_DATA_MSG_4KB;
-    }
-    size &= (SOCKET_DATA_MSG_4KB - 1);
-    if (size == 0) {
-        return 0;
-    }
-    if (bpf_probe_read_user(event->msg, size, src) != 0) {
-        return 0;
-    }
-    return size;
-}
-
-static __noinline u32 bounded_probe_read_user_16kb(
-        struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size > SOCKET_DATA_MSG_16KB) {
-        return 0;
-    }
-    if (size == SOCKET_DATA_MSG_16KB) {
-        if (bpf_probe_read_user(event->msg, SOCKET_DATA_MSG_16KB, src) != 0) {
-            return 0;
-        }
-        return SOCKET_DATA_MSG_16KB;
-    }
-    size &= (SOCKET_DATA_MSG_16KB - 1);
-    if (size == 0) {
-        return 0;
-    }
-    if (bpf_probe_read_user(event->msg, size, src) != 0) {
-        return 0;
-    }
-    return size;
-}
-
-static __noinline u32 bounded_probe_read_user_max(
+static __noinline u32 bounded_probe_read_user(
         struct socket_data_event_t *event, u32 size, const void *src) {
     if (size >= MAX_MSG_SIZE) {
         size = MAX_MSG_SIZE;
@@ -1007,6 +927,20 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         bpf_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
     }
 
+    u32 kZero = 0;
+    struct socket_data_event_t* socket_data_event =
+        bpf_map_lookup_elem(&socket_data_event_buffer_heap, &kZero);
+    if (socket_data_event == NULL) {
+        return;
+    }
+
+    socket_data_event->id            = conn_info->id;
+    socket_data_event->fd            = conn_info->fd;
+    socket_data_event->conn_start_ns = conn_info->conn_start_ns;
+    socket_data_event->port          = conn_info->port;
+    socket_data_event->ip            = conn_info->ip;
+    socket_data_event->ssl           = conn_info->ssl;
+
     int bytes_sent  = 0;
     u32  size_to_save = 0;
     int i = 0;
@@ -1024,58 +958,10 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
             current_size = (u32)bytes_remaining;
         }
 
-        if (log_socket_data_submit_stats) {
-            increment_counter(&socket_data_submit_total);
-        }
-
-        struct socket_data_event_t* socket_data_event;
-        u32 read_size = 0;
-        if (current_size <= SOCKET_DATA_MSG_1KB) {
-            socket_data_event = reserve_socket_data_event_1kb();
-            if (socket_data_event != NULL) {
-                read_size = bounded_probe_read_user_1kb(
-                    socket_data_event, current_size,
-                    (const char *)args->buf + bytes_sent);
-            }
-        } else if (current_size <= SOCKET_DATA_MSG_4KB) {
-            socket_data_event = reserve_socket_data_event_4kb();
-            if (socket_data_event != NULL) {
-                read_size = bounded_probe_read_user_4kb(
-                    socket_data_event, current_size,
-                    (const char *)args->buf + bytes_sent);
-            }
-        } else if (current_size <= SOCKET_DATA_MSG_16KB) {
-            socket_data_event = reserve_socket_data_event_16kb();
-            if (socket_data_event != NULL) {
-                read_size = bounded_probe_read_user_16kb(
-                    socket_data_event, current_size,
-                    (const char *)args->buf + bytes_sent);
-            }
-        } else {
-            socket_data_event = reserve_socket_data_event_max();
-            if (socket_data_event != NULL) {
-                read_size = bounded_probe_read_user_max(
-                    socket_data_event, current_size,
-                    (const char *)args->buf + bytes_sent);
-            }
-        }
-        if (socket_data_event == NULL) {
-            if (log_socket_data_submit_stats) {
-                increment_counter(&socket_data_submit_failed_total);
-            }
-            bytes_sent += current_size;
-            continue;
-        }
-
-        socket_data_event->id            = conn_info->id;
-        socket_data_event->fd            = conn_info->fd;
-        socket_data_event->conn_start_ns = conn_info->conn_start_ns;
-        socket_data_event->port          = conn_info->port;
-        socket_data_event->ip            = conn_info->ip;
-        socket_data_event->ssl           = conn_info->ssl;
-
+        u32 read_size = bounded_probe_read_user(
+            socket_data_event, current_size,
+            (const char *)args->buf + bytes_sent);
         if (read_size == 0 && current_size > 0) {
-            bpf_ringbuf_discard(socket_data_event, 0);
             break;
         }
         size_to_save = read_size;
@@ -1102,7 +988,14 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
 
         socket_data_event->bytes_sent  = is_send ? 1 : -1;
         socket_data_event->bytes_sent *= size_to_save;
-        bpf_ringbuf_submit(socket_data_event, 0);
+        if (log_socket_data_submit_stats) {
+            increment_counter(&socket_data_submit_total);
+        }
+        long ret = output_to_data_shard(socket_data_event,
+            sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+        if (ret != 0 && log_socket_data_submit_stats) {
+            increment_counter(&socket_data_submit_failed_total);
+        }
 
         bytes_sent += current_size;
     }

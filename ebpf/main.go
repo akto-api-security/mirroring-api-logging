@@ -263,6 +263,7 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 		"socket_close_submit_total",
 		"socket_close_submit_failed_total",
 		"system_cpu_ingest_paused",
+		"socket_data_event_buffer_heap",
 		"conn_info_map",
 		"conn_info_map_keys",
 		"active_ssl_read_args_map",
