@@ -102,13 +102,15 @@ var (
 		27017: true,
 		// redis
 		6379: true}
-	ignorePorts      = true
-	globalReader     = &bytes.Reader{}
-	globalReaderLock sync.Mutex
+	ignorePorts              = true
+	globalReader             = &bytes.Reader{}
+	globalReaderLock         sync.Mutex
+	logSocketDataSubmitStats bool
 )
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+	metaUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logSocketDataSubmitStats)
 }
 
 func min(a, b int32) int32 {
@@ -131,7 +133,7 @@ var (
 // handed to the connection factory (after decode, port filter, and payload copy).
 func noteSocketDataInboundBeforeSend() {
 
-	if metaUtils.LogLevel() != slog.LevelDebug {
+	if !logSocketDataSubmitStats {
 		return
 	}
 
@@ -145,7 +147,7 @@ func noteSocketDataInboundBeforeSend() {
 	if d < socketDataInboundLogInterval {
 		return
 	}
-	slog.Debug("socket_data events reaching eventCallback",
+	slog.Warn("socket_data events reaching eventCallback",
 		"countInWindow", socketDataInboundCount,
 		"window", d.String())
 	socketDataInboundCount = 0

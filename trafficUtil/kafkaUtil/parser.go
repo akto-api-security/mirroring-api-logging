@@ -263,6 +263,11 @@ var (
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
+	parserMetricsMutex         = sync.Mutex{}
+	parserEventsInWindow       uint64
+	parserReceiveBytesWindow   uint64
+	parserSentBytesWindow      uint64
+	lastParserMetricsLog       time.Time
 	injectTagsMap              = map[string]string{}
 	methodsMap                 = map[string]bool{
 		"GET":     true,
@@ -291,6 +296,37 @@ var (
 var bloomFilter *bloomfilter.BloomFilter
 
 const ONE_MINUTE = 60
+const parserMetricsInterval = 10 * time.Second
+
+func noteParserEvent(receiveBytes int, sentBytes int) {
+	parserMetricsMutex.Lock()
+	defer parserMetricsMutex.Unlock()
+
+	parserEventsInWindow++
+	parserReceiveBytesWindow += uint64(receiveBytes)
+	parserSentBytesWindow += uint64(sentBytes)
+
+	now := time.Now()
+	if lastParserMetricsLog.IsZero() {
+		lastParserMetricsLog = now
+		return
+	}
+
+	if now.Sub(lastParserMetricsLog) < parserMetricsInterval {
+		return
+	}
+
+	slog.Warn("parser events received",
+		"countInWindow", parserEventsInWindow,
+		"window", now.Sub(lastParserMetricsLog).String(),
+		"receiveBytesInWindow", parserReceiveBytesWindow,
+		"sentBytesInWindow", parserSentBytesWindow,
+	)
+	parserEventsInWindow = 0
+	parserReceiveBytesWindow = 0
+	parserSentBytesWindow = 0
+	lastParserMetricsLog = now
+}
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
@@ -611,6 +647,8 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
+	noteParserEvent(len(receiveBuffer), len(sentBuffer))
+
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
