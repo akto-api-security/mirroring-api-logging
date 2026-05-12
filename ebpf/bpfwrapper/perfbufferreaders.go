@@ -6,38 +6,38 @@ import (
 	"log"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-// ProbeEventLoop is the signature for callbacks that drain ring buffer channels.
-type ProbeEventLoop func(inputChan chan []byte, connectionFactory *connections.Factory)
+// ProbeEventHandler processes a single ring buffer record inline in the reader goroutine.
+// data is backed by the reader's internal buffer and is only valid until the handler returns;
+// the handler must copy out any bytes it needs to keep.
+type ProbeEventHandler func(data []byte, connectionFactory *connections.Factory)
 
-// ProbeChannel links a named BPF ring buffer to a Go channel and event loop.
+// ProbeChannel links a named BPF ring buffer to an event handler.
 type ProbeChannel struct {
-	name         string
-	eventLoop    ProbeEventLoop
-	eventChannel chan []byte
-	reader       *ringbuf.Reader
+	name    string
+	handler ProbeEventHandler
+	reader  *ringbuf.Reader
 }
 
 // NewProbeChannel creates a new probe channel for the given BPF ring buffer name.
-func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
+func NewProbeChannel(name string, handler ProbeEventHandler) *ProbeChannel {
 	return &ProbeChannel{
-		name:      name,
-		eventLoop: handler,
+		name:    name,
+		handler: handler,
 	}
 }
 
-// Start opens the ring buffer reader, launches the event loop goroutine and starts draining.
+// Start opens the ring buffer reader and processes events inline — no intermediate Go channel.
+// The kernel ring buffer (mmap'd) acts as the sole buffer. Backpressure propagates directly:
+// if the handler is slow, ReadInto blocks, the kernel ring fills, and BPF drops at the source.
 func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connections.Factory) error {
 	m, ok := coll.Maps[pc.name]
 	if !ok {
 		return fmt.Errorf("BPF map %q not found in collection", pc.name)
 	}
-
-	pc.eventChannel = make(chan []byte, kafkaUtil.EventChanBuffSize)
 
 	var err error
 	pc.reader, err = ringbuf.NewReader(m)
@@ -45,30 +45,25 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 		return fmt.Errorf("failed to open ring buffer reader for %q: %v", pc.name, err)
 	}
 
-	go pc.eventLoop(pc.eventChannel, connectionFactory)
-
 	go func() {
-		log.Printf("ring buffer reader started for channel %s", pc.name)
+		log.Printf("ring buffer reader started for %s", pc.name)
 		var rec ringbuf.Record
 		for {
 			if err := pc.reader.ReadInto(&rec); err != nil {
 				if errors.Is(err, ringbuf.ErrClosed) {
-					close(pc.eventChannel)
 					return
 				}
 				log.Printf("error reading ring buffer event on %s: %v", pc.name, err)
 				continue
 			}
-			buf := make([]byte, len(rec.RawSample))
-			copy(buf, rec.RawSample)
-			pc.eventChannel <- buf
+			pc.handler(rec.RawSample, connectionFactory)
 		}
 	}()
 
 	return nil
 }
 
-// Stop closes the underlying ring buffer reader, which will unblock the drain goroutine.
+// Stop closes the underlying ring buffer reader, which will unblock the reader goroutine.
 func (pc *ProbeChannel) Stop() {
 	if pc.reader != nil {
 		pc.reader.Close()
