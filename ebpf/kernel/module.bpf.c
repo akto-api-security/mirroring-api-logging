@@ -882,6 +882,13 @@ static __noinline u32 bounded_probe_read_user_1kb(
     if (size > SOCKET_DATA_MSG_1KB) {
         return 0;
     }
+    if (size == SOCKET_DATA_MSG_1KB) {
+        if (bpf_probe_read_user(event->msg, SOCKET_DATA_MSG_1KB, src) != 0) {
+            return 0;
+        }
+        return SOCKET_DATA_MSG_1KB;
+    }
+    size &= (SOCKET_DATA_MSG_1KB - 1);
     if (size == 0) {
         return 0;
     }
@@ -896,6 +903,13 @@ static __noinline u32 bounded_probe_read_user_4kb(
     if (size > SOCKET_DATA_MSG_4KB) {
         return 0;
     }
+    if (size == SOCKET_DATA_MSG_4KB) {
+        if (bpf_probe_read_user(event->msg, SOCKET_DATA_MSG_4KB, src) != 0) {
+            return 0;
+        }
+        return SOCKET_DATA_MSG_4KB;
+    }
+    size &= (SOCKET_DATA_MSG_4KB - 1);
     if (size == 0) {
         return 0;
     }
@@ -910,6 +924,13 @@ static __noinline u32 bounded_probe_read_user_16kb(
     if (size > SOCKET_DATA_MSG_16KB) {
         return 0;
     }
+    if (size == SOCKET_DATA_MSG_16KB) {
+        if (bpf_probe_read_user(event->msg, SOCKET_DATA_MSG_16KB, src) != 0) {
+            return 0;
+        }
+        return SOCKET_DATA_MSG_16KB;
+    }
+    size &= (SOCKET_DATA_MSG_16KB - 1);
     if (size == 0) {
         return 0;
     }
@@ -921,8 +942,8 @@ static __noinline u32 bounded_probe_read_user_16kb(
 
 static __noinline u32 bounded_probe_read_user_max(
         struct socket_data_event_t *event, u32 size, const void *src) {
-    if (size > MAX_MSG_SIZE) {
-        return 0;
+    if (size >= MAX_MSG_SIZE) {
+        size = MAX_MSG_SIZE;
     }
     if (size == 0) {
         return 0;
