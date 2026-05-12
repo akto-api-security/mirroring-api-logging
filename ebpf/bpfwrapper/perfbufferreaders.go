@@ -4,11 +4,24 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
 )
+
+var (
+	logRingbufStats      bool
+	ringbufStatsInterval = 10 * time.Second
+)
+
+func init() {
+	metaUtils.InitVar("TRAFFIC_LOG_RINGBUF_STATS", &logRingbufStats)
+	metaUtils.InitVar("TRAFFIC_RINGBUF_STATS_INTERVAL", &ringbufStatsInterval)
+}
 
 // ProbeEventHandler processes a single ring buffer record inline in the reader goroutine.
 // data is backed by the reader's internal buffer and is only valid until the handler returns;
@@ -30,7 +43,7 @@ func NewProbeChannel(name string, handler ProbeEventHandler) *ProbeChannel {
 	}
 }
 
-// Start opens the ring buffer reader and processes events inline — no intermediate Go channel.
+// Start opens the ring buffer reader and processes events inline with no intermediate Go channel.
 // The kernel ring buffer (mmap'd) acts as the sole buffer. Backpressure propagates directly:
 // if the handler is slow, ReadInto blocks, the kernel ring fills, and BPF drops at the source.
 func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connections.Factory) error {
@@ -48,6 +61,9 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 	go func() {
 		log.Printf("ring buffer reader started for %s", pc.name)
 		var rec ringbuf.Record
+		var eventsInWindow uint64
+		var lastStatsLog time.Time
+		minRemaining := -1
 		for {
 			if err := pc.reader.ReadInto(&rec); err != nil {
 				if errors.Is(err, ringbuf.ErrClosed) {
@@ -56,11 +72,44 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 				log.Printf("error reading ring buffer event on %s: %v", pc.name, err)
 				continue
 			}
+			if logRingbufStats {
+				eventsInWindow++
+				if minRemaining < 0 || rec.Remaining < minRemaining {
+					minRemaining = rec.Remaining
+				}
+				now := time.Now()
+				if lastStatsLog.IsZero() {
+					lastStatsLog = now
+				} else if now.Sub(lastStatsLog) >= ringbufStatsInterval {
+					bufferSize := pc.reader.BufferSize()
+					availableBytes := pc.reader.AvailableBytes()
+					slog.Warn("ring buffer stats",
+						"map", pc.name,
+						"eventsInWindow", eventsInWindow,
+						"window", now.Sub(lastStatsLog).String(),
+						"bufferSizeBytes", bufferSize,
+						"availableBytes", availableBytes,
+						"availablePct", pct(availableBytes, bufferSize),
+						"lastRecordRemainingBytes", rec.Remaining,
+						"minRecordRemainingBytes", minRemaining,
+					)
+					eventsInWindow = 0
+					minRemaining = -1
+					lastStatsLog = now
+				}
+			}
 			pc.handler(rec.RawSample, connectionFactory)
 		}
 	}()
 
 	return nil
+}
+
+func pct(n, d int) float64 {
+	if d == 0 {
+		return 0
+	}
+	return float64(n) * 100 / float64(d)
 }
 
 // Stop closes the underlying ring buffer reader, which will unblock the reader goroutine.

@@ -75,9 +75,9 @@ func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 // Values must be powers of 2; the BPF C defaults are used when env vars are unset.
 func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
 	type rbConf struct {
-		envVar     string
-		mapName    string
-		defaultMB  int
+		envVar    string
+		mapName   string
+		defaultMB int
 	}
 	confs := []rbConf{
 		{"TRAFFIC_RINGBUF_DATA_MB", "socket_data_events", 0},
@@ -181,6 +181,94 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 	}()
 }
 
+func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
+	var logMapMemory bool
+	trafficUtils.InitVar("TRAFFIC_LOG_EBPF_MAP_MEMORY", &logMapMemory)
+	if !logMapMemory {
+		return
+	}
+
+	interval := 30 * time.Second
+	trafficUtils.InitVar("TRAFFIC_EBPF_MAP_MEMORY_INTERVAL", &interval)
+
+	mapNames := []string{
+		"socket_data_events",
+		"socket_open_events",
+		"socket_close_events",
+		"conn_info_map",
+		"conn_info_map_keys",
+		"socket_data_event_buffer_heap",
+		"active_ssl_read_args_map",
+		"active_ssl_write_args_map",
+		"node_tlswrap_symaddrs_map",
+		"active_TLSWrap_memfn_this",
+		"node_ssl_tls_wrap_map",
+		"go_symaddrs_table",
+		"active_tls_conn_op_map",
+	}
+
+	logEBPFMapMemorySnapshot(coll, mapNames)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			logEBPFMapMemorySnapshot(coll, mapNames)
+		}
+	}()
+}
+
+func logEBPFMapMemorySnapshot(coll *ebpf.Collection, mapNames []string) {
+	var totalMemlockBytes uint64
+	var totalMemorySizeBytes uint64
+	var mapsReported int
+
+	for _, name := range mapNames {
+		m, ok := coll.Maps[name]
+		if !ok {
+			continue
+		}
+
+		info, err := m.Info()
+		if err != nil {
+			slog.Warn("failed to read BPF map info", "map", name, "error", err)
+			continue
+		}
+
+		memlockBytes, hasMemlock := info.Memlock()
+		if hasMemlock {
+			totalMemlockBytes += memlockBytes
+		}
+
+		var memorySizeBytes uint32
+		hasMemory := false
+		if memory, err := m.Memory(); err == nil {
+			memorySizeBytes = memory.Size()
+			hasMemory = true
+			totalMemorySizeBytes += uint64(memorySizeBytes)
+		}
+
+		mapsReported++
+		slog.Warn("BPF map memory stats",
+			"map", name,
+			"type", info.Type,
+			"keySize", info.KeySize,
+			"valueSize", info.ValueSize,
+			"maxEntries", info.MaxEntries,
+			"flags", info.Flags,
+			"memlockBytes", memlockBytes,
+			"hasMemlock", hasMemlock,
+			"memorySizeBytes", memorySizeBytes,
+			"hasMemory", hasMemory,
+		)
+	}
+
+	slog.Warn("BPF map memory stats summary",
+		"mapsReported", mapsReported,
+		"totalMemlockBytes", totalMemlockBytes,
+		"totalMemorySizeBytes", totalMemorySizeBytes,
+	)
+}
+
 func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
@@ -236,6 +324,7 @@ func run() {
 	defer coll.Close()
 
 	startSocketDataSubmitStatsReporter(coll)
+	startEBPFMapMemoryReporter(coll)
 
 	// Track all links for deferred cleanup.
 	var allLinks []link.Link
