@@ -288,7 +288,7 @@ var (
 		"PATCH":   true}
 	DebugStrings = []string{}
 
-	EventChanBuffSize = 100000
+	EventChanBuffSize = 4096
 
 	lruCache            *LRUCache
 	lruCacheCapacity    = 100000

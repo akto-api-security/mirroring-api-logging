@@ -96,7 +96,7 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
-	sequenceCheckSkip = false
+	sequenceCheckSkip             = false
 )
 
 func init() {
@@ -281,17 +281,17 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					} else {
 						resetTimer(inactivityTimer, inactivityThreshold)
 					}
-			case structs.SocketOpenEvent:
-				if logEnabled {
-					utils.LogProcessing("Received open event", structs.ConnIDLogArgs(connID)...)
-				}
-				tracker.AddOpenEvent(e)
-				resetTimer(inactivityTimer, inactivityThreshold)
-			case structs.SocketCloseEvent:
-				if logEnabled {
-					utils.LogProcessing("Received close event", structs.ConnIDLogArgs(connID)...)
-				}
-				tracker.AddCloseEvent(e)
+				case structs.SocketOpenEvent:
+					if logEnabled {
+						utils.LogProcessing("Received open event", structs.ConnIDLogArgs(connID)...)
+					}
+					tracker.AddOpenEvent(e)
+					resetTimer(inactivityTimer, inactivityThreshold)
+				case structs.SocketCloseEvent:
+					if logEnabled {
+						utils.LogProcessing("Received close event", structs.ConnIDLogArgs(connID)...)
+					}
+					tracker.AddCloseEvent(e)
 
 					time.AfterFunc(100*time.Millisecond, func() {
 						delayedDeleteChan <- struct{}{}
