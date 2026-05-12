@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
+	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,6 +38,13 @@ var tlsCACertPath = "./ca.crt"
 var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
+
+// kafkaSaslMechanism controls which SASL mechanism to use when IS_AUTH_IMPLEMENTED=true.
+// Accepted values: "PLAIN", "SCRAM-SHA-512".
+// When empty (default), SCRAM-SHA-512 is tried first; if the initial connection test fails,
+// falls back to PLAIN for backwards compatibility with existing customers.
+// Set AKTO_KAFKA_SASL_MECHANISM explicitly to pin a mechanism and disable auto-detection.
+var kafkaSaslMechanism = ""
 
 var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
@@ -55,6 +64,7 @@ func init() {
 	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
 	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
 	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
+	utils.InitVar("AKTO_KAFKA_SASL_MECHANISM", &kafkaSaslMechanism)
 
 	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
@@ -114,29 +124,46 @@ func InitKafka() {
 		utils.PrintLog("logging kafka stats post pushing message")
 		LogKafkaStats()
 		if err != nil {
-			slog.Error("error establishing connection with kafka, sending message failed, retrying in 2 seconds", "error", err)
-			kafkaWriterMutex.Lock()
-			kafkaWriter.Close()
-			kafkaWriterMutex.Unlock()
-			if globalTransport != nil {
-				globalTransport.CloseIdleConnections()
+			// If no mechanism was explicitly set and SCRAM-SHA-512 just failed,
+			// try falling back to PLAIN before giving up on this iteration.
+			if isAuthImplemented && kafkaSaslMechanism == "" {
+				slog.Warn("SCRAM-SHA-512 connection failed, retrying with PLAIN mechanism", "error", err)
+				resetGlobalTransport(plain.Mechanism{Username: kafkaUsername, Password: kafkaPassword})
+				kafkaWriterMutex.Lock()
+				kafkaWriter.Close()
+				kafkaWriter = getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+				kafkaWriterMutex.Unlock()
+				err = ProduceStr(ctx, string(out), "testKafkaConnection", "testKafkaConnectionHost", "")
+				if err == nil {
+					slog.Info("PLAIN fallback succeeded, pinning PLAIN for this session")
+					kafkaSaslMechanism = "PLAIN"
+				}
 			}
-			time.Sleep(time.Second * 2)
-		} else {
-			utils.PrintLog("connection establishing with kafka successfully")
-			kafkaWriterMutex.Lock()
-			kafkaWriter.Completion = kafkaCompletion()
-			kafkaWriterMutex.Unlock()
 
-			// Start periodic reconnection routine
-			go periodicKafkaReconnect(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
-			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
-
-			// Start heartbeat routine
-			go sendKafkaHeartbeat()
-			slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
-			break
+			if err != nil {
+				slog.Error("error establishing connection with kafka, sending message failed, retrying in 2 seconds", "error", err)
+				kafkaWriterMutex.Lock()
+				kafkaWriter.Close()
+				kafkaWriterMutex.Unlock()
+				resetGlobalTransport(nil)
+				time.Sleep(time.Second * 2)
+				continue
+			}
 		}
+
+		utils.PrintLog("connection establishing with kafka successfully")
+		kafkaWriterMutex.Lock()
+		kafkaWriter.Completion = kafkaCompletion()
+		kafkaWriterMutex.Unlock()
+
+		// Start periodic reconnection routine
+		go periodicKafkaReconnect(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
+
+		// Start heartbeat routine
+		go sendKafkaHeartbeat()
+		slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
+		break
 	}
 }
 
@@ -477,39 +504,70 @@ func NewTLSConfig(caPath string) (*tls.Config, error) {
 	}, nil
 }
 
+// getTLSConfig returns a TLS config if useTLS is enabled, otherwise nil.
+func getTLSConfig() *tls.Config {
+	if !useTLS {
+		return nil
+	}
+	tlsConfig, err := NewTLSConfig(tlsCACertPath)
+	if err != nil {
+		slog.Error("Failed to create TLS config", "error", err)
+		return nil
+	}
+	return tlsConfig
+}
+
+// buildSASLMechanism returns the SASL mechanism based on kafkaSaslMechanism.
+// When kafkaSaslMechanism is empty, defaults to SCRAM-SHA-512 (caller handles fallback to PLAIN).
+func buildSASLMechanism() sasl.Mechanism {
+	if !isAuthImplemented || kafkaUsername == "" || kafkaPassword == "" {
+		return nil
+	}
+	if strings.ToUpper(kafkaSaslMechanism) == "PLAIN" {
+		slog.Info("Configuring SASL PLAIN authentication", "username", kafkaUsername)
+		return plain.Mechanism{Username: kafkaUsername, Password: kafkaPassword}
+	}
+	slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
+	mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
+	if err != nil {
+		slog.Error("Failed to create SCRAM-SHA-512 mechanism", "error", err)
+		return nil
+	}
+	return mechanism
+}
+
 func getKafkaDialer() *kafka.Dialer {
-	dialer := &kafka.Dialer{}
-
-	// Add TLS config if enabled
-	if useTLS {
-		tlsConfig, err := NewTLSConfig(tlsCACertPath)
-		if err != nil {
-			slog.Error("Failed to create TLS config", "error", err)
-		} else {
-			dialer.TLS = tlsConfig
-		}
+	return &kafka.Dialer{
+		TLS:           getTLSConfig(),
+		SASLMechanism: buildSASLMechanism(),
 	}
+}
 
-	// Add SASL auth if enabled
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
-		mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
-		if err != nil {
-			slog.Error("Failed to create SCRAM mechanism", "error", err)
-		} else {
-			dialer.SASLMechanism = mechanism
-		}
+// resetGlobalTransport replaces the global transport with a new one using the given SASL mechanism.
+// Pass nil to rebuild using the current kafkaSaslMechanism state.
+func resetGlobalTransport(saslMechanism sasl.Mechanism) {
+	if globalTransport != nil {
+		globalTransport.CloseIdleConnections()
 	}
-
-	return dialer
+	if saslMechanism == nil {
+		saslMechanism = buildSASLMechanism()
+	}
+	globalTransport = &kafka.Transport{
+		TLS:         getTLSConfig(),
+		SASL:        saslMechanism,
+		IdleTimeout: 30 * time.Second,
+		MetadataTTL: 60 * time.Second,
+	}
+	// reset the once so getGlobalTransport returns the new transport
+	transportOnce = sync.Once{}
+	transportOnce.Do(func() {}) // mark as done so future calls return globalTransport directly
 }
 
 func getGlobalTransport() *kafka.Transport {
 	transportOnce.Do(func() {
-		dialer := getKafkaDialer()
 		globalTransport = &kafka.Transport{
-			TLS:         dialer.TLS,
-			SASL:        dialer.SASLMechanism,
+			TLS:         getTLSConfig(),
+			SASL:        buildSASLMechanism(),
 			IdleTimeout: 30 * time.Second,
 			MetadataTTL: 60 * time.Second,
 		}
