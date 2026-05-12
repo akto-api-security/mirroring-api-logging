@@ -14,6 +14,8 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
+	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,17 +38,42 @@ var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
 
+// kafkaSaslMechanism controls which SASL mechanism to use when IS_AUTH_IMPLEMENTED=true.
+// Accepted values: "PLAIN", "SCRAM-SHA-512".
+// When empty (default), SCRAM-SHA-512 is tried first; if the initial connection test fails,
+// the retry loop in main.go falls back to PLAIN for backwards compatibility.
+// Set AKTO_KAFKA_SASL_MECHANISM explicitly to pin a mechanism and disable auto-detection.
+var kafkaSaslMechanism = ""
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
 	utils.InitVar("INSECURE_SKIP_VERIFY", &InsecureSkipVerify)
 	utils.InitVar("TLS_CA_CERT_PATH", &tlsCACertPath)
 
-	// Initialize SASL authentication variables
 	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
 	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
 	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
+	utils.InitVar("AKTO_KAFKA_SASL_MECHANISM", &kafkaSaslMechanism)
+}
 
+// buildSASLMechanism returns the configured SASL mechanism.
+// Defaults to SCRAM-SHA-512 when kafkaSaslMechanism is empty.
+func buildSASLMechanism() sasl.Mechanism {
+	if !isAuthImplemented || kafkaUsername == "" || kafkaPassword == "" {
+		return nil
+	}
+	if strings.ToUpper(kafkaSaslMechanism) == "PLAIN" {
+		slog.Info("Configuring SASL PLAIN authentication", "username", kafkaUsername)
+		return plain.Mechanism{Username: kafkaUsername, Password: kafkaPassword}
+	}
+	slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
+	mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
+	if err != nil {
+		slog.Error("Failed to create SCRAM-SHA-512 mechanism", "error", err)
+		return nil
+	}
+	return mechanism
 }
 
 func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
@@ -97,7 +124,7 @@ func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) s
 	return packetIp
 }
 
-func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string,  url, reqHost string) error {
+func ProduceStr(kafkaWriter *kafka.Writer, ctx context.Context, message string, url, reqHost string) error {
 	// intialize the writer with the broker addresses, and the topic
 	topic := "akto.api.logs"
 	utils.CheckDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
@@ -147,22 +174,13 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 		Compression:  kafka.Zstd,
 	}
 
-	// Configure transport with TLS and/or SASL authentication
-	transport := &kafka.Transport{}
+	transport := &kafka.Transport{
+		SASL: buildSASLMechanism(),
+	}
 
 	if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
 		transport.TLS = tlsConfig
-	}
-
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
-		mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
-		if err != nil {
-			slog.Error("Failed to create SCRAM mechanism", "error", err)
-		} else {
-			transport.SASL = mechanism
-		}
 	}
 
 	kafkaWriter.Transport = transport
@@ -180,22 +198,13 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 		MaxBytes: 10e6, // 10MB
 	}
 
-	// Configure dialer with TLS and/or SASL authentication
-	dialer := &kafka.Dialer{}
+	dialer := &kafka.Dialer{
+		SASLMechanism: buildSASLMechanism(),
+	}
 
 	if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
 		dialer.TLS = tlsConfig
-	}
-
-		if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
-		slog.Info("Configuring SASL SCRAM-SHA-512 authentication", "username", kafkaUsername)
-		mechanism, err := scram.Mechanism(scram.SHA512, kafkaUsername, kafkaPassword)
-		if err != nil {
-			slog.Error("Failed to create SCRAM mechanism", "error", err)
-		} else {
-			dialer.SASLMechanism = mechanism
-		}
 	}
 
 	config.Dialer = dialer
