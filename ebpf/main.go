@@ -42,16 +42,23 @@ func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 		}
 	}
 
-	// TRAFFIC_CAPTURE_LOOPBACK=true disables the loopback filter (default: skip loopback).
-	var captureLoopback bool
-	trafficUtils.InitVar("TRAFFIC_CAPTURE_LOOPBACK", &captureLoopback)
-	skipLoopback := !captureLoopback
-	if v, ok := spec.Variables["skip_loopback_conns"]; ok {
-		if err := v.Set(skipLoopback); err != nil {
-			slog.Warn("failed to set skip_loopback_conns variable", "error", err)
+	var filterLocalTraffic bool
+	trafficUtils.InitVar("FILTER_LOCAL_TRAFFIC", &filterLocalTraffic)
+	if v, ok := spec.Variables["filter_local_traffic"]; ok {
+		if err := v.Set(filterLocalTraffic); err != nil {
+			slog.Warn("failed to set filter_local_traffic variable", "error", err)
 		}
 	}
-	slog.Info("BPF loopback filter", "skipLoopbackConns", skipLoopback)
+
+	// 127.0.0.1 as little-endian u32: 127 + 0<<8 + 0<<16 + 1<<24 = 16777343
+	localTrafficIpLE := 16777343
+	trafficUtils.InitVar("LOCAL_TRAFFIC_IP_LE", &localTrafficIpLE)
+	if v, ok := spec.Variables["local_traffic_ip"]; ok {
+		if err := v.Set(uint32(localTrafficIpLE)); err != nil {
+			slog.Warn("failed to set local_traffic_ip variable", "error", err)
+		}
+	}
+	slog.Info("BPF local traffic filter", "filterLocalTraffic", filterLocalTraffic, "localTrafficIpLE", localTrafficIpLE)
 }
 
 func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {

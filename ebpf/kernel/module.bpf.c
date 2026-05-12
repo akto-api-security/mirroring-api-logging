@@ -87,10 +87,10 @@
 volatile const bool print_bpf_logs = false;
 /* When true (env TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS), count each socket_data ringbuf submit. */
 volatile const bool log_socket_data_submit_stats = false;
-/* When true (default), skip connections where the remote IP is in 127.0.0.0/8 (loopback).
- * This prevents duplicate capture when a reverse-proxy (e.g. nginx) forwards to a backend
- * on the same host via localhost.  Set to false via env TRAFFIC_CAPTURE_LOOPBACK=true. */
-volatile const bool skip_loopback_conns = true;
+/* When true (env FILTER_LOCAL_TRAFFIC), skip connections whose remote IP matches
+ * local_traffic_ip (default 127.0.0.1 as LE u32 = 16777343). */
+volatile const bool filter_local_traffic = false;
+volatile const __u32 local_traffic_ip = 16777343;
 /* When true (env TRAFFIC_STRICT_REMOTE_PORT_FILTER), only capture connections whose remote
  * port matches strict_remote_port (default 10275). */
 volatile const bool filter_strict_remote_port = false;
@@ -499,17 +499,6 @@ static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
-/*
- * is_loopback_ip — check if a u32 IP (as stored by skc_daddr, network byte
- * order read into a native-endian u32) falls in 127.0.0.0/8.
- *
- * On little-endian (x86-64, ARM64), the first octet of the IP address is
- * stored in the least-significant byte of the u32.  127.x.x.x ⇒ (ip & 0xFF) == 0x7F.
- */
-static __always_inline bool is_loopback_ip(u32 ip) {
-    return (ip & 0xFF) == 0x7F;
-}
-
 static __always_inline void process_syscall_accept(struct pt_regs* ctx,
                                              const struct accept_args_t* args,
                                              u64 id, bool isConnect) {
@@ -633,9 +622,9 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
-    if (skip_loopback_conns && is_loopback_ip(conn_info.ip)) {
+    if (filter_local_traffic && conn_info.ip == local_traffic_ip) {
         if (print_bpf_logs) {
-            bpf_printk("skipping loopback conn id: %llu ip: %u", id, conn_info.ip);
+            bpf_printk("Dropping local traffic ip:%u fd:%d", conn_info.ip, args->fd);
         }
         return;
     }

@@ -14,8 +14,8 @@ var printCounterResetAt = time.Now()
 const (
 	DirectionInbound  = 1
 	DirectionOutbound = 2
-	printCounterMax   = 1000
-	printCounterReset = 60 // seconds
+	printCounterMax   = 100
+	printCounterReset = 120 // seconds
 )
 
 /*
