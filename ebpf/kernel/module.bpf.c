@@ -588,7 +588,7 @@ static __always_inline bool is_system_cpu_ingest_paused(void) {
     return paused != NULL && *paused != 0;
 }
 
-static __always_inline long output_to_data_shard(
+static __noinline long output_to_data_shard(
         void *data, u64 size) {
     u32 shard = bpf_get_smp_processor_id() & (SOCKET_DATA_RINGBUF_SHARDS - 1);
     switch (shard) {
@@ -874,7 +874,7 @@ static __noinline u32 bounded_probe_read_user(
     return size;
 }
 
-static __always_inline void process_syscall_data(struct pt_regs* ctx,
+static __noinline void process_syscall_data(struct pt_regs* ctx,
                                            const struct data_args_t* args,
                                            u64 id, bool is_send, bool ssl) {
     int bytes_exchanged = PT_REGS_RC(ctx);
@@ -1001,7 +1001,7 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
     }
 }
 
-static __always_inline void process_syscall_data_vecs(struct pt_regs* ctx,
+static __noinline void process_syscall_data_vecs(struct pt_regs* ctx,
                                                 struct data_args_t* args,
                                                 u64 id, bool is_send) {
     int bytes_sent  = 0;
