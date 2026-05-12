@@ -81,8 +81,8 @@ func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
 	}
 	confs := []rbConf{
 		{"TRAFFIC_RINGBUF_DATA_MB", "socket_data_events", 1024},
-		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 32},
-		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 32},
+		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 64},
+		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 64},
 	}
 	for _, c := range confs {
 		sizeMB := c.defaultMB

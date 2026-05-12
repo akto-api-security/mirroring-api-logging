@@ -34,10 +34,6 @@ func init() {
 }
 
 func SocketOpenEventCallback(data []byte, connectionFactory *connections.Factory) {
-	if metaUtils.SystemCPUIngestPaused() {
-		return
-	}
-
 	if !connectionFactory.CanBeFilled() {
 		metaUtils.LogIngest("Connections filled")
 		return
@@ -61,10 +57,6 @@ func SocketOpenEventCallback(data []byte, connectionFactory *connections.Factory
 }
 
 func SocketCloseEventCallback(data []byte, connectionFactory *connections.Factory) {
-	if metaUtils.SystemCPUIngestPaused() {
-		return
-	}
-
 	if len(data) < closeEventSize {
 		slog.Error("socket close event too short", "len", len(data), "need", closeEventSize)
 		return
