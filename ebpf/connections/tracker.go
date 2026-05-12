@@ -47,7 +47,7 @@ func (conn *Tracker) IsComplete() bool {
 	defer conn.mutex.RUnlock()
 	complete := conn.closeTimestamp != 0 &&
 		uint64(time.Now().UnixNano()) >= conn.closeTimestamp
-	if complete {
+	if complete && metaUtils.ProcessLogsEnabled() {
 		metaUtils.LogProcessing("Connection closed", append(structs.ConnIDLogArgs(conn.connID), "closeTimestamp", conn.closeTimestamp, "currentTimestamp", uint64(time.Now().UnixNano()))...)
 	}
 	return complete
@@ -101,7 +101,7 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	defer conn.mutex.Unlock()
 
 	now := uint64(time.Now().UnixNano())
-	if conn.openTimestamp != 0 {
+	if conn.openTimestamp != 0 && metaUtils.IngestLogsEnabled() {
 		metaUtils.LogIngest("Changing conn open timestamp", "current", conn.openTimestamp, "new", now)
 	}
 	conn.openTimestamp = now

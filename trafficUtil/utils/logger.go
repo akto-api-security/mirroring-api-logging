@@ -53,6 +53,9 @@ func SetupLogger() {
 	SetupAllFileLoggers()
 }
 
+func IngestLogsEnabled() bool  { return ingestLogs }
+func ProcessLogsEnabled() bool { return processLogs }
+
 func LogIngest(format string, args ...any) {
 	if ingestLogs {
 		slog.Debug(format, args...)

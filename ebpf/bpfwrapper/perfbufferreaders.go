@@ -49,9 +49,9 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 
 	go func() {
 		log.Printf("ring buffer reader started for channel %s", pc.name)
+		var rec ringbuf.Record
 		for {
-			record, err := pc.reader.Read()
-			if err != nil {
+			if err := pc.reader.ReadInto(&rec); err != nil {
 				if errors.Is(err, ringbuf.ErrClosed) {
 					close(pc.eventChannel)
 					return
@@ -59,7 +59,9 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 				log.Printf("error reading ring buffer event on %s: %v", pc.name, err)
 				continue
 			}
-			pc.eventChannel <- record.RawSample
+			buf := make([]byte, len(rec.RawSample))
+			copy(buf, rec.RawSample)
+			pc.eventChannel <- buf
 		}
 	}()
 

@@ -69,17 +69,21 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 		connId := event.ConnId
 
 		if !captureLoopback && isLoopbackIP(connId.Ip) {
-			metaUtils.LogIngest("Skipping loopback socket open",
-				"fd", connId.Fd, "id", connId.Id, "ip", connId.Ip)
+			if metaUtils.IngestLogsEnabled() {
+				metaUtils.LogIngest("Skipping loopback socket open",
+					"fd", connId.Fd, "id", connId.Id, "ip", connId.Ip)
+			}
 			continue
 		}
 
-		metaUtils.LogIngest("Received socket open event",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port)
+		if metaUtils.IngestLogsEnabled() {
+			metaUtils.LogIngest("Received socket open event",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"ip", connId.Ip,
+				"port", connId.Port)
+		}
 		connectionFactory.CreateIfNotExists(connId)
 		connectionFactory.SendEvent(connId, &event)
 	}
@@ -101,12 +105,14 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		}
 
 		connId := event.ConnId
-		metaUtils.LogIngest("Received close on",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port)
+		if metaUtils.IngestLogsEnabled() {
+			metaUtils.LogIngest("Received close on",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"ip", connId.Ip,
+				"port", connId.Port)
+		}
 		connectionFactory.SendEvent(connId, &event)
 	}
 }
@@ -179,12 +185,14 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
-			metaUtils.LogIngest("Ignoring data for ignore port",
-				"fd", connId.Fd,
-				"id", connId.Id,
-				"timestamp", connId.Conn_start_ns,
-				"rc", attr.ReadEventsCount,
-				"wc", attr.WriteEventsCount)
+			if metaUtils.IngestLogsEnabled() {
+				metaUtils.LogIngest("Ignoring data for ignore port",
+					"fd", connId.Fd,
+					"id", connId.Id,
+					"timestamp", connId.Conn_start_ns,
+					"rc", attr.ReadEventsCount,
+					"wc", attr.WriteEventsCount)
+			}
 			continue
 		}
 
