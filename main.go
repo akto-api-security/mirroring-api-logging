@@ -941,6 +941,14 @@ func initKafka() {
 		log.Println("logging kafka stats post pushing message")
 		logKafkaStats()
 		if err != nil {
+			// If no mechanism was explicitly set and SCRAM-SHA-512 just failed,
+			// retry immediately with PLAIN before falling back to the normal sleep loop.
+			if isAuthImplemented && kafkaSaslMechanism == "" {
+				log.Println("SCRAM-SHA-512 connection failed, retrying with PLAIN mechanism", err)
+				kafkaSaslMechanism = "PLAIN"
+				kafkaWriter.Close()
+				continue
+			}
 			log.Println("error establishing connection with kafka, sending message failed, retrying in 2 seconds", err)
 			kafkaWriter.Close()
 			time.Sleep(time.Second * 2)
