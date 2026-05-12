@@ -71,6 +71,39 @@ func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 	}
 }
 
+// replaceRingBufSizes overrides ring buffer max_entries from env vars (in MB).
+// Values must be powers of 2; the BPF C defaults are used when env vars are unset.
+func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
+	type rbConf struct {
+		envVar     string
+		mapName    string
+		defaultMB  int
+	}
+	confs := []rbConf{
+		{"TRAFFIC_RINGBUF_DATA_MB", "socket_data_events", 0},
+		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 0},
+		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 0},
+	}
+	for _, c := range confs {
+		sizeMB := c.defaultMB
+		trafficUtils.InitVar(c.envVar, &sizeMB)
+		if sizeMB <= 0 {
+			continue
+		}
+		m, ok := spec.Maps[c.mapName]
+		if !ok {
+			continue
+		}
+		sizeBytes := uint32(sizeMB) * 1024 * 1024
+		if sizeBytes&(sizeBytes-1) != 0 {
+			slog.Warn("ring buffer size must be a power of 2, ignoring", "map", c.mapName, "sizeMB", sizeMB)
+			continue
+		}
+		m.MaxEntries = sizeBytes
+		slog.Info("ring buffer size overridden", "map", c.mapName, "sizeMB", sizeMB)
+	}
+}
+
 // replaceStrictRemotePortFilter gates socket_data on conn_info->port (remote / dest port in BPF).
 // When TRAFFIC_STRICT_REMOTE_PORT_FILTER is true, events for connections whose port != STRICT_REMOTE_PORT
 // are dropped (default port 10275).
@@ -184,6 +217,7 @@ func run() {
 	// Configure runtime parameters on the spec before loading into the kernel.
 	replaceBpfLogsMacros(spec)
 	replaceMaxConnectionMapSize(spec)
+	replaceRingBufSizes(spec)
 	replaceStrictRemotePortFilter(spec)
 	replaceDisableRingSubmit(spec)
 
