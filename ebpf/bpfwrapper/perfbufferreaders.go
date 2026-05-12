@@ -51,9 +51,9 @@ func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *c
 
 	go probeChannel.eventLoop(probeChannel.eventChannel, connectionFactory)
 	go func() {
-		slog.Warn("⚠️ Lost events on channel, starting to listen for lost events on channel %s", probeChannel.name)
+		slog.Warn("listening for lost perf buffer events", "channel", probeChannel.name)
 		for lost := range probeChannel.lostEventsChannel {
-			slog.Warn("⚠️ Lost %d events on channel %s", lost, probeChannel.name)
+			slog.Warn("lost events on perf buffer channel", "events_lost", lost, "channel", probeChannel.name)
 		}
 	}()
 
