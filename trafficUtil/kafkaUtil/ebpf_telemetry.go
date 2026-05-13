@@ -54,7 +54,7 @@ func getEnvData() map[string]string {
 	return envMap
 }
 
-func getCPUUsage() (cpuPercent float64, cpuCoresUsed float64) {
+func getCPUUsage() (cpuPercent float64) {
 	var rusage syscall.Rusage
 	syscall.Getrusage(syscall.RUSAGE_SELF, &rusage)
 
@@ -70,13 +70,12 @@ func getCPUUsage() (cpuPercent float64, cpuCoresUsed float64) {
 		elapsed := now.Sub(lastMeasureTime).Seconds()
 		cpuDelta := totalCPUSec - lastCPUTime
 		cpuPercent = (cpuDelta / elapsed) * 100
-		cpuCoresUsed = cpuDelta / elapsed
 	}
 
 	lastCPUTime = totalCPUSec
 	lastMeasureTime = now
 
-	return cpuPercent, cpuCoresUsed
+	return cpuPercent
 }
 
 func getProfilingData() map[string]interface{} {
@@ -87,15 +86,17 @@ func getProfilingData() map[string]interface{} {
 	sysMB := float64(memStats.Sys) / 1024 / 1024
 	totalAllocMB := float64(memStats.TotalAlloc) / 1024 / 1024
 
-	cpuPercent, cpuCoresUsed := getCPUUsage()
+	cpuPercent := getCPUUsage()
 	systemCPUPct, _, _ := hostSystemCPUSampler.Step()
+	hostMem := utils.ReadHostMemoryMeminfo()
 
 	profiling := map[string]interface{}{
 		"memory_used_mb":       allocMB,
 		"memory_total_mb":      sysMB,
 		"memory_cumulative_mb": totalAllocMB,
+		"host_memory_used_mb":  hostMem.UsedMB,
+		"host_memory_total_mb": hostMem.TotalMB,
 		"cpu_percent":          cpuPercent,
-		"cpu_cores_used":       cpuCoresUsed,
 		"cpu_cores_total":      runtime.NumCPU(),
 		"goroutines":           runtime.NumGoroutine(),
 		"num_gc":               memStats.NumGC,

@@ -1,0 +1,33 @@
+docker run -d \
+  --name akto-api-security-traffic-collector \
+  --restart always \
+  --network host \
+  --privileged \
+  --pid=host \
+  --cap-add SYS_PTRACE \
+  --cap-add SYS_ADMIN \
+  --cpus="7" \
+  --memory="52g" \
+  -v /lib/modules:/lib/modules \
+  -v /sys/kernel:/sys/kernel \
+  -v /usr/src:/usr/src \
+  -v /:/host \
+  -e AKTO_TRAFFIC_BATCH_TIME_SECS=10 \
+  -e AKTO_TRAFFIC_BATCH_SIZE=100 \
+  -e PROBE_ALL_PID=true \
+  -e DATA_PRINT_MODE=false \
+  -e AKTO_KAFKA_BROKER_MAL="20.112.228.13:9094" \
+  -e AKTO_MEM_THRESH_RESTART=52000 \
+  -e AKTO_MEM_HARD_LIMIT=52000 \
+  -e AKTO_MEM_SOFT_LIMIT=52000 \
+  -e AKTO_SYS_MEM_HARD_LIMIT=52000 \
+  -e TRAFFIC_MAX_ACTIVE_CONN=1000000 \
+  -e TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true \
+  -e KAFKA_DISABLED=false \
+  -e PRINT_BPF_LOGS=false \
+  -e FILTER_LOCAL_TRAFFIC=true \
+  -e TRAFFIC_DISABLE_EGRESS=true \
+  -e TRAFFIC_CAPTURE_LOOPBACK=false \
+  -e AKTO_SYSTEM_CPU_SOFT_ADD_CORES=4 \
+  -e AKTO_SYSTEM_CPU_HARD_ADD_CORES=5 \
+  aktosecurity/mirror-api-logging:core_cpu_opt_v3

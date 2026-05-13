@@ -391,6 +391,14 @@ func run() {
 	}
 	defer coll.Close()
 
+	var pauseIngestEnv bool
+	trafficUtils.InitVar("AKTO_PAUSE_INGESTION", &pauseIngestEnv)
+	trafficUtils.SetPauseIngestionEnv(pauseIngestEnv)
+	if pauseIngestEnv {
+		trafficUtils.PrintLog("Data ingestion paused")
+	}
+	setBPFSystemCPUIngestPaused(coll, trafficUtils.SystemCPUIngestPaused())
+
 	startSocketDataSubmitStatsReporter(coll)
 	startEBPFMapMemoryReporter(coll)
 

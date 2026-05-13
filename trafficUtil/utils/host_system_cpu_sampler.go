@@ -13,11 +13,11 @@ import (
 //   - systemPercent: 100 * Δsystem / Δtotal jiffies (share of CPU time in kernel mode)
 //   - systemCores: Δsystem / USER_HZ / wall_seconds (average kernel core-equivalents)
 type HostSystemCPUSampler struct {
-	mu      sync.Mutex
-	clk     int64
-	primed  bool
+	mu                                                                                    sync.Mutex
+	clk                                                                                   int64
+	primed                                                                                bool
 	lastUser, lastNice, lastSystem, lastIdle, lastIowait, lastIrq, lastSoftirq, lastSteal uint64
-	lastWall time.Time
+	lastWall                                                                              time.Time
 }
 
 func NewHostSystemCPUSampler() *HostSystemCPUSampler {

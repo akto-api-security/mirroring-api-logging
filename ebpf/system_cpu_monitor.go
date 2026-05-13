@@ -85,7 +85,7 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		var wasPaused bool
+		wasPaused := trafficUtils.PauseIngestionEnv()
 		for range ticker.C {
 			_, cores, ok := sampler.Step()
 			if !ok {
@@ -98,25 +98,30 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
 			} else {
 				paused = systemCPUSoftAddCores > 0 && cores >= soft
 			}
+			ingestPaused := trafficUtils.PauseIngestionEnv() || paused
 
-			trafficUtils.PrintLog("host system CPU check", "systemCpuCores", cores, "softLimitCores", soft, "hardLimitCores", hard, "ingestPaused", paused)
+			trafficUtils.PrintLog("host system CPU check", "systemCpuCores", cores, "softLimitCores", soft, "hardLimitCores", hard, "ingestPaused", ingestPaused)
 
 			if cores >= hard {
 				slog.Error("host system CPU hard limit exceeded, exiting", "systemCpuCores", cores, "hardLimitCores", hard)
 				os.Exit(4)
 			}
 
-			if paused != wasPaused {
-				if paused {
-					slog.Warn("host system CPU soft limit exceeded; pausing ingest", "systemCpuCores", cores, "softLimitCores", soft)
+			if ingestPaused != wasPaused {
+				if ingestPaused {
+					if trafficUtils.PauseIngestionEnv() {
+						slog.Warn("ingest paused", "systemCpuCores", cores, "softLimitCores", soft)
+					} else {
+						slog.Warn("host system CPU soft limit exceeded; pausing ingest", "systemCpuCores", cores, "softLimitCores", soft)
+					}
 				} else {
 					slog.Warn("host system CPU below soft limit; resuming", "systemCpuCores", cores, "softLimitCores", soft)
 				}
-				wasPaused = paused
+				wasPaused = ingestPaused
 			}
 
 			trafficUtils.SetSystemCPUIngestPaused(paused)
-			setBPFSystemCPUIngestPaused(coll, paused)
+			setBPFSystemCPUIngestPaused(coll, ingestPaused)
 		}
 	}()
 
