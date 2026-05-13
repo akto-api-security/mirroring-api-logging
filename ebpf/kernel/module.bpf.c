@@ -2059,7 +2059,13 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
 #if defined(TARGET_ARCH_X86_64)
     const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.fsbase);
 #elif defined(TARGET_ARCH_AARCH64)
-    const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.uw.tp_value);
+    /*
+     * User TLS base (TPIDR_EL0) lives in thread_struct.uw.tp_value in C sources,
+     * but bpftool's vmlinux.h often omits the named "uw" wrapper and exposes
+     * tp_value as a direct member of thread (BTF flattening of the anonymous
+     * inner struct). CO-RE still relocates to the correct offset at load time.
+     */
+    const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.tp_value);
 #else
 #error Target architecture not supported
 #endif
