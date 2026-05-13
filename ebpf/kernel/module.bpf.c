@@ -73,16 +73,19 @@ struct user_pt_regs {
  * Casting that 64-bit kernel address to int gives garbage fd values.
  *
  * Fix: explicitly dereference the inner pt_regs using the correct field names
- * for each architecture (di/si/dx on x86-64, user_regs.regs[0/1/2] on ARM64;
- * arm64 struct pt_regs exposes GPRs via the nested user_pt_regs, not regs[]).
+ * for each architecture (di/si/dx on x86-64).
+ *
+ * On ARM64, BTF struct pt_regs often omits named user_regs/regs fields (anonymous
+ * unions). Syscall GPRs still match struct user_pt_regs at offset 0, so cast the
+ * inner regs pointer and BPF_CORE_READ user_pt_regs.regs[n] (CO-RE against the
+ * kernel's user_pt_regs type, not pt_regs layout names).
  */
 #ifdef TARGET_ARCH_AARCH64
-  #define SYSCALL_PARM1(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), user_regs.regs[0])
-  #define SYSCALL_PARM2(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), user_regs.regs[1])
-  #define SYSCALL_PARM3(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), user_regs.regs[2])
+  #define __syscall_user_regs_ptr(ctx) \
+      ((const struct user_pt_regs *)(const void *)PT_REGS_PARM1(ctx))
+  #define SYSCALL_PARM1(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[0])
+  #define SYSCALL_PARM2(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[1])
+  #define SYSCALL_PARM3(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[2])
 #elif defined(TARGET_ARCH_X86_64)
   #define SYSCALL_PARM1(ctx) \
       BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), di)
@@ -2023,10 +2026,15 @@ static __always_inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
     regs_heap_var->regs[7] = ctx->r10;
     regs_heap_var->regs[8] = ctx->r11;
 #elif defined(TARGET_ARCH_AARCH64)
-#pragma unroll
-    for (uint32_t i = 0; i < 9; i++) {
-        regs_heap_var->regs[i] = ctx->user_regs.regs[i];
-    }
+    regs_heap_var->regs[0] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[0]);
+    regs_heap_var->regs[1] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[1]);
+    regs_heap_var->regs[2] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[2]);
+    regs_heap_var->regs[3] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[3]);
+    regs_heap_var->regs[4] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[4]);
+    regs_heap_var->regs[5] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[5]);
+    regs_heap_var->regs[6] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[6]);
+    regs_heap_var->regs[7] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[7]);
+    regs_heap_var->regs[8] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[8]);
 #else
 #error Target Architecture not supported
 #endif
