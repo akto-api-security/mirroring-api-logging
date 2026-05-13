@@ -7,6 +7,21 @@
 
 #include "vmlinux.h"
 
+/*
+ * On arm64, libbpf's PT_REGS_* macros from bpf_tracing.h cast the probe context
+ * to struct user_pt_regs*. Some bpftool-generated vmlinux.h files only forward-
+ * declare user_pt_regs, which breaks compilation. The layout matches Linux
+ * arch/arm64 UAPI (include/uapi/asm/ptrace.h).
+ */
+#if defined(__TARGET_ARCH_arm64) || defined(__aarch64__)
+struct user_pt_regs {
+	__u64 regs[31];
+	__u64 sp;
+	__u64 pc;
+	__u64 pstate;
+};
+#endif
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -58,15 +73,16 @@
  * Casting that 64-bit kernel address to int gives garbage fd values.
  *
  * Fix: explicitly dereference the inner pt_regs using the correct field names
- * for each architecture (di/si/dx on x86-64, regs[0/1/2] on ARM64).
+ * for each architecture (di/si/dx on x86-64, user_regs.regs[0/1/2] on ARM64;
+ * arm64 struct pt_regs exposes GPRs via the nested user_pt_regs, not regs[]).
  */
 #ifdef TARGET_ARCH_AARCH64
   #define SYSCALL_PARM1(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), regs[0])
+      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), user_regs.regs[0])
   #define SYSCALL_PARM2(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), regs[1])
+      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), user_regs.regs[1])
   #define SYSCALL_PARM3(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), regs[2])
+      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), user_regs.regs[2])
 #elif defined(TARGET_ARCH_X86_64)
   #define SYSCALL_PARM1(ctx) \
       BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), di)
@@ -2009,7 +2025,7 @@ static __always_inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
 #elif defined(TARGET_ARCH_AARCH64)
 #pragma unroll
     for (uint32_t i = 0; i < 9; i++) {
-        regs_heap_var->regs[i] = ctx->regs[i];
+        regs_heap_var->regs[i] = ctx->user_regs.regs[i];
     }
 #else
 #error Target Architecture not supported
