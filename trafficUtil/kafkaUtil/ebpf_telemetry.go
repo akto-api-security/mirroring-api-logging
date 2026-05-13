@@ -137,14 +137,14 @@ func writeEnvFile() error {
 		slog.Error("Failed to write environment file", "path", tmpPath, "error", err)
 		return err
 	}
-	slog.Debug("Environment variables written to file", "path", tmpPath)
+	slog.Warn("Environment variables written to file", "path", tmpPath)
 	// Atomic replace
 	err = os.Rename(tmpPath, finalPath)
 	if err != nil {
 		slog.Error("Failed to rename environment file", "path", tmpPath, "error", err)
 		return err
 	}
-	slog.Debug("Environment variables renamed to file", "path", finalPath)
+	slog.Warn("Environment variables renamed to file", "path", finalPath)
 	return nil
 }
 
@@ -168,7 +168,7 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 			_, ok = command.DaemonEnvMap["ALL"]
 		}
 		if !ok {
-			slog.Debug("Restart command not for this daemon, ignoring",
+			slog.Warn("Restart command not for this daemon, ignoring",
 				"thisDaemonPodName", daemonPodName)
 			return
 		}
@@ -184,7 +184,7 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 			envVars, ok = command.DaemonEnvMap["ALL"]
 		}
 		if !ok {
-			slog.Debug("ENV_RELOAD not targeted at this daemon, ignoring",
+			slog.Warn("ENV_RELOAD not targeted at this daemon, ignoring",
 				"thisDaemonPodName", daemonPodName)
 			return
 		}
@@ -262,7 +262,7 @@ func StartConfigConsumer() {
 				continue
 			}
 
-			slog.Debug("Received command message", "value", string(msg.Value))
+			slog.Warn("Received command message", "value", string(msg.Value))
 
 			var command TrafficAgentCommandMessage
 			err = json.Unmarshal(msg.Value, &command)
@@ -278,7 +278,7 @@ func StartConfigConsumer() {
 				slog.Error("Failed to commit message offset", "error", err)
 			}
 
-			slog.Debug("Received command message", "value", string(msg.Value))
+			slog.Warn("Received command message", "value", string(msg.Value))
 			processCommandMessage(command)
 		}
 	}()
@@ -334,7 +334,7 @@ func sendKafkaHeartbeat() {
 		jitter := time.Duration(1+rand.Intn(5)) * time.Second
 		sleepDuration := time.Duration(heartbeatIntervalSeconds)*time.Second + jitter
 
-		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
+		slog.Warn("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
 		time.Sleep(sleepDuration)
 
 		sendHeartbeatMessage(ctx, daemonPodName, imageVersion)
