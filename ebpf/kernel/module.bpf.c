@@ -2060,12 +2060,18 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
     const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.fsbase);
 #elif defined(TARGET_ARCH_AARCH64)
     /*
-     * User TLS base (TPIDR_EL0) lives in thread_struct.uw.tp_value in C sources,
-     * but bpftool's vmlinux.h often omits the named "uw" wrapper and exposes
-     * tp_value as a direct member of thread (BTF flattening of the anonymous
-     * inner struct). CO-RE still relocates to the correct offset at load time.
+     * Go's TLS base matches TPIDR_EL0, stored as the first word after
+     * cpu_context in arm64 thread_struct (see arch/arm64 processor.h: uw.tp_value).
+     * Several bpftool vmlinux.h variants omit uw / tp_value as usable member names
+     * on thread_struct, so we read at sizeof(cpu_context) with a CO-RE type size
+     * so the offset tracks the target kernel layout.
      */
-    const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.tp_value);
+    unsigned long tls_tp = 0;
+    const char *thread_bytes = (const char *)&task_ptr->thread;
+    if (bpf_probe_read_kernel(&tls_tp, sizeof(tls_tp),
+                              thread_bytes + bpf_core_type_size(struct cpu_context)) != 0)
+        return 0;
+    const void *fs_base = (const void *)tls_tp;
 #else
 #error Target architecture not supported
 #endif
