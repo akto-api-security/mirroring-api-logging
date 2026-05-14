@@ -190,7 +190,7 @@ func replaceDisableRingSubmit(spec *ebpf.CollectionSpec) {
 // TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. The kernel increments these around
 // ringbuf_output, so failures indicate event loss before userspace can read.
 func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
-	var logBPFSubmits bool
+	var logBPFSubmits = true
 	trafficUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logBPFSubmits)
 	if !logBPFSubmits {
 		return

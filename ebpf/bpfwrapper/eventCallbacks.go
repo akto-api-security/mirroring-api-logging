@@ -78,7 +78,7 @@ const socketDataInboundLogInterval = 10 * time.Second
 var (
 	socketDataInboundCount   uint64
 	socketDataInboundLastLog time.Time
-	logSocketDataSubmitStats bool
+	logSocketDataSubmitStats = true
 )
 
 func noteSocketDataInboundBeforeSend() {
