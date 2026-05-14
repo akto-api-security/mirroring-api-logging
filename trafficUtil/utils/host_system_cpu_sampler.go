@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -114,9 +115,33 @@ func subDeltaUint64(curr, prev uint64) uint64 {
 	return 0
 }
 
+// linearPercentile returns the p-th percentile (0 <= p <= 1) of x, which must be sorted ascending.
+func linearPercentile(x []float64, p float64) float64 {
+	n := len(x)
+	if n == 0 {
+		return 0
+	}
+	if n == 1 {
+		return x[0]
+	}
+	if p <= 0 {
+		return x[0]
+	}
+	if p >= 1 {
+		return x[n-1]
+	}
+	pos := p * float64(n-1)
+	lo := int(math.Floor(pos))
+	hi := int(math.Ceil(pos))
+	if lo == hi {
+		return x[lo]
+	}
+	return x[lo] + (pos-float64(lo))*(x[hi]-x[lo])
+}
+
 // MeasureHostSystemCPUBaseline collects kernel systemCores samples every sampleEvery over totalWindow,
-// then returns their median (P50). Each sample is one HostSystemCPUSampler.Step after sleeping
-// sampleEvery (same semantics as the runtime monitor ticks).
+// then returns their P90 (linear interpolation between order statistics). Each sample is one
+// HostSystemCPUSampler.Step after sleeping sampleEvery (same semantics as the runtime monitor ticks).
 func MeasureHostSystemCPUBaseline(totalWindow, sampleEvery time.Duration) (baselineCores float64, ok bool) {
 	if totalWindow <= 0 {
 		totalWindow = 15 * time.Second
@@ -147,9 +172,5 @@ func MeasureHostSystemCPUBaseline(totalWindow, sampleEvery time.Duration) (basel
 		return 0, false
 	}
 	slices.Sort(samples)
-	mid := len(samples) / 2
-	if len(samples)%2 == 1 {
-		return samples[mid], true
-	}
-	return (samples[mid-1] + samples[mid]) / 2, true
+	return linearPercentile(samples, 0.9), true
 }

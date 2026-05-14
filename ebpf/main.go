@@ -364,7 +364,7 @@ func main() {
 }
 
 func run() {
-	// Baseline host kernel CPU (P50) before BPF load or any other run() work, so limits reflect the
+	// Baseline host kernel CPU (P90) before BPF load or any other run() work, so limits reflect the
 	// machine without this module's collection, probes, or consumers.
 	cpuLimits := determineHostSystemCPULimitsBeforeBPF()
 

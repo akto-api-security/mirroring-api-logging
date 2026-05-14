@@ -46,7 +46,7 @@ type hostSystemCPULimitConfig struct {
 }
 
 // determineHostSystemCPULimitsBeforeBPF runs synchronously at the start of run(), before loading
-// the BPF object or starting any other work in run(), so baseline P50 is measured on the host
+// the BPF object or starting any other work in run(), so baseline P90 is measured on the host
 // without this process having attached probes or started consumers.
 func determineHostSystemCPULimitsBeforeBPF() hostSystemCPULimitConfig {
 	var cfg hostSystemCPULimitConfig
@@ -99,7 +99,7 @@ func determineHostSystemCPULimitsBeforeBPF() hostSystemCPULimitConfig {
 
 	cfg.needBaseline = !softFromEnv || !hardFromEnv
 	if cfg.needBaseline {
-		trafficUtils.PrintLog("Sampling host system CPU baseline (P50 over window) before BPF load",
+		trafficUtils.PrintLog("Sampling host system CPU baseline (P90 over window) before BPF load",
 			"window", baselineWindow, "step", baselineStep)
 		b, ok := trafficUtils.MeasureHostSystemCPUBaseline(baselineWindow, baselineStep)
 		if !ok {
@@ -132,7 +132,7 @@ func determineHostSystemCPULimitsBeforeBPF() hostSystemCPULimitConfig {
 		"softFromEnv", cfg.softFromEnv,
 		"hardFromEnv", cfg.hardFromEnv,
 		"needBaseline", cfg.needBaseline,
-		"baselineCoresP50", cfg.baseline,
+		"baselineCoresP90", cfg.baseline,
 		"baselineWindowSec", cfg.baselineWindowSec,
 		"baselineStepSec", cfg.baselineStepSec,
 		"softAddCores", systemCPUSoftAddCores,
@@ -235,7 +235,7 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection, cfg hostSystemCPULimi
 		"hardFromEnv", hardFromEnv,
 	}
 	if needBaseline {
-		logArgs = append(logArgs, "baselineCoresP50", baseline, "baselineWindowSec", baselineWindowSec, "baselineStepSec", baselineStepSec, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
+		logArgs = append(logArgs, "baselineCoresP90", baseline, "baselineWindowSec", baselineWindowSec, "baselineStepSec", baselineStepSec, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
 	}
 	if !softFromEnv && systemCPUSoftOscillationExitTransitions > 0 {
 		logArgs = append(logArgs, "softOscillationExitTransitions", systemCPUSoftOscillationExitTransitions)
