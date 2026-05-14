@@ -4,7 +4,7 @@ This document is for **clients** who install the **dockerless** eBPF core bundle
 
 Typical object names:
 
-`akto-mirroring-module-ebpf-core-<version>-<amd64|arm64>.tar.gz`
+`akto-mirroring-module-<version>-<amd64|arm64>.tar.gz`
 
 ---
 
@@ -23,17 +23,17 @@ Typical object names:
 Use the HTTPS download URL Akto provides. Choose the build whose **arch** matches this machine (`amd64` vs `arm64`).
 
 ```bash
-wget -O akto-mirroring-module-ebpf-core-<version>-<arch>.tar.gz "<ARTIFACT_URL>"
+wget -O akto-mirroring-module-<version>-<arch>.tar.gz "<ARTIFACT_URL>"
 ```
 
-(`curl -fL "<ARTIFACT_URL>" -o akto-mirroring-module-ebpf-core-<version>-<arch>.tar.gz` works the same way.)
+(`curl -fL "<ARTIFACT_URL>" -o akto-mirroring-module-<version>-<arch>.tar.gz` works the same way.)
 
 ### 2. Unpack (default layout: `/ebpf`)
 
 As **root** (paths in the archive are rooted at `ebpf/`):
 
 ```bash
-sudo tar -xzf akto-mirroring-module-ebpf-core-<version>-<arch>.tar.gz -C /
+sudo tar -xzf akto-mirroring-module-<version>-<arch>.tar.gz -C /
 ```
 
 This creates **`/ebpf/`** including:

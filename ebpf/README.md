@@ -2,7 +2,7 @@
 
 ## Bare-metal tarball bundle
 
-See [scripts/EBPF_CORE_BUNDLE.md](../scripts/EBPF_CORE_BUNDLE.md) for client install steps for the `akto-mirroring-module-ebpf-core-*` tarball bundle.
+See [scripts/EBPF_CORE_BUNDLE.md](../scripts/EBPF_CORE_BUNDLE.md) for client install steps for the `akto-mirroring-module-*` tarball bundle.
 
 ## To build the module:
 

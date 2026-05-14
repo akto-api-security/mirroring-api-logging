@@ -4,8 +4,8 @@
 # Client install steps: scripts/EBPF_CORE_BUNDLE.md
 #
 # Install (requires root to unpack to /):
-#   wget -O akto-mirroring-module-ebpf-core-<version>-<arch>.tar.gz "<ARTIFACT_URL>"
-#   sudo tar -xzf akto-mirroring-module-ebpf-core-<version>-<arch>.tar.gz -C /
+#   wget -O akto-mirroring-module-<version>-<arch>.tar.gz "<ARTIFACT_URL>"
+#   sudo tar -xzf akto-mirroring-module-<version>-<arch>.tar.gz -C /
 #
 # Configuration lives in ${EBPF_ROOT}/.env (shipped from scripts/ebpf-core-bundle.env
 # in the tarball). Set EBPF_ROOT to your install dir if not /ebpf; edit .env for
