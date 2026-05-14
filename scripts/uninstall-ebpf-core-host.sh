@@ -1,5 +1,5 @@
 #!/bin/sh
-# Remove the Akto eBPF core bundle from bare Linux (stops processes, deletes ${EBPF_ROOT}).
+# Remove the Akto eBPF core bundle from bare Linux (stops processes; leaves ${EBPF_ROOT} on disk).
 #
 # Usage:
 #   sudo /ebpf/uninstall-ebpf-core-host.sh -y
@@ -18,7 +18,7 @@ for arg do
     -y|--yes) YES=true ;;
     -h|--help)
       echo "Usage: $SELF [-y|--yes]" >&2
-      echo "  Stops ebpf-run.sh / ebpf-logging for this install and removes EBPF_ROOT (default /ebpf)." >&2
+      echo "  Stops ebpf-run.sh / ebpf-logging for this install; does not remove EBPF_ROOT (default /ebpf)." >&2
       echo "  -y  Non-interactive (required when no TTY)." >&2
       exit 0
       ;;
@@ -51,7 +51,7 @@ if [ "$YES" != "true" ]; then
     echo "Refusing to uninstall without a TTY: re-run with -y" >&2
     exit 1
   fi
-  printf "Delete %s and stop Akto eBPF core processes? [y/N] " "$EBPF_ROOT"
+  printf "Stop Akto eBPF core processes under %s (install dir kept)? [y/N] " "$EBPF_ROOT"
   read -r reply
   case "$reply" in
     y|Y|yes|YES) ;;
@@ -109,6 +109,4 @@ if command -v pgrep >/dev/null 2>&1; then
   done
 fi
 
-echo "Removing $EBPF_ROOT"
-rm -rf "$EBPF_ROOT"
-echo "Uninstall finished."
+echo "Uninstall finished (left $EBPF_ROOT in place)."
