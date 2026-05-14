@@ -364,6 +364,10 @@ func main() {
 }
 
 func run() {
+	// Baseline host kernel CPU (P50) before BPF load or any other run() work, so limits reflect the
+	// machine without this module's collection, probes, or consumers.
+	cpuLimits := determineHostSystemCPULimitsBeforeBPF()
+
 	// -----------------------------------------------------------------------
 	// Load the pre-compiled BPF object.
 	//
@@ -417,6 +421,8 @@ func run() {
 	}
 	setBPFSystemCPUIngestPaused(coll, trafficUtils.SystemCPUIngestPaused())
 
+	startHostSystemCPULimitMonitor(coll, cpuLimits)
+
 	startSocketDataSubmitStatsReporter(coll)
 	startEBPFMapMemoryReporter(coll)
 
@@ -449,8 +455,6 @@ func run() {
 
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
-
-	startHostSystemCPULimitMonitor(coll)
 
 	// -----------------------------------------------------------------------
 	// Ring-buffer consumers — launched before kprobes so buffers are ready.

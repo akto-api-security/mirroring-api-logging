@@ -11,11 +11,14 @@ import (
 )
 
 var (
-	systemCPUSoftAbs          = math.NaN()
-	systemCPUHardAbs          = math.NaN()
-	systemCPUSoftAddCores     = 2.0
-	systemCPUHardAddCores     = 3.0
-	systemCPUCheckIntervalSec = 1
+	systemCPUSoftAbs                        = math.NaN()
+	systemCPUHardAbs                        = math.NaN()
+	systemCPUSoftAddCores                   = 2.0
+	systemCPUHardAddCores                   = 3.0
+	systemCPUCheckIntervalSec               = 1
+	systemCPUBaselineWindowSec              = 15
+	systemCPUBaselineStepSec                = 1
+	systemCPUSoftOscillationExitTransitions = 1800 // if 1800 transitions, i.e. 1 per second
 )
 
 func init() {
@@ -24,59 +27,138 @@ func init() {
 	trafficUtils.InitVar("AKTO_SYSTEM_CPU_SOFT_ADD_CORES", &systemCPUSoftAddCores)
 	trafficUtils.InitVar("AKTO_SYSTEM_CPU_HARD_ADD_CORES", &systemCPUHardAddCores)
 	trafficUtils.InitVar("AKTO_SYSTEM_CPU_CHECK_INTERVAL_SEC", &systemCPUCheckIntervalSec)
+	trafficUtils.InitVar("AKTO_SYSTEM_CPU_BASELINE_SAMPLE_SEC", &systemCPUBaselineWindowSec)
+	trafficUtils.InitVar("AKTO_SYSTEM_CPU_BASELINE_STEP_SEC", &systemCPUBaselineStepSec)
+	trafficUtils.InitVar("AKTO_SYSTEM_CPU_SOFT_OSCILLATION_EXIT_TRANSITIONS", &systemCPUSoftOscillationExitTransitions)
 }
 
-// startHostSystemCPULimitMonitor samples aggregate host kernel CPU (/proc/stat "system" jiffies)
-// at a configurable interval. When the soft limit is exceeded, Go-side ingest is paused
-// (callbacks skip events). When the hard limit is exceeded, the process exits.
-func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
+// hostSystemCPULimitConfig holds limits computed before any BPF collection is loaded, so baseline
+// reflects host /proc/stat without this module's programs or goroutines from run() (package inits may still run).
+type hostSystemCPULimitConfig struct {
+	disabled bool
+
+	interval                           time.Duration
+	soft, hard                         float64
+	baseline                           float64
+	needBaseline                       bool
+	softFromEnv, hardFromEnv           bool
+	baselineWindowSec, baselineStepSec int
+}
+
+// determineHostSystemCPULimitsBeforeBPF runs synchronously at the start of run(), before loading
+// the BPF object or starting any other work in run(), so baseline P50 is measured on the host
+// without this process having attached probes or started consumers.
+func determineHostSystemCPULimitsBeforeBPF() hostSystemCPULimitConfig {
+	var cfg hostSystemCPULimitConfig
 	softFromEnv := !math.IsNaN(systemCPUSoftAbs)
 	hardFromEnv := !math.IsNaN(systemCPUHardAbs)
+	cfg.softFromEnv = softFromEnv
+	cfg.hardFromEnv = hardFromEnv
 
 	if hardFromEnv && systemCPUHardAbs <= 0 {
 		trafficUtils.PrintLog("Host system CPU limit monitor off (AKTO_SYSTEM_CPU_HARD_CORES <= 0)")
-		return
+		cfg.disabled = true
+		return cfg
 	}
 	if !hardFromEnv && systemCPUHardAddCores <= 0 {
 		trafficUtils.PrintLog("Host system CPU limit monitor off (AKTO_SYSTEM_CPU_HARD_ADD_CORES <= 0 and no hard limit env)")
-		return
+		cfg.disabled = true
+		return cfg
 	}
 
 	sec := systemCPUCheckIntervalSec
 	if sec <= 0 {
 		sec = 1
 	}
-	baselineWait := time.Duration(sec) * time.Second
+	cfg.interval = time.Duration(sec) * time.Second
 
-	needBaseline := !softFromEnv || !hardFromEnv
-	var baseline float64
-	if needBaseline {
-		trafficUtils.PrintLog("Sampling host system CPU baseline before probes attach", "wait", baselineWait)
-		b, ok := trafficUtils.MeasureHostSystemCPUBaseline(baselineWait)
+	baselineWindowSec := systemCPUBaselineWindowSec
+	if baselineWindowSec <= 0 {
+		baselineWindowSec = 15
+	}
+	if baselineWindowSec < 5 {
+		baselineWindowSec = 5
+	}
+	if baselineWindowSec > 300 {
+		baselineWindowSec = 300
+	}
+	baselineStepSec := systemCPUBaselineStepSec
+	if baselineStepSec <= 0 {
+		baselineStepSec = 1
+	}
+	if baselineStepSec < 1 {
+		baselineStepSec = 1
+	}
+	if baselineStepSec > baselineWindowSec {
+		baselineStepSec = baselineWindowSec
+	}
+	cfg.baselineWindowSec = baselineWindowSec
+	cfg.baselineStepSec = baselineStepSec
+	baselineWindow := time.Duration(baselineWindowSec) * time.Second
+	baselineStep := time.Duration(baselineStepSec) * time.Second
+
+	cfg.needBaseline = !softFromEnv || !hardFromEnv
+	if cfg.needBaseline {
+		trafficUtils.PrintLog("Sampling host system CPU baseline (P50 over window) before BPF load",
+			"window", baselineWindow, "step", baselineStep)
+		b, ok := trafficUtils.MeasureHostSystemCPUBaseline(baselineWindow, baselineStep)
 		if !ok {
 			trafficUtils.PrintLog("Host system CPU baseline sample failed; using 0 baseline for computed limits")
-			baseline = 0
+			cfg.baseline = 0
 		} else {
-			baseline = b
+			cfg.baseline = b
 		}
 	}
 
-	var soft, hard float64
 	if softFromEnv {
-		soft = systemCPUSoftAbs
+		cfg.soft = systemCPUSoftAbs
 	} else {
-		soft = baseline + systemCPUSoftAddCores
+		cfg.soft = cfg.baseline + systemCPUSoftAddCores
 	}
 	if hardFromEnv {
-		hard = systemCPUHardAbs
+		cfg.hard = systemCPUHardAbs
 	} else {
-		hard = baseline + systemCPUHardAddCores
+		cfg.hard = cfg.baseline + systemCPUHardAddCores
 	}
-	if hard <= soft {
-		hard = soft + 1e-9
+	if cfg.hard <= cfg.soft {
+		cfg.hard = cfg.soft + 1e-9
 	}
 
-	interval := baselineWait
+	trafficUtils.PrintLog("Host system CPU limit configuration (before BPF load)",
+		"disabled", cfg.disabled,
+		"checkInterval", cfg.interval,
+		"softLimitCores", cfg.soft,
+		"hardLimitCores", cfg.hard,
+		"softFromEnv", cfg.softFromEnv,
+		"hardFromEnv", cfg.hardFromEnv,
+		"needBaseline", cfg.needBaseline,
+		"baselineCoresP50", cfg.baseline,
+		"baselineWindowSec", cfg.baselineWindowSec,
+		"baselineStepSec", cfg.baselineStepSec,
+		"softAddCores", systemCPUSoftAddCores,
+		"hardAddCores", systemCPUHardAddCores,
+		"softOscillationExitTransitions", systemCPUSoftOscillationExitTransitions,
+	)
+
+	return cfg
+}
+
+// startHostSystemCPULimitMonitor runs the periodic CPU check using limits from
+// determineHostSystemCPULimitsBeforeBPF (must be called first in run()).
+func startHostSystemCPULimitMonitor(coll *ebpf.Collection, cfg hostSystemCPULimitConfig) {
+	if cfg.disabled {
+		return
+	}
+
+	soft, hard := cfg.soft, cfg.hard
+	interval := cfg.interval
+	needBaseline := cfg.needBaseline
+	baseline := cfg.baseline
+	softFromEnv := cfg.softFromEnv
+	hardFromEnv := cfg.hardFromEnv
+	baselineWindowSec := cfg.baselineWindowSec
+	baselineStepSec := cfg.baselineStepSec
+
 	sampler := trafficUtils.NewHostSystemCPUSampler()
 
 	go func() {
@@ -86,6 +168,10 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
 		defer ticker.Stop()
 
 		wasPaused := trafficUtils.PauseIngestionEnv()
+		oscillationTrack := !softFromEnv && systemCPUSoftOscillationExitTransitions > 0
+		var prevSoftPaused bool
+		var havePrevSoftPaused bool
+		var softPauseTransitions int
 		for range ticker.C {
 			_, cores, ok := sampler.Step()
 			if !ok {
@@ -100,12 +186,28 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
 			}
 			ingestPaused := trafficUtils.PauseIngestionEnv() || paused
 
-			trafficUtils.PrintLog("host system CPU check", "systemCpuCores", cores, "softLimitCores", soft, "hardLimitCores", hard, "ingestPaused", ingestPaused)
-
 			if cores >= hard {
 				slog.Error("host system CPU hard limit exceeded, exiting", "systemCpuCores", cores, "hardLimitCores", hard)
 				os.Exit(4)
 			}
+
+			if oscillationTrack {
+				if havePrevSoftPaused && paused != prevSoftPaused {
+					softPauseTransitions++
+					if softPauseTransitions >= systemCPUSoftOscillationExitTransitions {
+						slog.Error("host system CPU repeatedly crossed computed soft limit; exiting to resample baseline",
+							"softPauseTransitions", softPauseTransitions,
+							"threshold", systemCPUSoftOscillationExitTransitions,
+							"systemCpuCores", cores,
+							"softLimitCores", soft)
+						os.Exit(5)
+					}
+				}
+				prevSoftPaused = paused
+				havePrevSoftPaused = true
+			}
+
+			trafficUtils.PrintLog("host system CPU check", "systemCpuCores", cores, "softLimitCores", soft, "hardLimitCores", hard, "ingestPaused", ingestPaused)
 
 			if ingestPaused != wasPaused {
 				if ingestPaused {
@@ -133,7 +235,10 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection) {
 		"hardFromEnv", hardFromEnv,
 	}
 	if needBaseline {
-		logArgs = append(logArgs, "baselineCores", baseline, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
+		logArgs = append(logArgs, "baselineCoresP50", baseline, "baselineWindowSec", baselineWindowSec, "baselineStepSec", baselineStepSec, "softAddCores", systemCPUSoftAddCores, "hardAddCores", systemCPUHardAddCores)
+	}
+	if !softFromEnv && systemCPUSoftOscillationExitTransitions > 0 {
+		logArgs = append(logArgs, "softOscillationExitTransitions", systemCPUSoftOscillationExitTransitions)
 	}
 	trafficUtils.PrintLog("Host system CPU limit monitor started", logArgs...)
 }

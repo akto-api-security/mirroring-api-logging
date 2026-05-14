@@ -70,11 +70,11 @@ jobs:
 
       - name: Set up QEMU (eBPF multi-arch)
         if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf' }}
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf' }}
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Configure AWS credentials
         if: ${{ github.event.inputs.Environment == 'prod' }}

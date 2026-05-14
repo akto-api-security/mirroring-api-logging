@@ -2,6 +2,7 @@ package utils
 
 import (
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,14 +114,42 @@ func subDeltaUint64(curr, prev uint64) uint64 {
 	return 0
 }
 
-// MeasureHostSystemCPUBaseline returns average host kernel CPU usage in core-equivalents over `wait`.
-func MeasureHostSystemCPUBaseline(wait time.Duration) (baselineCores float64, ok bool) {
-	if wait <= 0 {
-		wait = time.Second
+// MeasureHostSystemCPUBaseline collects kernel systemCores samples every sampleEvery over totalWindow,
+// then returns their median (P50). Each sample is one HostSystemCPUSampler.Step after sleeping
+// sampleEvery (same semantics as the runtime monitor ticks).
+func MeasureHostSystemCPUBaseline(totalWindow, sampleEvery time.Duration) (baselineCores float64, ok bool) {
+	if totalWindow <= 0 {
+		totalWindow = 15 * time.Second
 	}
+	if sampleEvery < 100*time.Millisecond {
+		sampleEvery = 100 * time.Millisecond
+	}
+	if sampleEvery > totalWindow {
+		sampleEvery = totalWindow
+	}
+	n := int(totalWindow / sampleEvery)
+	if n < 1 {
+		n = 1
+	}
+
 	s := NewHostSystemCPUSampler()
 	_, _, _ = s.Step()
-	time.Sleep(wait)
-	_, cores, ok := s.Step()
-	return cores, ok
+
+	samples := make([]float64, 0, n)
+	for i := 0; i < n; i++ {
+		time.Sleep(sampleEvery)
+		_, cores, sampleOk := s.Step()
+		if sampleOk {
+			samples = append(samples, cores)
+		}
+	}
+	if len(samples) == 0 {
+		return 0, false
+	}
+	slices.Sort(samples)
+	mid := len(samples) / 2
+	if len(samples)%2 == 1 {
+		return samples[mid], true
+	}
+	return (samples[mid-1] + samples[mid]) / 2, true
 }
