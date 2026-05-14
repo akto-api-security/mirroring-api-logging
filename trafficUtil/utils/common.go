@@ -9,8 +9,11 @@ import (
 	"time"
 )
 
-var printCounter = 1000
-var printCounterResetAt = time.Now()
+var (
+	printCounter                   = 1000
+	printCounterResetAt            = time.Now()
+	TrafficLogBpfSocketDataSubmits = true
+)
 
 const (
 	DirectionInbound  = 1
@@ -82,6 +85,7 @@ func init() {
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
+	InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &TrafficLogBpfSocketDataSubmits)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {

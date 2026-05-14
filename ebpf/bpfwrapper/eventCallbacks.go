@@ -30,7 +30,6 @@ var (
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
-	metaUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logSocketDataSubmitStats)
 }
 
 func SocketOpenEventCallback(data []byte, connectionFactory *connections.Factory) {
@@ -78,12 +77,11 @@ const socketDataInboundLogInterval = 10 * time.Second
 var (
 	socketDataInboundCount   uint64
 	socketDataInboundLastLog time.Time
-	logSocketDataSubmitStats = true
 )
 
 func noteSocketDataInboundBeforeSend() {
 
-	if !logSocketDataSubmitStats {
+	if !metaUtils.TrafficLogBpfSocketDataSubmits {
 		return
 	}
 

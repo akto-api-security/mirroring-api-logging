@@ -38,10 +38,8 @@ func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 		}
 	}
 
-	var logSocketDataSubmitStats bool
-	trafficUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logSocketDataSubmitStats)
 	if v, ok := spec.Variables["log_socket_data_submit_stats"]; ok {
-		if err := v.Set(logSocketDataSubmitStats); err != nil {
+		if err := v.Set(trafficUtils.TrafficLogBpfSocketDataSubmits); err != nil {
 			slog.Warn("failed to set log_socket_data_submit_stats variable", "error", err)
 		}
 	}
@@ -187,12 +185,10 @@ func replaceDisableRingSubmit(spec *ebpf.CollectionSpec) {
 }
 
 // startSocketDataSubmitStatsReporter reads BPF submit counters every 10s when
-// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. The kernel increments these around
+// trafficUtil/utils.TrafficLogBpfSocketDataSubmits is true. The kernel increments these around
 // ringbuf_output, so failures indicate event loss before userspace can read.
 func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
-	var logBPFSubmits = true
-	trafficUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logBPFSubmits)
-	if !logBPFSubmits {
+	if !trafficUtils.TrafficLogBpfSocketDataSubmits {
 		return
 	}
 
@@ -263,6 +259,8 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 	interval := 30 * time.Second
 	trafficUtils.InitVar("TRAFFIC_EBPF_MAP_MEMORY_INTERVAL", &interval)
 
+	// Ringbufs, per-CPU scratch buffers, and maps with large values or
+	// many entries — omit single-slot counters/flags and small pointer maps.
 	mapNames := []string{
 		"socket_data_events_0",
 		"socket_data_events_1",
@@ -274,21 +272,11 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 		"socket_data_events_7",
 		"socket_open_events",
 		"socket_close_events",
-		"socket_data_submit_total",
-		"socket_data_submit_failed_total",
-		"socket_open_submit_total",
-		"socket_open_submit_failed_total",
-		"socket_close_submit_total",
-		"socket_close_submit_failed_total",
-		"system_cpu_ingest_paused",
 		"socket_data_event_buffer_heap",
 		"conn_info_map",
 		"conn_info_map_keys",
 		"active_ssl_read_args_map",
 		"active_ssl_write_args_map",
-		"node_tlswrap_symaddrs_map",
-		"active_TLSWrap_memfn_this",
-		"node_ssl_tls_wrap_map",
 		"go_symaddrs_table",
 		"active_tls_conn_op_map",
 	}
