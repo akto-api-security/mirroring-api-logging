@@ -85,7 +85,7 @@ func joinPartsMap(connID structs.ConnID, partsMap map[int][][]byte) []byte {
 }
 
 var (
-	disableEgress        = false
+	disableEgress        = true
 	maxActiveConnections = 4096
 	inactivityThreshold  = 7 * time.Second
 	// Value in MB

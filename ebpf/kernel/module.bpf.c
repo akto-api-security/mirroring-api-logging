@@ -106,9 +106,9 @@ struct user_pt_regs {
 volatile const bool print_bpf_logs = false;
 /* When true (env TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS), count each socket_data ringbuf submit. */
 volatile const bool log_socket_data_submit_stats = false;
-/* When true (env FILTER_LOCAL_TRAFFIC), skip connections whose remote IP matches
- * local_traffic_ip (default 127.0.0.1 as LE u32 = 16777343). */
-volatile const bool filter_local_traffic = false;
+/* When true (env FILTER_LOCAL_TRAFFIC, default on), skip connections whose remote IP matches
+ * local_traffic_ip (set from env LOCAL_TRAFFIC_IP IPv4; loader converts to LE u32). */
+volatile const bool filter_local_traffic = true;
 volatile const __u32 local_traffic_ip = 16777343;
 /* When true (env TRAFFIC_STRICT_REMOTE_PORT_FILTER), only capture connections whose remote
  * port matches strict_remote_port (default 10275). */

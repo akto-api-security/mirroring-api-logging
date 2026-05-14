@@ -299,8 +299,9 @@ var (
 	lruCacheCapacity    = 100000
 	bloomFilterCapacity = 1000000
 	bloomFilterFPRate   = 0.01
-	timeBucketDuration  = 10 * time.Minute
-	memSamplingEnabled  = false
+	timeBucketDuration       = 10 * time.Minute
+	memSamplingEnabled       = false
+	parserMetricsEnabled     = false
 )
 
 var bloomFilter *bloomfilter.BloomFilter
@@ -348,6 +349,7 @@ func init() {
 	utils.InitVar("BLOOM_FILTER_FP_RATE", &bloomFilterFPRate)
 	utils.InitVar("TIME_BUCKET_DURATION_MINUTES", &timeBucketDuration)
 	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
+	utils.InitVar("TRAFFIC_PARSER_METRICS_ENABLED", &parserMetricsEnabled)
 
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
@@ -629,7 +631,9 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
-	noteParserEvent(len(receiveBuffer), len(sentBuffer))
+	if parserMetricsEnabled {
+		noteParserEvent(len(receiveBuffer), len(sentBuffer))
+	}
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return

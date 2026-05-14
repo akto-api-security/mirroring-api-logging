@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,7 +46,7 @@ func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 		}
 	}
 
-	var filterLocalTraffic bool
+	filterLocalTraffic := true
 	trafficUtils.InitVar("FILTER_LOCAL_TRAFFIC", &filterLocalTraffic)
 	if v, ok := spec.Variables["filter_local_traffic"]; ok {
 		if err := v.Set(filterLocalTraffic); err != nil {
@@ -52,15 +54,31 @@ func replaceBpfLogsMacros(spec *ebpf.CollectionSpec) {
 		}
 	}
 
-	// 127.0.0.1 as little-endian u32: 127 + 0<<8 + 0<<16 + 1<<24 = 16777343
-	localTrafficIpLE := 16777343
-	trafficUtils.InitVar("LOCAL_TRAFFIC_IP_LE", &localTrafficIpLE)
+	localTrafficIPStr := "127.0.0.1"
+	trafficUtils.InitVar("LOCAL_TRAFFIC_IP", &localTrafficIPStr)
+	localTrafficIpLE := localTrafficIPv4ToLE(localTrafficIPStr)
 	if v, ok := spec.Variables["local_traffic_ip"]; ok {
 		if err := v.Set(uint32(localTrafficIpLE)); err != nil {
 			slog.Warn("failed to set local_traffic_ip variable", "error", err)
 		}
 	}
-	slog.Info("BPF local traffic filter", "filterLocalTraffic", filterLocalTraffic, "localTrafficIpLE", localTrafficIpLE)
+	slog.Info("BPF local traffic filter", "filterLocalTraffic", filterLocalTraffic, "localTrafficIP", localTrafficIPStr, "localTrafficIpLE", localTrafficIpLE)
+}
+
+// localTrafficIPv4ToLE parses an IPv4 address (e.g. 127.0.0.1) and returns its value as a u32
+// in the same little-endian layout the BPF program expects for local_traffic_ip.
+func localTrafficIPv4ToLE(s string) uint32 {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		slog.Warn("invalid LOCAL_TRAFFIC_IP, using 127.0.0.1", "value", s)
+		ip = net.IPv4(127, 0, 0, 1)
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		slog.Warn("LOCAL_TRAFFIC_IP is not IPv4, using 127.0.0.1", "value", s)
+		ip4 = net.IPv4(127, 0, 0, 1)
+	}
+	return binary.LittleEndian.Uint32(ip4)
 }
 
 func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {

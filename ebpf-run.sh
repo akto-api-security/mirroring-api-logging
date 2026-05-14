@@ -1,4 +1,16 @@
 #!/bin/sh
+#
+# MEM_LIMIT (optional): memory cap in integer MiB (mebibytes, 1024-based "MB").
+#   When set, it overrides cgroup/host detection for MEM_LIMIT_MB and drives
+#   GOMEMLIMIT, cgroup % kill, and Akto AKTO_MEM_* exports below.
+#   Example: 52 GiB cap -> MEM_LIMIT=53248 (52 * 1024).
+#   Omit MEM_LIMIT to auto-detect from cgroup memory.max (Docker/K8s) or host RAM.
+#
+# AKTO_MEM_HARD_LIMIT — heap alloc hard cap (MiB). Same backing as AKTO_MEM_THRESH_RESTART in Go.
+# AKTO_MEM_SOFT_LIMIT — factory buffer soft threshold (MiB). Same backing as TRAFFIC_BUFFER_THRESHOLD.
+# AKTO_SYS_MEM_HARD_LIMIT — heap Sys hard cap (MiB).
+# If unset, defaults are derived from MEM_LIMIT_MB: soft 80%, hard and sys hard 85%.
+# You may set AKTO_MEM_THRESH_RESTART or TRAFFIC_BUFFER_THRESHOLD instead of the client-facing names.
 
 LOG_FILE=${LOG_FILE:-/tmp/dump.log}
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 10 * 1024 * 1024 bytes)
@@ -9,6 +21,14 @@ GOMEMLIMIT_PERCENT=${GOMEMLIMIT_PERCENT:-60} # GOMEMLIMIT as % of container memo
 AKTO_SUPPRESS_TRACE=${AKTO_SUPPRESS_TRACE:-true}
 CRASH_RESTART_BACKOFF_SECONDS=${CRASH_RESTART_BACKOFF_SECONDS:-10}
 EBPF_ROOT="${EBPF_ROOT:-/ebpf}"
+
+# Load bundle env before MEM_LIMIT resolution so MEM_LIMIT / AKTO_* can live in ${EBPF_ROOT}/.env.
+if [ -f "${EBPF_ROOT}/.env" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "${EBPF_ROOT}/.env"
+	set +a
+fi
 
 # Function to rotate the log file
 rotate_log() {
@@ -94,8 +114,8 @@ if [ -z "$MEM_LIMIT" ]; then
     # 3. Convert the memory limit from bytes to MB (integer division)
     MEM_LIMIT_MB=$((MEM_LIMIT_BYTES / 1024 / 1024))
 else
-    # MEM_LIMIT provided as env variable, treat as MB
-    echo "Using MEM_LIMIT from environment variable: ${MEM_LIMIT} MB"
+    # MEM_LIMIT provided as env variable, integer MiB (same unit as MEM_LIMIT_MB from cgroup).
+    echo "Using MEM_LIMIT from environment variable: ${MEM_LIMIT} MiB"
     MEM_LIMIT_MB=$MEM_LIMIT
     # Convert MB to bytes for calculations
     MEM_LIMIT_BYTES=$((MEM_LIMIT * 1024 * 1024))
@@ -103,10 +123,25 @@ fi
 
 echo "Using container memory limit: ${MEM_LIMIT_MB} MB"
 
+AKTO_MEM_SOFT_DEFAULT_MB=$((MEM_LIMIT_MB * 80 / 100))
+AKTO_MEM_HARD_DEFAULT_MB=$((MEM_LIMIT_MB * 85 / 100))
+
+# Akto Go-side thresholds (MiB). Client-facing names; Go also accepts legacy aliases (see header).
+if [ -z "${AKTO_MEM_HARD_LIMIT:-}" ] && [ -z "${AKTO_MEM_THRESH_RESTART:-}" ]; then
+	export AKTO_MEM_HARD_LIMIT="${AKTO_MEM_HARD_DEFAULT_MB}"
+fi
+if [ -z "${AKTO_MEM_SOFT_LIMIT:-}" ] && [ -z "${TRAFFIC_BUFFER_THRESHOLD:-}" ]; then
+	export AKTO_MEM_SOFT_LIMIT="${AKTO_MEM_SOFT_DEFAULT_MB}"
+fi
+if [ -z "${AKTO_SYS_MEM_HARD_LIMIT:-}" ]; then
+	export AKTO_SYS_MEM_HARD_LIMIT="${AKTO_MEM_HARD_DEFAULT_MB}"
+fi
+
 # Set GOMEMLIMIT for the Go process
 GOMEMLIMIT_MB=$((MEM_LIMIT_MB * GOMEMLIMIT_PERCENT / 100))
 export GOMEMLIMIT="${GOMEMLIMIT_MB}MiB"
 echo "Setting GOMEMLIMIT to: ${GOMEMLIMIT} (${GOMEMLIMIT_PERCENT}% of ${MEM_LIMIT_MB} MB)"
+echo "Akto memory env (MiB): AKTO_MEM_HARD_LIMIT=${AKTO_MEM_HARD_LIMIT:-} AKTO_MEM_SOFT_LIMIT=${AKTO_MEM_SOFT_LIMIT:-} AKTO_SYS_MEM_HARD_LIMIT=${AKTO_SYS_MEM_HARD_LIMIT:-}"
 
 # AKTO_SUPPRESS_TRACE: filters noisy SIGSEGV/cgo trace lines from stderr.
 run_ebpf_once() {
