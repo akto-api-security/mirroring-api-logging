@@ -572,17 +572,6 @@ struct go_symaddrs_t {
   struct location_t ReadRet1Loc;
 };
 
-struct go_regabi_regs {
-  uint64_t regs[9];
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, struct go_regabi_regs);
-} regs_heap SEC(".maps");
-
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
@@ -2008,38 +1997,36 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
  * Go TLS probes
  * =================================================================== */
 
-static __always_inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
-    uint32_t kZero = 0;
-    struct go_regabi_regs* regs_heap_var = bpf_map_lookup_elem(&regs_heap, &kZero);
-    if (regs_heap_var == NULL) {
-        return NULL;
-    }
-
+/*
+ * Snapshot Go register ABI args into caller stack memory only.
+ * Do not stash pt_regs fields in a map: the next bpf_map_lookup_elem()
+ * invalidates prior lookup pointers on older verifiers (e.g. RHEL 8 / 4.18),
+ * which would poison symaddrs/active_tls reads used with assign_arg().
+ */
+static __always_inline void go_regabi_regs_fill(uint64_t regs_out[9], const struct pt_regs* ctx) {
 #if defined(TARGET_ARCH_X86_64)
-    regs_heap_var->regs[0] = ctx->ax;
-    regs_heap_var->regs[1] = ctx->bx;
-    regs_heap_var->regs[2] = ctx->cx;
-    regs_heap_var->regs[3] = ctx->di;
-    regs_heap_var->regs[4] = ctx->si;
-    regs_heap_var->regs[5] = ctx->r8;
-    regs_heap_var->regs[6] = ctx->r9;
-    regs_heap_var->regs[7] = ctx->r10;
-    regs_heap_var->regs[8] = ctx->r11;
+    regs_out[0] = ctx->ax;
+    regs_out[1] = ctx->bx;
+    regs_out[2] = ctx->cx;
+    regs_out[3] = ctx->di;
+    regs_out[4] = ctx->si;
+    regs_out[5] = ctx->r8;
+    regs_out[6] = ctx->r9;
+    regs_out[7] = ctx->r10;
+    regs_out[8] = ctx->r11;
 #elif defined(TARGET_ARCH_AARCH64)
-    regs_heap_var->regs[0] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[0]);
-    regs_heap_var->regs[1] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[1]);
-    regs_heap_var->regs[2] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[2]);
-    regs_heap_var->regs[3] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[3]);
-    regs_heap_var->regs[4] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[4]);
-    regs_heap_var->regs[5] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[5]);
-    regs_heap_var->regs[6] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[6]);
-    regs_heap_var->regs[7] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[7]);
-    regs_heap_var->regs[8] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[8]);
+    regs_out[0] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[0]);
+    regs_out[1] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[1]);
+    regs_out[2] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[2]);
+    regs_out[3] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[3]);
+    regs_out[4] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[4]);
+    regs_out[5] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[5]);
+    regs_out[6] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[6]);
+    regs_out[7] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[7]);
+    regs_out[8] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[8]);
 #else
 #error Target Architecture not supported
 #endif
-
-    return regs_heap_var->regs;
 }
 
 static inline uint64_t get_goid(struct pt_regs* ctx) {
@@ -2148,16 +2135,16 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
-    struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
-    if (symaddrs == NULL) {
+    struct go_symaddrs_t* symaddrs_p = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
+    if (symaddrs_p == NULL) {
         return 0;
     }
+    struct go_symaddrs_t symaddrs = *symaddrs_p;
 
-    const void* sp  = (const void*)PT_REGS_SP(ctx);
-    uint64_t* regs  = go_regabi_regs(ctx);
-    if (regs == NULL) {
-        return 0;
-    }
+    const void* sp = (const void*)PT_REGS_SP(ctx);
+    uint64_t       regs_buf[9]    = {};
+    go_regabi_regs_fill(regs_buf, ctx);
+    uint64_t* regs = regs_buf;
 
     if (print_bpf_logs) {
         bpf_printk("probe_entry_tls_conn_write 2 %lu %llu",
@@ -2166,9 +2153,9 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
 
     struct go_tls_conn_args args = {};
     assign_arg(&args.conn_ptr, sizeof(args.conn_ptr),
-               symaddrs->WriteConnectionLoc, sp, regs);
+               symaddrs.WriteConnectionLoc, sp, regs);
     assign_arg(&args.plaintext_ptr, sizeof(args.plaintext_ptr),
-               symaddrs->WriteBufferLoc, sp, regs);
+               symaddrs.WriteBufferLoc, sp, regs);
 
     bpf_map_update_elem(&active_tls_conn_op_map, &tgid_goid, &args, BPF_ANY);
 
@@ -2182,22 +2169,22 @@ int probe_entry_tls_conn_write(struct pt_regs* ctx) {
 static __always_inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64_t id,
                                                       uint32_t tgid,
                                                       struct go_tls_conn_args* args) {
-    struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
-    if (symaddrs == NULL) {
+    struct go_symaddrs_t* symaddrs_p = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
+    if (symaddrs_p == NULL) {
         return 0;
     }
+    struct go_symaddrs_t symaddrs = *symaddrs_p;
 
-    const void* sp = (const void*)PT_REGS_SP(ctx);
-    uint64_t* regs = go_regabi_regs(ctx);
-    if (regs == NULL) {
-        return 0;
-    }
+    const void* sp         = (const void*)PT_REGS_SP(ctx);
+    uint64_t    regs_buf[9] = {};
+    go_regabi_regs_fill(regs_buf, ctx);
+    uint64_t* regs = regs_buf;
 
     int64_t retval0 = 0;
-    assign_arg(&retval0, sizeof(retval0), symaddrs->WriteRet0Loc, sp, regs);
+    assign_arg(&retval0, sizeof(retval0), symaddrs.WriteRet0Loc, sp, regs);
 
     struct go_interface retval1 = {};
-    assign_arg(&retval1, sizeof(retval1), symaddrs->WriteRet1Loc, sp, regs);
+    assign_arg(&retval1, sizeof(retval1), symaddrs.WriteRet1Loc, sp, regs);
 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_write 2.1 %llu %lu", id, tgid);
@@ -2210,7 +2197,7 @@ static __always_inline int probe_return_tls_conn_write_core(struct pt_regs* ctx,
     struct go_interface conn_intf;
     conn_intf.type = 1;
     conn_intf.ptr  = args->conn_ptr;
-    int fd  = get_fd_from_conn_intf_core(conn_intf, symaddrs);
+    int fd = get_fd_from_conn_intf_core(conn_intf, &symaddrs);
     u32 fdu = (u32)fd;
 
     if (print_bpf_logs) {
@@ -2258,17 +2245,18 @@ int probe_return_tls_conn_write(struct pt_regs* ctx) {
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
-    struct go_tls_conn_args* args = bpf_map_lookup_elem(&active_tls_conn_op_map, &tgid_goid);
-    if (args == NULL) {
+    struct go_tls_conn_args* args_ptr = bpf_map_lookup_elem(&active_tls_conn_op_map, &tgid_goid);
+    if (args_ptr == NULL) {
         return 0;
     }
+    struct go_tls_conn_args args_local = *args_ptr;
 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_write 2 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
-    probe_return_tls_conn_write_core(ctx, id, tgid, args);
+    probe_return_tls_conn_write_core(ctx, id, tgid, &args_local);
 
     bpf_map_delete_elem(&active_tls_conn_op_map, &tgid_goid);
 
@@ -2297,16 +2285,16 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
-    struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
-    if (symaddrs == NULL) {
+    struct go_symaddrs_t* symaddrs_p = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
+    if (symaddrs_p == NULL) {
         return 0;
     }
+    struct go_symaddrs_t symaddrs = *symaddrs_p;
 
-    const void* sp = (const void*)PT_REGS_SP(ctx);
-    uint64_t* regs = go_regabi_regs(ctx);
-    if (regs == NULL) {
-        return 0;
-    }
+    const void* sp         = (const void*)PT_REGS_SP(ctx);
+    uint64_t    regs_buf[9] = {};
+    go_regabi_regs_fill(regs_buf, ctx);
+    uint64_t* regs = regs_buf;
 
     if (print_bpf_logs) {
         bpf_printk("probe_entry_tls_conn_read 2 %lu %llu",
@@ -2315,9 +2303,9 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
 
     struct go_tls_conn_args args = {};
     assign_arg(&args.conn_ptr, sizeof(args.conn_ptr),
-               symaddrs->ReadConnectionLoc, sp, regs);
+               symaddrs.ReadConnectionLoc, sp, regs);
     assign_arg(&args.plaintext_ptr, sizeof(args.plaintext_ptr),
-               symaddrs->ReadBufferLoc, sp, regs);
+               symaddrs.ReadBufferLoc, sp, regs);
 
     bpf_map_update_elem(&active_tls_conn_op_map, &tgid_goid, &args, BPF_ANY);
 
@@ -2332,22 +2320,22 @@ int probe_entry_tls_conn_read(struct pt_regs* ctx) {
 static __always_inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_t id,
                                                      uint32_t tgid,
                                                      struct go_tls_conn_args* args) {
-    struct go_symaddrs_t* symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
-    if (symaddrs == NULL) {
+    struct go_symaddrs_t* symaddrs_p = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
+    if (symaddrs_p == NULL) {
         return 0;
     }
+    struct go_symaddrs_t symaddrs = *symaddrs_p;
 
-    const void* sp = (const void*)PT_REGS_SP(ctx);
-    uint64_t* regs = go_regabi_regs(ctx);
-    if (regs == NULL) {
-        return 0;
-    }
+    const void* sp         = (const void*)PT_REGS_SP(ctx);
+    uint64_t    regs_buf[9] = {};
+    go_regabi_regs_fill(regs_buf, ctx);
+    uint64_t* regs = regs_buf;
 
     int64_t retval0 = 0;
-    assign_arg(&retval0, sizeof(retval0), symaddrs->ReadRet0Loc, sp, regs);
+    assign_arg(&retval0, sizeof(retval0), symaddrs.ReadRet0Loc, sp, regs);
 
     struct go_interface retval1 = {};
-    assign_arg(&retval1, sizeof(retval1), symaddrs->ReadRet1Loc, sp, regs);
+    assign_arg(&retval1, sizeof(retval1), symaddrs.ReadRet1Loc, sp, regs);
 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_read 2.1 %llu %lu", id, tgid);
@@ -2360,7 +2348,7 @@ static __always_inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, 
     struct go_interface conn_intf;
     conn_intf.type = 1;
     conn_intf.ptr  = args->conn_ptr;
-    int fd  = get_fd_from_conn_intf_core(conn_intf, symaddrs);
+    int fd = get_fd_from_conn_intf_core(conn_intf, &symaddrs);
     u32 fdu = (u32)fd;
 
     if (print_bpf_logs) {
@@ -2408,17 +2396,18 @@ int probe_return_tls_conn_read(struct pt_regs* ctx) {
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
-    struct go_tls_conn_args* args = bpf_map_lookup_elem(&active_tls_conn_op_map, &tgid_goid);
-    if (args == NULL) {
+    struct go_tls_conn_args* args_ptr = bpf_map_lookup_elem(&active_tls_conn_op_map, &tgid_goid);
+    if (args_ptr == NULL) {
         return 0;
     }
+    struct go_tls_conn_args args_local = *args_ptr;
 
     if (print_bpf_logs) {
         bpf_printk("probe_return_tls_conn_read 2 %lu %llu",
                          tgid_goid.tgid, tgid_goid.goid);
     }
 
-    probe_return_tls_conn_read_core(ctx, id, tgid, args);
+    probe_return_tls_conn_read_core(ctx, id, tgid, &args_local);
 
     bpf_map_delete_elem(&active_tls_conn_op_map, &tgid_goid);
 
