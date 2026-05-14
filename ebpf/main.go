@@ -250,13 +250,13 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 }
 
 func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
-	var logMapMemory bool
+	var logMapMemory = true
 	trafficUtils.InitVar("TRAFFIC_LOG_EBPF_MAP_MEMORY", &logMapMemory)
 	if !logMapMemory {
 		return
 	}
 
-	interval := 30 * time.Second
+	interval := 120 * time.Second
 	trafficUtils.InitVar("TRAFFIC_EBPF_MAP_MEMORY_INTERVAL", &interval)
 
 	// Ringbufs, per-CPU scratch buffers, and maps with large values or
