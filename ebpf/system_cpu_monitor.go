@@ -19,6 +19,9 @@ var (
 	systemCPUBaselineWindowSec              = 15
 	systemCPUBaselineStepSec                = 1
 	systemCPUSoftOscillationExitTransitions = 1800 // if 1800 transitions, i.e. 1 per second
+	// Consecutive monitor ticks with cores >= hard before os.Exit(4). Values <= 1 preserve the
+	// legacy behavior (exit on the first hard exceed). Higher values ignore one-off spikes.
+	systemCPUHardConfirmTicks = 3
 )
 
 func init() {
@@ -30,6 +33,7 @@ func init() {
 	trafficUtils.InitVar("AKTO_SYSTEM_CPU_BASELINE_SAMPLE_SEC", &systemCPUBaselineWindowSec)
 	trafficUtils.InitVar("AKTO_SYSTEM_CPU_BASELINE_STEP_SEC", &systemCPUBaselineStepSec)
 	trafficUtils.InitVar("AKTO_SYSTEM_CPU_SOFT_OSCILLATION_EXIT_TRANSITIONS", &systemCPUSoftOscillationExitTransitions)
+	trafficUtils.InitVar("AKTO_SYSTEM_CPU_HARD_CONFIRM_TICKS", &systemCPUHardConfirmTicks)
 }
 
 // hostSystemCPULimitConfig holds limits computed before any BPF collection is loaded, so baseline
@@ -172,6 +176,8 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection, cfg hostSystemCPULimi
 		var prevSoftPaused bool
 		var havePrevSoftPaused bool
 		var softPauseTransitions int
+		hardConfirm := max(systemCPUHardConfirmTicks, 1)
+		var hardExceededStreak int
 		for range ticker.C {
 			_, cores, ok := sampler.Step()
 			if !ok {
@@ -187,8 +193,14 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection, cfg hostSystemCPULimi
 			ingestPaused := trafficUtils.PauseIngestionEnv() || paused
 
 			if cores >= hard {
-				slog.Error("host system CPU hard limit exceeded, exiting", "systemCpuCores", cores, "hardLimitCores", hard)
-				os.Exit(4)
+				hardExceededStreak++
+				if hardExceededStreak >= hardConfirm {
+					slog.Error("host system CPU hard limit exceeded, exiting",
+						"systemCpuCores", cores, "hardLimitCores", hard, "consecutiveTicks", hardExceededStreak)
+					os.Exit(4)
+				}
+			} else {
+				hardExceededStreak = 0
 			}
 
 			if oscillationTrack {
@@ -239,6 +251,11 @@ func startHostSystemCPULimitMonitor(coll *ebpf.Collection, cfg hostSystemCPULimi
 	}
 	if !softFromEnv && systemCPUSoftOscillationExitTransitions > 0 {
 		logArgs = append(logArgs, "softOscillationExitTransitions", systemCPUSoftOscillationExitTransitions)
+	}
+	if hardConfirm := systemCPUHardConfirmTicks; hardConfirm < 1 {
+		logArgs = append(logArgs, "hardConfirmTicks", 1)
+	} else {
+		logArgs = append(logArgs, "hardConfirmTicks", hardConfirm)
 	}
 	trafficUtils.PrintLog("Host system CPU limit monitor started", logArgs...)
 }
