@@ -43,7 +43,8 @@ This creates **`/ebpf/`** including:
 | `ebpf/ebpf-logging` | Main Go binary |
 | `ebpf/kernel/module.bpf.o` | Compiled BPF object |
 | `ebpf/ebpf-run.sh` | Supervisor loop |
-| `ebpf/run-ebpf-core-host.sh` | Optional host entrypoint (sudo wrapper) |
+| `ebpf/run-ebpf-core-host.sh` | Host entrypoint (sudo wrapper; **detached by default**) |
+| `ebpf/uninstall-ebpf-core-host.sh` | Stops processes and removes `${EBPF_ROOT}` |
 | `ebpf/.env` | Default environment (edit before production) |
 
 If you install under a **different** directory, set **`EBPF_ROOT`** consistently (see below) and keep **`ebpf-run.sh`** and **`.env`** together under that directory.
@@ -57,10 +58,24 @@ Typical bare-metal defaults in that file:
 - **`EBPF_ROOT=/ebpf`** — bundle root.
 - **`HOST_MAPPING=/`** — host path prefix (use **`/host`** when running inside Docker with `-v /:/host`).
 
-### 4. Run
+### 4. Run (detached by default)
+
+`run-ebpf-core-host.sh` starts the supervisor under **`nohup`** and returns immediately. It writes **`${EBPF_ROOT}/ebpf-core-run.pid`** and appends wrapper output to **`${EBPF_ROOT}/ebpf-core-supervisor.log`** (override with **`EBPF_SUPERVISOR_LOG`**).
 
 ```bash
 sudo /ebpf/run-ebpf-core-host.sh
+```
+
+Follow logs:
+
+- Supervisor shell / memory messages: `tail -f /ebpf/ebpf-core-supervisor.log`
+- Collector (default when `ENABLE_LOGS=false` in `ebpf-run.sh`): `tail -f /tmp/dump.log` or your **`LOG_FILE`**
+
+Attach to the supervisor in the foreground (blocks this shell), for debugging:
+
+```bash
+sudo /ebpf/run-ebpf-core-host.sh -f
+# or: sudo AKTO_FOREGROUND=true /ebpf/run-ebpf-core-host.sh
 ```
 
 Or with a non-default install root:
@@ -70,3 +85,19 @@ sudo EBPF_ROOT=/opt/akto/ebpf /opt/akto/ebpf/run-ebpf-core-host.sh
 ```
 
 Ensure **`EBPF_ROOT`** in the environment matches **`EBPF_ROOT`** in **`.env`** when you use a custom path.
+
+### 5. Uninstall
+
+Stops **`ebpf-run.sh`** / **`ebpf-logging`** for this install (using the pidfile when present, then matching processes) and **deletes the entire `EBPF_ROOT` directory**.
+
+```bash
+sudo /ebpf/uninstall-ebpf-core-host.sh -y
+```
+
+Custom root:
+
+```bash
+sudo EBPF_ROOT=/opt/akto/ebpf /opt/akto/ebpf/uninstall-ebpf-core-host.sh -y
+```
+
+Omit **`-y`** for an interactive confirmation (requires a TTY).

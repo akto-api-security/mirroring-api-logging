@@ -152,6 +152,8 @@ jobs:
             docker buildx build -f Dockerfile.eBPF --platform "${platform}" -o "type=local,dest=${dest}" .
             cp scripts/run-ebpf-core-host.sh "${dest}/ebpf/run-ebpf-core-host.sh"
             chmod +x "${dest}/ebpf/run-ebpf-core-host.sh"
+            cp scripts/uninstall-ebpf-core-host.sh "${dest}/ebpf/uninstall-ebpf-core-host.sh"
+            chmod +x "${dest}/ebpf/uninstall-ebpf-core-host.sh"
             cp scripts/ebpf-core-bundle.env "${dest}/ebpf/.env"
             tar -czf "akto-mirroring-module-${IMAGE_TAG}-${arch}.tar.gz" -C "${dest}" ebpf
             aws s3 cp "akto-mirroring-module-${IMAGE_TAG}-${arch}.tar.gz" "s3://${S3_BUCKET}/"
