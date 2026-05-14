@@ -74,7 +74,7 @@ check_memory_and_kill() {
 }
 
 # Start monitoring in the background
-if [[ "${ENABLE_LOGS}" == "false" ]]; then
+if [ "${ENABLE_LOGS}" = "false" ]; then
     while true; do
         rotate_log   # Check and rotate logs if necessary
         sleep "$CHECK_INTERVAL"  # Wait for the specified interval before checking again
@@ -146,7 +146,7 @@ echo "Akto memory env (MiB): AKTO_MEM_HARD_LIMIT=${AKTO_MEM_HARD_LIMIT:-} AKTO_M
 # AKTO_SUPPRESS_TRACE: filters noisy SIGSEGV/cgo trace lines from stderr.
 run_ebpf_once() {
     log_to_file=false
-    [[ "${ENABLE_LOGS}" == "false" ]] && log_to_file=true
+    [ "${ENABLE_LOGS}" = "false" ] && log_to_file=true
 
     if [ "${AKTO_SUPPRESS_TRACE}" != "true" ]; then
         if [ "$log_to_file" = "true" ]; then
@@ -207,7 +207,8 @@ do
 	# Source environment file if it exists (contains vars set by processCommandMessage)
 	if [ -f "${EBPF_ROOT}/.env" ]; then
 		set -a
-		source "${EBPF_ROOT}/.env"
+		# shellcheck disable=SC1090
+		. "${EBPF_ROOT}/.env"
 		set +a
 	fi
 
