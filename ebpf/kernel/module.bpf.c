@@ -674,11 +674,17 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
         }
     }
 
+    /*
+     * sock_alloc_socket path: only set socketConn after we fully populate from sk.
+     * On bpf_probe_read_kernel failure, sk NULL, or non-INET family, do not return —
+     * otherwise conn_info_map is never updated and recvfrom/writev see conn_info_map
+     * misses (trace: "sock alloc found, processing" without ipv4/processed lines).
+     * Fall through to user sockaddr or ip/port=0 registration like accept(NULL).
+     */
     if (args.sock_alloc_socket != NULL) {
         if (print_bpf_logs) {
             bpf_printk("sock alloc found, processing");
         }
-        socketConn = true;
 
         /*
          * Read struct sock* from struct socket without CO-RE.
@@ -689,42 +695,49 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
          */
         struct akto_socket sock_hdr = {};
         if (bpf_probe_read_kernel(&sock_hdr, sizeof(sock_hdr),
-                                  args.sock_alloc_socket) != 0)
-            return;
-        struct sock* sk = (struct sock *)(unsigned long)sock_hdr.sk;
+                                  args.sock_alloc_socket) == 0) {
+            struct sock* sk = (struct sock *)(unsigned long)sock_hdr.sk;
 
-        if (sk == NULL)
-            return;
+            if (sk != NULL) {
+                uint16_t family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
-        /* struct sock CO-RE relocations succeed normally on this kernel. */
-        uint16_t family = BPF_CORE_READ(sk, __sk_common.skc_family);
-        conn_info.port  = BPF_CORE_READ(sk, __sk_common.skc_dport);
-        lport           = BPF_CORE_READ(sk, __sk_common.skc_num);
-
-        if (family == AF_INET) {
-            if (print_bpf_logs) {
-                bpf_printk("sock alloc found ipv4, processing");
+                if (family == AF_INET) {
+                    if (print_bpf_logs) {
+                        bpf_printk("sock alloc found ipv4, processing");
+                    }
+                    conn_info.port  = BPF_CORE_READ(sk, __sk_common.skc_dport);
+                    lport           = BPF_CORE_READ(sk, __sk_common.skc_num);
+                    conn_info.ip = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+                    srcIp        = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+                    socketConn = true;
+                } else if (family == AF_INET6) {
+                    if (print_bpf_logs) {
+                        bpf_printk("sock alloc found ipv6, processing");
+                    }
+                    conn_info.port  = BPF_CORE_READ(sk, __sk_common.skc_dport);
+                    lport           = BPF_CORE_READ(sk, __sk_common.skc_num);
+                    __u8 v6_dst[16] = {};
+                    __u8 v6_src[16] = {};
+                    if (bpf_core_field_exists(sk->__sk_common.skc_v6_daddr)) {
+                        bpf_core_read(v6_dst, sizeof(v6_dst),
+                                      &sk->__sk_common.skc_v6_daddr);
+                        bpf_core_read(v6_src, sizeof(v6_src),
+                                      &sk->__sk_common.skc_v6_rcv_saddr);
+                    }
+                    conn_info.ip = ((__u32 *)v6_dst)[3];
+                    srcIp        = ((__u32 *)v6_src)[3];
+                    socketConn = true;
+                } else if (print_bpf_logs) {
+                    bpf_printk("sock alloc skip non-inet family: %d", family);
+                }
+            } else if (print_bpf_logs) {
+                bpf_printk("sock alloc sk NULL after hdr read");
             }
-            conn_info.ip = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-            srcIp        = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-        } else if (family == AF_INET6) {
-            if (print_bpf_logs) {
-                bpf_printk("sock alloc found ipv6, processing");
-            }
-            __u8 v6_dst[16] = {};
-            __u8 v6_src[16] = {};
-            if (bpf_core_field_exists(sk->__sk_common.skc_v6_daddr)) {
-                bpf_core_read(v6_dst, sizeof(v6_dst),
-                              &sk->__sk_common.skc_v6_daddr);
-                bpf_core_read(v6_src, sizeof(v6_src),
-                              &sk->__sk_common.skc_v6_rcv_saddr);
-            }
-            conn_info.ip = ((__u32 *)v6_dst)[3];
-            srcIp        = ((__u32 *)v6_src)[3];
-        } else {
-            return;
+        } else if (print_bpf_logs) {
+            bpf_printk("sock alloc bpf_probe_read_kernel(socket hdr) failed");
         }
-        if (print_bpf_logs) {
+
+        if (socketConn && print_bpf_logs) {
             bpf_printk("sock alloc found, processed: id: %llu ip: %llu port: %d",
                              id, conn_info.ip, conn_info.port);
             bpf_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d",
@@ -1290,8 +1303,9 @@ int syscall__probe_ret_writev(struct pt_regs* ctx) {
     }
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
-    /* Match module.cc: only capture after security_socket_sendmsg marked this syscall. */
-    if (write_args != NULL && write_args->sock_event) {
+    /* No sock_event gate: rely on conn_info_map in process_syscall_data (matches send/sendto/recvmsg paths).
+     * security_socket_sendmsg can miss ordering on some kernels, which would drop all write(2) payloads. */
+    if (write_args != NULL) {
         if (print_bpf_logs) {
             bpf_printk("syscall__probe_ret_writev data process: pid: %d", id);
         }
@@ -1384,8 +1398,7 @@ int syscall__probe_ret_readv(struct pt_regs* ctx) {
     }
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
-    /* Match module.cc: only capture after security_socket_recvmsg marked this syscall. */
-    if (read_args != NULL && read_args->sock_event) {
+    if (read_args != NULL) {
         process_syscall_data_vecs(ctx, read_args, id, false);
     }
 
@@ -1564,8 +1577,7 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
 
     struct data_args_t* read_args = bpf_map_lookup_elem(&active_read_args_map, &id);
 
-    /* Match module.cc: only capture after security_socket_recvmsg marked this syscall. */
-    if (read_args != NULL && read_args->sock_event) {
+    if (read_args != NULL) {
         process_syscall_data(ctx, read_args, id, false, false);
     }
 
@@ -1698,8 +1710,7 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
 
     struct data_args_t* write_args = bpf_map_lookup_elem(&active_write_args_map, &id);
 
-    /* Match module.cc: only capture after security_socket_sendmsg marked this syscall. */
-    if (write_args != NULL && write_args->sock_event) {
+    if (write_args != NULL) {
         if (print_bpf_logs) {
             bpf_printk("syscall__probe_ret_write data process: pid: %d", id);
         }
