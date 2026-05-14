@@ -30,6 +30,11 @@ if [ -f "${EBPF_ROOT}/.env" ]; then
 	set +a
 fi
 
+# No TTY (e.g. bare-metal nohup): send this script's stdout/stderr to LOG_FILE with ebpf-logging (ENABLE_LOGS=false only).
+if [ "${ENABLE_LOGS}" = "false" ] && [ ! -t 1 ]; then
+	exec >>"$LOG_FILE" 2>&1
+fi
+
 # Function to rotate the log file
 rotate_log() {
     if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then

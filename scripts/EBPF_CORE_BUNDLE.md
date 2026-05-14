@@ -44,7 +44,7 @@ This creates **`/ebpf/`** including:
 | `ebpf/kernel/module.bpf.o` | Compiled BPF object |
 | `ebpf/ebpf-run.sh` | Supervisor loop |
 | `ebpf/run-ebpf-core-host.sh` | Host entrypoint (sudo wrapper; **detached by default**) |
-| `ebpf/uninstall-ebpf-core-host.sh` | Stops processes and removes `${EBPF_ROOT}` |
+| `ebpf/uninstall-ebpf-core-host.sh` | Stops processes; leaves `${EBPF_ROOT}` on disk |
 | `ebpf/.env` | Default environment (edit before production) |
 
 If you install under a **different** directory, set **`EBPF_ROOT`** consistently (see below) and keep **`ebpf-run.sh`** and **`.env`** together under that directory.
@@ -57,10 +57,11 @@ Typical bare-metal defaults in that file:
 
 - **`EBPF_ROOT=/ebpf`** — bundle root.
 - **`HOST_MAPPING=/`** — host path prefix (use **`/host`** when running inside Docker with `-v /:/host`).
+- **`ENABLE_LOGS=false`** / **`LOG_FILE=/ebpf/dump.log`** — shipped defaults; if you change **`EBPF_ROOT`**, set **`LOG_FILE`** under that directory (for example **`/opt/akto/ebpf/dump.log`**).
 
 ### 4. Run (detached by default)
 
-`run-ebpf-core-host.sh` starts the supervisor under **`nohup`** and returns immediately. It writes **`${EBPF_ROOT}/ebpf-core-run.pid`** and appends wrapper output to **`${EBPF_ROOT}/ebpf-core-supervisor.log`** (override with **`EBPF_SUPERVISOR_LOG`**).
+`run-ebpf-core-host.sh` starts the supervisor under **`nohup`** and returns immediately. It writes **`${EBPF_ROOT}/ebpf-core-run.pid`**. **`nohup.out`** is not used. With **`ENABLE_LOGS=false`**, **`ebpf-run.sh`** attaches non-TTY stdout/stderr to **`LOG_FILE`** (see **`.env`** / **`MAX_LOG_SIZE`** for rotation).
 
 ```bash
 sudo /ebpf/run-ebpf-core-host.sh
@@ -68,8 +69,7 @@ sudo /ebpf/run-ebpf-core-host.sh
 
 Follow logs:
 
-- Supervisor shell / memory messages: `tail -f /ebpf/ebpf-core-supervisor.log`
-- Collector (default when `ENABLE_LOGS=false` in `ebpf-run.sh`): `tail -f /tmp/dump.log` or your **`LOG_FILE`**
+- **`ebpf-run.sh`** shell output (memory lines, restarts) and collector when **`ENABLE_LOGS=false`** (bundle default): `tail -f /ebpf/dump.log` or override **`LOG_FILE`** in **`.env`**
 
 Attach to the supervisor in the foreground (blocks this shell), for debugging:
 
@@ -88,7 +88,7 @@ Ensure **`EBPF_ROOT`** in the environment matches **`EBPF_ROOT`** in **`.env`** 
 
 ### 5. Uninstall
 
-Stops **`ebpf-run.sh`** / **`ebpf-logging`** for this install (using the pidfile when present, then matching processes) and **deletes the entire `EBPF_ROOT` directory**.
+Stops **`ebpf-run.sh`** / **`ebpf-logging`** for this install (using the pidfile when present, then matching processes). It does **not** remove **`EBPF_ROOT`**.
 
 ```bash
 sudo /ebpf/uninstall-ebpf-core-host.sh -y

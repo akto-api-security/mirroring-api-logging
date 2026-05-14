@@ -27,7 +27,7 @@ for arg do
       echo "Usage: $SELF [-f|--foreground] [-h|--help]" >&2
       echo "  Starts ebpf-run.sh under EBPF_ROOT (default /ebpf). Default: detached (background)." >&2
       echo "  -f  Run in foreground (attach to supervisor; logs to terminal if ENABLE_LOGS=true)." >&2
-      echo "  Env: EBPF_ROOT (install dir), EBPF_SUPERVISOR_LOG (detached-only wrapper log)." >&2
+      echo "  Env: EBPF_ROOT (install dir). Logging is configured only in ebpf-run.sh / .env." >&2
       exit 0
       ;;
     *)
@@ -54,7 +54,6 @@ if [ ! -f ./ebpf-run.sh ] || [ ! -x ./ebpf-run.sh ]; then
 fi
 
 PIDFILE="${EBPF_ROOT}/ebpf-core-run.pid"
-SUPERVISOR_LOG="${EBPF_SUPERVISOR_LOG:-${EBPF_ROOT}/ebpf-core-supervisor.log}"
 
 if [ "$FOREGROUND" = "true" ]; then
   exec "$EBPF_ROOT/ebpf-run.sh"
@@ -77,9 +76,8 @@ if command -v pgrep >/dev/null 2>&1; then
   fi
 fi
 
-nohup "$EBPF_ROOT/ebpf-run.sh" >>"$SUPERVISOR_LOG" 2>&1 &
+# Supervisor runs under nohup with no extra log file; ebpf-run.sh attaches non-TTY stdout/stderr to LOG_FILE when ENABLE_LOGS=false.
+nohup "$EBPF_ROOT/ebpf-run.sh" >/dev/null 2>&1 &
 echo $! >"$PIDFILE"
 echo "Started Akto eBPF core in background (supervisor PID $(cat "$PIDFILE"))."
-echo "Supervisor messages: $SUPERVISOR_LOG"
-echo "Collector logs (default): see LOG_FILE in ebpf-run.sh (often /tmp/dump.log when ENABLE_LOGS=false)."
 echo "Foreground mode: $SELF -f"
