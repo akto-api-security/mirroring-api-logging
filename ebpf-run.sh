@@ -8,6 +8,7 @@ MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-85} # Kill process at this % memory usage (
 GOMEMLIMIT_PERCENT=${GOMEMLIMIT_PERCENT:-60} # GOMEMLIMIT as % of container memory limit (configurable via env)
 AKTO_SUPPRESS_TRACE=${AKTO_SUPPRESS_TRACE:-true}
 CRASH_RESTART_BACKOFF_SECONDS=${CRASH_RESTART_BACKOFF_SECONDS:-10}
+EBPF_ROOT="${EBPF_ROOT:-/ebpf}"
 
 # Function to rotate the log file
 rotate_log() {
@@ -169,9 +170,9 @@ done &
 while :
 do
 	# Source environment file if it exists (contains vars set by processCommandMessage)
-	if [ -f /ebpf/.env ]; then
+	if [ -f "${EBPF_ROOT}/.env" ]; then
 		set -a
-		source /ebpf/.env
+		source "${EBPF_ROOT}/.env"
 		set +a
 	fi
 

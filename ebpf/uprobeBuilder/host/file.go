@@ -1,21 +1,11 @@
 package host
 
 import (
-	"strings"
-
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-var hostMappingPath string = "/host"
-
-func init() {
-	// default host mapping is /host
-	utils.InitVar("HOST_MAPPING", &hostMappingPath)
-}
-
+// GetFileInHost maps a host-absolute path (e.g. "/proc/1/exe") to the path this process
+// should open. Uses HOST_MAPPING via trafficUtil/utils (single implementation).
 func GetFileInHost(absPath string) string {
-	if hostMappingPath != "" && strings.HasPrefix(absPath, hostMappingPath) {
-		return absPath
-	}
-	return hostMappingPath + absPath
+	return utils.ResolveHostPath(absPath)
 }

@@ -107,9 +107,9 @@ func getProfilingData() map[string]interface{} {
 }
 
 func writeEnvFile() error {
-	dir := "/ebpf"
-	finalPath := "/ebpf/.env"
-	tmpPath := "/ebpf/.env.tmp"
+	dir := utils.EbpfRootDir
+	finalPath := utils.EbpfInstallPath(".env")
+	tmpPath := utils.EbpfInstallPath(".env.tmp")
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err

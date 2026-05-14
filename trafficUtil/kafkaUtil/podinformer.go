@@ -167,8 +167,9 @@ func (w *PodInformer) GetAllKubePids() []uint32 {
 }
 
 func (w *PodInformer) BuildPidHostNameMap() {
-
-	cmd := exec.Command("sh", "-c", "for dir in /host/proc/[0-9]*; do pid=$(basename \"$dir\"); if [ -f $dir/environ ]; then hostname=$(strings $dir/environ | grep '^HOSTNAME=' | cut -d'=' -f2); if [ -n \"$hostname\" ]; then comm=$(cat $dir/comm 2>/dev/null); echo \"$pid $comm $hostname\"; fi; fi; done | sort -k3")
+	procRoot := utils.ResolveHostPath("/proc")
+	cmd := exec.Command("sh", "-c", "for dir in \"$PROC_ROOT\"/[0-9]*; do pid=$(basename \"$dir\"); if [ -f $dir/environ ]; then hostname=$(strings $dir/environ | grep '^HOSTNAME=' | cut -d'=' -f2); if [ -n \"$hostname\" ]; then comm=$(cat $dir/comm 2>/dev/null); echo \"$pid $comm $hostname\"; fi; fi; done | sort -k3")
+	cmd.Env = append(os.Environ(), "PROC_ROOT="+procRoot)
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Error("Failed to execute shell command", "error", err)
@@ -224,7 +225,7 @@ func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (str
 }
 
 func (w *PodInformer) logPidHostNameMap() {
-	// slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
+	// slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFilePath())
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 
@@ -232,7 +233,7 @@ func (w *PodInformer) logPidHostNameMap() {
 		fmt.Fprintf(&builder, "%d\t%s\t%s\n", pid, info.ProcessName, info.HostName)
 	}
 	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
-	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
+	utils.LogToSpecificFile(utils.GoPidLogFilePath(), builder.String())
 	// slog.Debug("PID to Hostname Map logged", "map", w.pidHostNameMap)
 }
 
@@ -253,7 +254,7 @@ func (w *PodInformer) logPodLabelsMapFile() {
 		fmt.Fprintf(&builder, "%s\t%s\n", key, labelString.String())
 		return true
 	})
-	utils.LogToSpecificFile(utils.LabelsMapLogFile, builder.String())
+	utils.LogToSpecificFile(utils.LabelsMapLogFilePath(), builder.String())
 }
 
 func (w *PodInformer) logPodNameLabelsMap() {

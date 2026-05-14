@@ -3,6 +3,7 @@ package utils
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,7 +49,33 @@ var ThreatEnabled = true
 
 const EnvoyProxyIp = "127.0.0.6"
 
+// HostMappingPath is the root where the real host filesystem is visible (Docker: "/host"
+// with -v /:/host; bare metal: "/").
+var HostMappingPath = "/host"
+
+// EbpfRootDir is the install root for the eBPF bundle (config, logs, BPF object layout).
+var EbpfRootDir = "/ebpf"
+
+// ResolveHostPath maps an absolute path on the real host (e.g. "/proc/1/exe") to the path
+// this process should open (e.g. "/host/proc/1/exe" in Docker, "/proc/1/exe" on bare metal).
+func ResolveHostPath(hostAbsPath string) string {
+	if hostAbsPath == "" {
+		return HostMappingPath
+	}
+	if HostMappingPath != "" && strings.HasPrefix(hostAbsPath, HostMappingPath) {
+		return hostAbsPath
+	}
+	return HostMappingPath + hostAbsPath
+}
+
+// EbpfInstallPath joins path elements under EbpfRootDir.
+func EbpfInstallPath(elem ...string) string {
+	return filepath.Join(append([]string{EbpfRootDir}, elem...)...)
+}
+
 func init() {
+	InitVar("HOST_MAPPING", &HostMappingPath)
+	InitVar("EBPF_ROOT", &EbpfRootDir)
 	SetupLogger()
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_THREAT_ENABLED", &ThreatEnabled)

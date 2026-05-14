@@ -68,6 +68,14 @@ jobs:
         if: ${{ github.event.inputs.Module == 'legacy' }}
         run: go build -o ./mirroring-api-logging
 
+      - name: Set up QEMU (eBPF multi-arch)
+        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf' }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf' }}
+        uses: docker/setup-buildx-action@v3
+
       - name: Configure AWS credentials
         if: ${{ github.event.inputs.Environment == 'prod' }}
         uses: aws-actions/configure-aws-credentials@v6
@@ -116,8 +124,6 @@ jobs:
           IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
           ARCH_INPUT: ${{ github.event.inputs.Architecture }}
         run: |
-          # Build a docker container and push it to DockerHub 
-          docker buildx create --use
           if [ "$ARCH_INPUT" == "arm64" ]; then
             PLATFORM="linux/arm64/v8"
           elif [ "$ARCH_INPUT" == "amd64" ]; then
@@ -128,6 +134,41 @@ jobs:
           echo "Building and Pushing image to ECR with platform: $PLATFORM"
           docker buildx build --platform $PLATFORM -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
           echo "image=$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # Requires s3:PutObject on bucket akto-mirroring-module for the CI AWS user.
+      - name: Package eBPF core release archives and upload to S3
+        if: ${{ github.event.inputs.Environment == 'prod' && github.event.inputs.Module == 'ebpf'}}
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
+          ARCH_INPUT: ${{ github.event.inputs.Architecture }}
+          S3_BUCKET: akto-mirroring-module
+        run: |
+          set -euo pipefail
+          make_tar() {
+            local arch="$1"
+            local platform="$2"
+            local dest="export-${arch}"
+            rm -rf "$dest"
+            docker buildx build -f Dockerfile.eBPF --platform "${platform}" -o "type=local,dest=${dest}" .
+            cp scripts/run-ebpf-core-host.sh "${dest}/ebpf/run-ebpf-core-host.sh"
+            chmod +x "${dest}/ebpf/run-ebpf-core-host.sh"
+            cp scripts/ebpf-core-bundle.env "${dest}/ebpf/.env"
+            tar -czf "akto-mirroring-module-ebpf-core-${IMAGE_TAG}-${arch}.tar.gz" -C "${dest}" ebpf
+            aws s3 cp "akto-mirroring-module-ebpf-core-${IMAGE_TAG}-${arch}.tar.gz" "s3://${S3_BUCKET}/"
+            rm -rf "$dest" "akto-mirroring-module-ebpf-core-${IMAGE_TAG}-${arch}.tar.gz"
+          }
+          case "$ARCH_INPUT" in
+            amd64) make_tar amd64 linux/amd64 ;;
+            arm64) make_tar arm64 linux/arm64/v8 ;;
+            both)
+              make_tar amd64 linux/amd64
+              make_tar arm64 linux/arm64/v8
+              ;;
+            *)
+              echo "Unknown Architecture input: $ARCH_INPUT"
+              exit 1
+              ;;
+          esac
 
   build-docker:
     # The type of runner that the job will run on

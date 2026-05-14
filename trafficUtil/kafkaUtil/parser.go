@@ -400,7 +400,7 @@ func init() {
 }
 
 func UpdateDebugStringsFromFile() {
-	filePath := "/ebpf/debug-urls.txt"
+	filePath := utils.EbpfInstallPath("debug-urls.txt")
 	f, err := os.Open(filePath)
 	if err != nil {
 		return
