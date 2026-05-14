@@ -617,8 +617,13 @@ static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
 }
 
 static __always_inline void process_syscall_accept(struct pt_regs* ctx,
-                                             const struct accept_args_t* args,
+                                             const struct accept_args_t* args_in,
                                              u64 id, bool isConnect) {
+    if (args_in == NULL) {
+        return;
+    }
+    struct accept_args_t args = *args_in;
+
     int ret_fd = PT_REGS_RC(ctx);
 
     if (!isConnect && ret_fd < 0) {
@@ -631,13 +636,13 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     u32 srcIp = 0;
     uint16_t lport = 0;
 
-    if (args->addr != NULL) {
+    if (args.addr != NULL) {
         if (print_bpf_logs) {
             bpf_printk("sock addr found, processing");
         }
     }
 
-    if (args->sock_alloc_socket != NULL) {
+    if (args.sock_alloc_socket != NULL) {
         if (print_bpf_logs) {
             bpf_printk("sock alloc found, processing");
         }
@@ -652,7 +657,7 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
          */
         struct akto_socket sock_hdr = {};
         if (bpf_probe_read_kernel(&sock_hdr, sizeof(sock_hdr),
-                                  args->sock_alloc_socket) != 0)
+                                  args.sock_alloc_socket) != 0)
             return;
         struct sock* sk = (struct sock *)(unsigned long)sock_hdr.sk;
 
@@ -696,9 +701,9 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     }
 
     if (!socketConn) {
-        if (args->addr != NULL) {
+        if (args.addr != NULL) {
             struct akto_sockaddr sa_hdr = {};
-            if (bpf_probe_read_user(&sa_hdr, sizeof(sa_hdr), args->addr) != 0) {
+            if (bpf_probe_read_user(&sa_hdr, sizeof(sa_hdr), args.addr) != 0) {
                 return;
             }
             if (sa_hdr.sa_family != AF_INET && sa_hdr.sa_family != AF_INET6) {
@@ -711,24 +716,24 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
 
     conn_info.id = id;
     if (isConnect) {
-        conn_info.fd = args->fd;
+        conn_info.fd = args.fd;
     } else {
         conn_info.fd = ret_fd;
     }
     conn_info.conn_start_ns = bpf_ktime_get_ns();
 
-    if (!socketConn && args->addr != NULL) {
+    if (!socketConn && args.addr != NULL) {
         struct akto_sockaddr sa_hdr = {};
-        bpf_probe_read_user(&sa_hdr, sizeof(sa_hdr), args->addr);
+        bpf_probe_read_user(&sa_hdr, sizeof(sa_hdr), args.addr);
         if (sa_hdr.sa_family == AF_INET) {
             struct akto_sockaddr_in sin = {};
-            if (bpf_probe_read_user(&sin, sizeof(sin), args->addr) == 0) {
+            if (bpf_probe_read_user(&sin, sizeof(sin), args.addr) == 0) {
                 conn_info.port = sin.sin_port;
                 conn_info.ip   = sin.sin_addr;
             }
         } else {
             struct akto_sockaddr_in6 sin6 = {};
-            if (bpf_probe_read_user(&sin6, sizeof(sin6), args->addr) == 0) {
+            if (bpf_probe_read_user(&sin6, sizeof(sin6), args.addr) == 0) {
                 conn_info.port = sin6.sin6_port;
                 conn_info.ip   = ((__u32 *)sin6.sin6_addr)[3];
             }
@@ -741,7 +746,7 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
 
     if (filter_local_traffic && conn_info.ip == local_traffic_ip) {
         if (print_bpf_logs) {
-            bpf_printk("Dropping local traffic ip:%u fd:%d", conn_info.ip, args->fd);
+            bpf_printk("Dropping local traffic ip:%u fd:%d", conn_info.ip, args.fd);
         }
         return;
     }
@@ -749,7 +754,7 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
     if (isConnect) {
-        tgid_fd = gen_tgid_fd(tgid, args->fd);
+        tgid_fd = gen_tgid_fd(tgid, args.fd);
     } else {
         tgid_fd = gen_tgid_fd(tgid, ret_fd);
     }
@@ -759,15 +764,16 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     int  val = 0;
     u32  val_key = 0;
     if (counter != NULL) {
-        if ((*counter) > (TRAFFIC_MAX_CONNECTION_MAP_SIZE - 5)) {
-            int reset = 0;
-            bpf_map_update_elem(&conn_counter, &idx, &reset, BPF_ANY);
+        int c = *counter;
+        if (c > (TRAFFIC_MAX_CONNECTION_MAP_SIZE - 5)) {
             if (print_bpf_logs) {
-                bpf_printk("conn_info_counter reset: %d", *counter);
+                bpf_printk("conn_info_counter reset: %d", c);
             }
+            c = 0;
         }
-        (*counter)++;
-        val     = *counter;
+        c++;
+        bpf_map_update_elem(&conn_counter, &idx, &c, BPF_ANY);
+        val     = c;
         val_key = (u32)val;
         if (print_bpf_logs) {
             bpf_printk("conn_info_counter found: %d", val);
@@ -822,24 +828,30 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
 }
 
 static __always_inline void process_syscall_close(struct pt_regs* ctx,
-                                            const struct close_args_t* args,
+                                            const struct close_args_t* args_in,
                                             u64 id) {
+    if (args_in == NULL) {
+        return;
+    }
+    struct close_args_t args = *args_in;
+
     int ret_val = PT_REGS_RC(ctx);
 
     if (ret_val < 0) {
         return;
     }
 
-    if (args->fd < 0) {
+    if (args.fd < 0) {
         return;
     }
 
     u32 tgid = id >> 32;
-    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    struct conn_info_t* conn_info = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
-    if (conn_info == NULL) {
+    u64 tgid_fd = gen_tgid_fd(tgid, args.fd);
+    struct conn_info_t* conn_info_p = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+    if (conn_info_p == NULL) {
         return;
     }
+    struct conn_info_t conn_info = *conn_info_p;
 
     if (!disable_ring_submit) {
         increment_counter(&socket_close_submit_total);
@@ -848,11 +860,11 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
         if (socket_close_event == NULL) {
             increment_counter(&socket_close_submit_failed_total);
         } else {
-            socket_close_event->id              = conn_info->id;
-            socket_close_event->fd              = conn_info->fd;
-            socket_close_event->conn_start_ns   = conn_info->conn_start_ns;
-            socket_close_event->port            = conn_info->port;
-            socket_close_event->ip              = conn_info->ip;
+            socket_close_event->id              = conn_info.id;
+            socket_close_event->fd              = conn_info.fd;
+            socket_close_event->conn_start_ns   = conn_info.conn_start_ns;
+            socket_close_event->port            = conn_info.port;
+            socket_close_event->ip              = conn_info.ip;
             socket_close_event->socket_close_ns = bpf_ktime_get_ns();
             bpf_ringbuf_submit(socket_close_event, 0);
         }
@@ -883,12 +895,17 @@ static __noinline u32 bounded_probe_read_user(
 }
 
 static __noinline void process_syscall_data(struct pt_regs* ctx,
-                                           const struct data_args_t* args,
+                                           const struct data_args_t* args_in,
                                            u64 id, bool is_send, bool ssl) {
+    if (args_in == NULL) {
+        return;
+    }
+    struct data_args_t args = *args_in;
+
     int bytes_exchanged = PT_REGS_RC(ctx);
 
-    if (args->iovlen > 0 && args->buf_size > 0) {
-        bytes_exchanged = args->buf_size;
+    if (args.iovlen > 0 && args.buf_size > 0) {
+        bytes_exchanged = args.buf_size;
     }
 
     if (bytes_exchanged <= 0) {
@@ -898,28 +915,30 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
     if (print_bpf_logs) {
         bpf_printk("SSL data 1 %d", id);
     }
-    if (args->fd < 0) {
+    if (args.fd < 0) {
         return;
     }
 
     u32 tgid = id >> 32;
-    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+    u64 tgid_fd = gen_tgid_fd(tgid, args.fd);
     if (print_bpf_logs) {
         bpf_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
     }
-    struct conn_info_t* conn_info = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
-    if (conn_info == NULL) {
+    struct conn_info_t* conn_info_p = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+    if (conn_info_p == NULL) {
         return;
     }
+    struct conn_info_t conn_info = *conn_info_p;
+
     if (print_bpf_logs) {
         bpf_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
     }
 
-    if (conn_info->ssl != ssl) {
+    if (conn_info.ssl != ssl) {
         return;
     }
 
-    if (filter_strict_remote_port && conn_info->port != strict_remote_port) {
+    if (filter_strict_remote_port && conn_info.port != strict_remote_port) {
         return;
     }
 
@@ -935,20 +954,6 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
         bpf_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
     }
 
-    u32 kZero = 0;
-    struct socket_data_event_t* socket_data_event =
-        bpf_map_lookup_elem(&socket_data_event_buffer_heap, &kZero);
-    if (socket_data_event == NULL) {
-        return;
-    }
-
-    socket_data_event->id            = conn_info->id;
-    socket_data_event->fd            = conn_info->fd;
-    socket_data_event->conn_start_ns = conn_info->conn_start_ns;
-    socket_data_event->port          = conn_info->port;
-    socket_data_event->ip            = conn_info->ip;
-    socket_data_event->ssl           = conn_info->ssl;
-
     int bytes_sent  = 0;
     u32  size_to_save = 0;
     int i = 0;
@@ -959,6 +964,21 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
         if (bytes_remaining <= 0) {
             break;
         }
+
+        u32 kZero = 0;
+        struct socket_data_event_t* socket_data_event =
+            bpf_map_lookup_elem(&socket_data_event_buffer_heap, &kZero);
+        if (socket_data_event == NULL) {
+            break;
+        }
+
+        socket_data_event->id            = conn_info.id;
+        socket_data_event->fd            = conn_info.fd;
+        socket_data_event->conn_start_ns = conn_info.conn_start_ns;
+        socket_data_event->port          = conn_info.port;
+        socket_data_event->ip            = conn_info.ip;
+        socket_data_event->ssl           = conn_info.ssl;
+
         u32 current_size;
         if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
             current_size = (u32)MAX_MSG_SIZE;
@@ -968,24 +988,24 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
 
         u32 read_size = bounded_probe_read_user(
             socket_data_event, current_size,
-            (const char *)args->buf + bytes_sent);
+            (const char *)args.buf + bytes_sent);
         if (read_size == 0 && current_size > 0) {
             break;
         }
         size_to_save = read_size;
 
         if (is_send) {
-            conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
+            conn_info.writeEventsCount = conn_info.writeEventsCount + 1u;
         } else {
-            conn_info->readEventsCount = (conn_info->readEventsCount) + 1u;
+            conn_info.readEventsCount = conn_info.readEventsCount + 1u;
         }
 
-        socket_data_event->writeEventsCount = conn_info->writeEventsCount;
-        socket_data_event->readEventsCount  = conn_info->readEventsCount;
+        socket_data_event->writeEventsCount = conn_info.writeEventsCount;
+        socket_data_event->readEventsCount  = conn_info.readEventsCount;
 
         if (print_bpf_logs) {
             bpf_printk("pid: %d conn-id:%d, fd: %d",
-                             id, conn_info->id, conn_info->fd);
+                             id, conn_info.id, conn_info.fd);
             bpf_printk("current_size: %d i:%d, bytes_exchanged: %d",
                              current_size, i, bytes_exchanged);
             bpf_printk("rwc: %d tdfd: %llu data: %s",
@@ -1007,15 +1027,22 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
 
         bytes_sent += current_size;
     }
+
+    bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn_info, BPF_ANY);
 }
 
 static __noinline void process_syscall_data_vecs(struct pt_regs* ctx,
-                                                struct data_args_t* args,
+                                                struct data_args_t* args_in,
                                                 u64 id, bool is_send) {
+    if (args_in == NULL) {
+        return;
+    }
+    struct data_args_t args = *args_in;
+
     int bytes_sent  = 0;
     int total_size  = PT_REGS_RC(ctx);
-    const struct iovec* iov = args->iov;
-    for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size; ++i) {
+    const struct iovec* iov = args.iov;
+    for (int i = 0; i < LOOP_LIMIT && i < args.iovlen && bytes_sent < total_size; ++i) {
         struct iovec iov_cpy;
         bpf_probe_read_user(&iov_cpy, sizeof(iov_cpy), &iov[i]);
 
@@ -1023,9 +1050,9 @@ static __noinline void process_syscall_data_vecs(struct pt_regs* ctx,
         const size_t iov_size = iov_cpy.iov_len < bytes_remaining
                                 ? iov_cpy.iov_len : bytes_remaining;
 
-        args->buf      = iov_cpy.iov_base;
-        args->buf_size = iov_size;
-        process_syscall_data(ctx, args, id, is_send, false);
+        args.buf      = iov_cpy.iov_base;
+        args.buf_size = iov_size;
+        process_syscall_data(ctx, &args, id, is_send, false);
         bytes_sent += iov_size;
     }
 }
@@ -1062,10 +1089,11 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
         bpf_printk("syscall__probe_ret_accept: pid: %d", id);
     }
 
-    struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
+    struct accept_args_t* accept_args_p = bpf_map_lookup_elem(&active_accept_args_map, &id);
 
-    if (accept_args != NULL) {
-        process_syscall_accept(ctx, accept_args, id, false);
+    if (accept_args_p != NULL) {
+        struct accept_args_t accept_args = *accept_args_p;
+        process_syscall_accept(ctx, &accept_args, id, false);
     }
 
     bpf_map_delete_elem(&active_accept_args_map, &id);
@@ -1080,13 +1108,15 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
         bpf_printk("probe_ret_sock_alloc: pid: %d", id);
     }
 
-    struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
-    if (accept_args == NULL) {
+    struct accept_args_t* accept_args_p = bpf_map_lookup_elem(&active_accept_args_map, &id);
+    if (accept_args_p == NULL) {
         return 0;
     }
+    struct accept_args_t accept_args = *accept_args_p;
 
-    if (accept_args->sock_alloc_socket == NULL) {
-        accept_args->sock_alloc_socket = (struct socket*)PT_REGS_RC(ctx);
+    if (accept_args.sock_alloc_socket == NULL) {
+        accept_args.sock_alloc_socket = (struct socket*)PT_REGS_RC(ctx);
+        bpf_map_update_elem(&active_accept_args_map, &id, &accept_args, BPF_ANY);
     }
 
     return 0;
@@ -1100,13 +1130,15 @@ int probe_entry_tcp_connect(struct pt_regs* ctx) {
         bpf_printk("probe_entry_tcp_connect: pid: %d", id);
     }
 
-    struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
-    if (accept_args == NULL) {
+    struct accept_args_t* accept_args_p = bpf_map_lookup_elem(&active_accept_args_map, &id);
+    if (accept_args_p == NULL) {
         return 0;
     }
+    struct accept_args_t accept_args = *accept_args_p;
 
-    if (accept_args->sock == NULL) {
-        accept_args->sock = (void*)PT_REGS_PARM1(ctx);
+    if (accept_args.sock == NULL) {
+        accept_args.sock = (void*)PT_REGS_PARM1(ctx);
+        bpf_map_update_elem(&active_accept_args_map, &id, &accept_args, BPF_ANY);
     }
 
     return 0;
@@ -1139,14 +1171,15 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
         bpf_printk("syscall__probe_ret_connect: pid: %d", id);
     }
 
-    struct accept_args_t* accept_args = bpf_map_lookup_elem(&active_accept_args_map, &id);
+    struct accept_args_t* accept_args_p = bpf_map_lookup_elem(&active_accept_args_map, &id);
 
-    if (accept_args != NULL) {
-        if (accept_args->sock != NULL) {
-            struct sock* sock = accept_args->sock;
-            accept_args->sock_alloc_socket = BPF_CORE_READ(sock, sk_socket);
+    if (accept_args_p != NULL) {
+        struct accept_args_t accept_args = *accept_args_p;
+        if (accept_args.sock != NULL) {
+            struct sock* sock = accept_args.sock;
+            accept_args.sock_alloc_socket = BPF_CORE_READ(sock, sk_socket);
         }
-        process_syscall_accept(ctx, accept_args, id, true);
+        process_syscall_accept(ctx, &accept_args, id, true);
     }
 
     bpf_map_delete_elem(&active_accept_args_map, &id);
@@ -1742,10 +1775,10 @@ static void set_conn_as_ssl(u32 tgid, u32 fd) {
     if (conn_info == NULL) {
         return;
     }
+    conn_info->ssl = true;
     if (print_bpf_logs) {
         bpf_printk("SSL marking ssl tgid: %d", tgid_fd);
     }
-    conn_info->ssl = true;
 }
 
 /*
@@ -1811,26 +1844,27 @@ int BPF_UPROBE(probe_entry_SSL_write, void* ssl, void* buf, int num) {
     __u64* tls_wrap_val = bpf_map_lookup_elem(&node_ssl_tls_wrap_map, &ssl_key);
     u32 fd = 0;
     if (tls_wrap_val != NULL) {
-        /* get_fd_node logic inlined for the node case */
+        __u64 tls_wrap_word = *tls_wrap_val;
         u32 tgid_key = tgid;
-        struct node_tlswrap_symaddrs_t* symaddrs =
+        struct node_tlswrap_symaddrs_t* symaddrs_p =
             bpf_map_lookup_elem(&node_tlswrap_symaddrs_map, &tgid_key);
-        if (symaddrs != NULL) {
-            void* tls_wrap = (void*)*tls_wrap_val;
-            void* stream_ptr = tls_wrap + symaddrs->TLSWrapStreamListenerOffset
-                               + symaddrs->StreamListenerStreamOffset;
+        if (symaddrs_p != NULL) {
+            struct node_tlswrap_symaddrs_t symaddrs = *symaddrs_p;
+            void* tls_wrap = (void*)tls_wrap_word;
+            void* stream_ptr = tls_wrap + symaddrs.TLSWrapStreamListenerOffset
+                               + symaddrs.StreamListenerStreamOffset;
             void* stream = NULL;
             bpf_probe_read(&stream, sizeof(stream), stream_ptr);
             if (stream != NULL) {
                 void* uv_stream_ptr = stream
-                                      - symaddrs->StreamBaseStreamResourceOffset
-                                      - symaddrs->LibuvStreamWrapStreamBaseOffset
-                                      + symaddrs->LibuvStreamWrapStreamOffset;
+                                      - symaddrs.StreamBaseStreamResourceOffset
+                                      - symaddrs.LibuvStreamWrapStreamBaseOffset
+                                      + symaddrs.LibuvStreamWrapStreamOffset;
                 void* uv_stream = NULL;
                 bpf_probe_read(&uv_stream, sizeof(uv_stream), uv_stream_ptr);
                 if (uv_stream != NULL) {
-                    int32_t* fd_ptr = uv_stream + symaddrs->UVStreamSIOWatcherOffset
-                                      + symaddrs->UVIOSFDOffset;
+                    int32_t* fd_ptr = uv_stream + symaddrs.UVStreamSIOWatcherOffset
+                                      + symaddrs.UVIOSFDOffset;
                     int32_t fd_val = 0;
                     if (bpf_probe_read(&fd_val, sizeof(fd_val), fd_ptr) == 0) {
                         fd = (u32)fd_val;
@@ -1932,25 +1966,27 @@ int BPF_UPROBE(probe_entry_SSL_read, void* ssl, void* buf, int num) {
     __u64* tls_wrap_val = bpf_map_lookup_elem(&node_ssl_tls_wrap_map, &ssl_key);
     int32_t fd = 0;
     if (tls_wrap_val != NULL) {
+        __u64 tls_wrap_word = *tls_wrap_val;
         u32 tgid_key = tgid;
-        struct node_tlswrap_symaddrs_t* symaddrs =
+        struct node_tlswrap_symaddrs_t* symaddrs_p =
             bpf_map_lookup_elem(&node_tlswrap_symaddrs_map, &tgid_key);
-        if (symaddrs != NULL) {
-            void* tls_wrap = (void*)*tls_wrap_val;
-            void* stream_ptr = tls_wrap + symaddrs->TLSWrapStreamListenerOffset
-                               + symaddrs->StreamListenerStreamOffset;
+        if (symaddrs_p != NULL) {
+            struct node_tlswrap_symaddrs_t symaddrs = *symaddrs_p;
+            void* tls_wrap = (void*)tls_wrap_word;
+            void* stream_ptr = tls_wrap + symaddrs.TLSWrapStreamListenerOffset
+                               + symaddrs.StreamListenerStreamOffset;
             void* stream = NULL;
             bpf_probe_read(&stream, sizeof(stream), stream_ptr);
             if (stream != NULL) {
                 void* uv_stream_ptr = stream
-                                      - symaddrs->StreamBaseStreamResourceOffset
-                                      - symaddrs->LibuvStreamWrapStreamBaseOffset
-                                      + symaddrs->LibuvStreamWrapStreamOffset;
+                                      - symaddrs.StreamBaseStreamResourceOffset
+                                      - symaddrs.LibuvStreamWrapStreamBaseOffset
+                                      + symaddrs.LibuvStreamWrapStreamOffset;
                 void* uv_stream = NULL;
                 bpf_probe_read(&uv_stream, sizeof(uv_stream), uv_stream_ptr);
                 if (uv_stream != NULL) {
-                    int32_t* fd_ptr = uv_stream + symaddrs->UVStreamSIOWatcherOffset
-                                      + symaddrs->UVIOSFDOffset;
+                    int32_t* fd_ptr = uv_stream + symaddrs.UVStreamSIOWatcherOffset
+                                      + symaddrs.UVIOSFDOffset;
                     int32_t fd_val = 0;
                     if (bpf_probe_read(&fd_val, sizeof(fd_val), fd_ptr) == 0) {
                         fd = fd_val;
@@ -2002,6 +2038,10 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
  * Do not stash pt_regs fields in a map: the next bpf_map_lookup_elem()
  * invalidates prior lookup pointers on older verifiers (e.g. RHEL 8 / 4.18),
  * which would poison symaddrs/active_tls reads used with assign_arg().
+ *
+ * Same rule elsewhere: copy `*map_ptr` to the stack (or re-lookup) before any
+ * other bpf helper if you still need the map value; never use two live map-value
+ * pointers across helpers; refresh per-CPU scratch after ringbuf_output / stats.
  */
 static __always_inline void go_regabi_regs_fill(uint64_t regs_out[9], const struct pt_regs* ctx) {
 #if defined(TARGET_ARCH_X86_64)
@@ -2032,10 +2072,11 @@ static __always_inline void go_regabi_regs_fill(uint64_t regs_out[9], const stru
 static inline uint64_t get_goid(struct pt_regs* ctx) {
     uint64_t id   = bpf_get_current_pid_tgid();
     uint32_t tgid = id >> 32;
-    struct go_symaddrs_t* common_symaddrs = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
-    if (common_symaddrs == NULL) {
+    struct go_symaddrs_t* common_symaddrs_p = bpf_map_lookup_elem(&go_symaddrs_table, &tgid);
+    if (common_symaddrs_p == NULL) {
         return 0;
     }
+    struct go_symaddrs_t common_symaddrs = *common_symaddrs_p;
 
     /* CO-RE: resolve task_struct->thread field offsets from BTF. */
     struct task_struct* task_ptr = (struct task_struct*)bpf_get_current_task();
@@ -2068,7 +2109,7 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
     size_t g_addr;
     bpf_probe_read_user(&g_addr, sizeof(void*), (void*)(fs_base + g_addr_offset));
     bpf_probe_read_user(&goid, sizeof(void*),
-                        (void*)(g_addr + common_symaddrs->GIDOffset));
+                        (void*)(g_addr + common_symaddrs.GIDOffset));
     return goid;
 }
 
@@ -2213,7 +2254,8 @@ static __always_inline int probe_return_tls_conn_write_core(struct pt_regs* ctx,
         bpf_printk("probe_return_tls_conn_write 2.2 %llu %lu", id, tgid);
     }
 
-    struct data_args_t data_args;
+    /* Full zero-init: process_syscall_data reads iovlen/buf_size; stack garbage fails strict verifiers. */
+    struct data_args_t data_args = {};
     data_args.source_fn = kGoTLSWrite;
     data_args.buf       = args->plaintext_ptr;
     data_args.fd        = fd;
@@ -2364,7 +2406,7 @@ static __always_inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, 
         bpf_printk("probe_return_tls_conn_read 2.2 %llu %lu", id, tgid);
     }
 
-    struct data_args_t data_args;
+    struct data_args_t data_args = {};
     data_args.source_fn = kGoTLSRead;
     data_args.buf       = args->plaintext_ptr;
     data_args.fd        = fd;
