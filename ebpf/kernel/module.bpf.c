@@ -596,19 +596,51 @@ static __always_inline bool is_system_cpu_ingest_paused(void) {
     return paused != NULL && *paused != 0;
 }
 
-static __noinline long output_to_data_shard(
-        void *data, u64 size) {
+/*
+ * Ringbuf submit size for struct socket_data_event_t: header + valid bytes in msg[].
+ * Keep bounds explicit for strict verifiers (RHEL 8 / 4.18): bpf_ringbuf_output R3
+ * must not depend on un-clamped arithmetic from syscall return values.
+ */
+static __always_inline u32 socket_data_event_output_len(u32 msg_len) {
+    const u32 hdr_sz = (u32)(sizeof(struct socket_data_event_t) - MAX_MSG_SIZE);
+    u32 pl = msg_len;
+    if (pl > MAX_MSG_SIZE) {
+        pl = MAX_MSG_SIZE;
+    }
+    u32 out = hdr_sz + pl;
+    const u32 cap = (u32)sizeof(struct socket_data_event_t);
+    if (out > cap) {
+        out = cap;
+    }
+    return out;
+}
+
+static __noinline long output_to_data_shard(void *data, u64 size) {
+    /*
+     * bpf_ringbuf_output size (R3) must be provably bounded on older verifiers
+     * (e.g. RHEL 8 / 4.18): "R3 unbounded memory access, use 'if (var < const)'".
+     * This is the only variable-size bpf_ringbuf_output path in this module;
+     * bpf_ringbuf_reserve paths use a fixed sizeof(...) only.
+     */
+    const __u32 max_bytes = sizeof(struct socket_data_event_t);
+    __u32 nbytes;
+    if (size > max_bytes) {
+        nbytes = max_bytes;
+    } else {
+        nbytes = (__u32)size;
+    }
+
     u32 shard = bpf_get_smp_processor_id() & (SOCKET_DATA_RINGBUF_SHARDS - 1);
     switch (shard) {
-    case 0: return bpf_ringbuf_output(&socket_data_events_0, data, size, 0);
-    case 1: return bpf_ringbuf_output(&socket_data_events_1, data, size, 0);
-    case 2: return bpf_ringbuf_output(&socket_data_events_2, data, size, 0);
-    case 3: return bpf_ringbuf_output(&socket_data_events_3, data, size, 0);
-    case 4: return bpf_ringbuf_output(&socket_data_events_4, data, size, 0);
-    case 5: return bpf_ringbuf_output(&socket_data_events_5, data, size, 0);
-    case 6: return bpf_ringbuf_output(&socket_data_events_6, data, size, 0);
-    case 7: return bpf_ringbuf_output(&socket_data_events_7, data, size, 0);
-    default: return bpf_ringbuf_output(&socket_data_events_0, data, size, 0);
+    case 0: return bpf_ringbuf_output(&socket_data_events_0, data, nbytes, 0);
+    case 1: return bpf_ringbuf_output(&socket_data_events_1, data, nbytes, 0);
+    case 2: return bpf_ringbuf_output(&socket_data_events_2, data, nbytes, 0);
+    case 3: return bpf_ringbuf_output(&socket_data_events_3, data, nbytes, 0);
+    case 4: return bpf_ringbuf_output(&socket_data_events_4, data, nbytes, 0);
+    case 5: return bpf_ringbuf_output(&socket_data_events_5, data, nbytes, 0);
+    case 6: return bpf_ringbuf_output(&socket_data_events_6, data, nbytes, 0);
+    case 7: return bpf_ringbuf_output(&socket_data_events_7, data, nbytes, 0);
+    default: return bpf_ringbuf_output(&socket_data_events_0, data, nbytes, 0);
     }
 }
 
@@ -1020,7 +1052,7 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
             increment_counter(&socket_data_submit_total);
         }
         long ret = output_to_data_shard(socket_data_event,
-            sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+                                        socket_data_event_output_len(size_to_save));
         if (ret != 0 && log_socket_data_submit_stats) {
             increment_counter(&socket_data_submit_failed_total);
         }
