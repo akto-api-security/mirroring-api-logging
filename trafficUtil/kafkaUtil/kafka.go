@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,11 +39,24 @@ var kafkaPassword = ""
 var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
 var heartbeatIntervalSeconds = 60
+var kafkaDisabled = false
 var uniqueDaemonsetId = uuid.New().String()
 var moduleType = "TRAFFIC_COLLECTOR"
 
 var globalTransport *kafka.Transport
 var transportOnce sync.Once
+
+var (
+	kafkaBrokerMAL     string
+	kafkaBrokerURL     string
+	kafkaBatchSize     = 100
+	kafkaBatchTimeSecs = 10
+	aktoAgentName      string
+	kubePodName        string
+	kubeNodeName       string
+	kubeHostname       string
+	aktoImageVersion   string
+)
 
 func init() {
 
@@ -59,6 +71,36 @@ func init() {
 	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
+	utils.InitVar("AKTO_KAFKA_DISABLED", &kafkaDisabled)
+
+	utils.InitVar("AKTO_KAFKA_BROKER_MAL", &kafkaBrokerMAL)
+	utils.InitVar("AKTO_KAFKA_BROKER_URL", &kafkaBrokerURL)
+	utils.InitVar("AKTO_BYTES_IN_THRESHOLD", &BytesInThreshold)
+	utils.InitVar("AKTO_TRAFFIC_BATCH_SIZE", &kafkaBatchSize)
+	utils.InitVar("AKTO_TRAFFIC_BATCH_TIME_SECS", &kafkaBatchTimeSecs)
+	utils.InitVar("AKTO_AGENT_NAME", &aktoAgentName)
+	utils.InitVar("POD_NAME", &kubePodName)
+	utils.InitVar("NODE_NAME", &kubeNodeName)
+	utils.InitVar("HOSTNAME", &kubeHostname)
+	utils.InitVar("AKTO_IMAGE_VERSION", &aktoImageVersion)
+}
+
+// KafkaBrokerURL returns AKTO_KAFKA_BROKER_MAL if set, otherwise AKTO_KAFKA_BROKER_URL.
+func KafkaBrokerURL() string {
+	if kafkaBrokerMAL != "" {
+		return kafkaBrokerMAL
+	}
+	return kafkaBrokerURL
+}
+
+// KafkaDisabled is true when AKTO_KAFKA_DISABLED=true: no producer, heartbeat, or config consumer.
+func KafkaDisabled() bool {
+	return kafkaDisabled
+}
+
+// KafkaWriteAvailable is true when Kafka init succeeded and writes may be sent.
+func KafkaWriteAvailable() bool {
+	return !kafkaDisabled && kafkaWriter != nil
 }
 
 func InitKafka() {
@@ -66,39 +108,23 @@ func InitKafka() {
 		return
 	}
 
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
+	if kafkaDisabled {
+		slog.Warn("Kafka disabled (AKTO_KAFKA_DISABLED), skipping broker connection and producer init")
+		return
+	}
 
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
+	kafka_url := KafkaBrokerURL()
+	if kafka_url == "" {
+		slog.Warn("Kafka broker URL empty and Kafka is required when not disabled; skipping Kafka init")
+		return
 	}
 	slog.Info("kafka_url: " + kafka_url)
 
-	bytesInThresholdInput := os.Getenv("AKTO_BYTES_IN_THRESHOLD")
-	if len(bytesInThresholdInput) > 0 {
-		bytesInThreshold, err := strconv.Atoi(bytesInThresholdInput)
-		if err != nil {
-			slog.Error("AKTO_BYTES_IN_THRESHOLD should be valid integer. Found " + bytesInThresholdInput)
-			return
-		} else {
-			slog.Info("Setting bytes in threshold at " + strconv.Itoa(bytesInThreshold))
-		}
-
-	}
-
-	kafka_batch_size, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_SIZE"))
-	if e != nil {
-		kafka_batch_size = 100
-	}
-
-	kafka_batch_time_secs, e := strconv.Atoi(os.Getenv("AKTO_TRAFFIC_BATCH_TIME_SECS"))
-	if e != nil {
-		kafka_batch_time_secs = 10
-	}
-	kafka_batch_time_secs_duration := time.Duration(kafka_batch_time_secs)
+	kafka_batch_time_secs_duration := time.Duration(kafkaBatchTimeSecs)
 
 	for {
 		kafkaWriterMutex.Lock()
-		kafkaWriter = getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+		kafkaWriter = getKafkaWriter(kafka_url, kafkaBatchSize, kafka_batch_time_secs_duration*time.Second)
 		kafkaWriterMutex.Unlock()
 
 		utils.LogMemoryStats()
@@ -129,7 +155,7 @@ func InitKafka() {
 			kafkaWriterMutex.Unlock()
 
 			// Start periodic reconnection routine
-			go periodicKafkaReconnect(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration*time.Second)
+			go periodicKafkaReconnect(kafka_url, kafkaBatchSize, kafka_batch_time_secs_duration*time.Second)
 			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
 
 			// Start heartbeat routine
@@ -207,19 +233,15 @@ func periodicKafkaReconnect(kafka_url string, kafka_batch_size int, kafka_batch_
 }
 
 func getDaemonPodName() string {
-	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
-	podName := os.Getenv("POD_NAME")
-	nodeName := os.Getenv("NODE_NAME")
-
 	if aktoAgentName != "" {
 		return fmt.Sprintf("akto-tc:%s", aktoAgentName)
 	}
 
-	if podName != "" && nodeName != "" {
-		return fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
+	if kubePodName != "" && kubeNodeName != "" {
+		return fmt.Sprintf("akto-tc:%s:%s", kubePodName, kubeNodeName)
 	}
 
-	hostname := os.Getenv("HOSTNAME")
+	hostname := kubeHostname
 	if hostname == "" {
 		hostname = fmt.Sprintf("daemon-%s", uniqueDaemonsetId[:8])
 	}
@@ -227,11 +249,10 @@ func getDaemonPodName() string {
 }
 
 func getImageVersion() string {
-	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
-	if imageVersion == "" {
-		imageVersion = "aktosecurity/mirror-api-logging:k8s-ebpf"
+	if aktoImageVersion != "" {
+		return aktoImageVersion
 	}
-	return imageVersion
+	return "aktosecurity/mirror-api-logging:k8s-ebpf"
 }
 
 // Heartbeat and config consumer functions moved to ebpf_telemetry.go
@@ -292,8 +313,8 @@ var CLIENT_IP_HEADERS = []string{
 func ProducePodMapping(ctx context.Context, podName string) error {
 	message := map[string]string{
 		"podName":       podName,
-		"aktoDaemonSet": os.Getenv("POD_NAME"),
-		"nodeName":      os.Getenv("NODE_NAME"),
+		"aktoDaemonSet": kubePodName,
+		"nodeName":      kubeNodeName,
 		"lastUpdated":   fmt.Sprint(time.Now().Format(time.RFC3339)),
 	}
 
@@ -306,6 +327,10 @@ func ProducePodMapping(ctx context.Context, podName string) error {
 func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 
 	if !utils.ThreatEnabled {
+		return nil
+	}
+
+	if !KafkaWriteAvailable() {
 		return nil
 	}
 
@@ -365,6 +390,10 @@ const (
 )
 
 func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) error {
+	if !KafkaWriteAvailable() {
+		return nil
+	}
+
 	out, err := json.Marshal(heartbeatData)
 	if err != nil {
 		return err
@@ -390,6 +419,10 @@ func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) erro
 }
 
 func ProduceLogs(ctx context.Context, message string, logType string) error {
+	if !KafkaWriteAvailable() {
+		return nil
+	}
+
 	value := map[string]string{
 		"message": message,
 		"logType": logType,
@@ -436,6 +469,10 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 }
 
 func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
+	if !KafkaWriteAvailable() {
+		return nil
+	}
+
 	topic := "akto.api.logs"
 
 	msg := kafka.Message{
@@ -528,4 +565,13 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 
 	kafkaWriter.Transport = getGlobalTransport()
 	return &kafkaWriter
+}
+
+func Close() {
+	kafkaWriterMutex.Lock()
+	defer kafkaWriterMutex.Unlock()
+	if kafkaWriter != nil {
+		kafkaWriter.Close()
+		kafkaWriter = nil
+	}
 }

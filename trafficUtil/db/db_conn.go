@@ -3,16 +3,20 @@ package db
 import (
 	"context"
 	"log/slog"
-	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-func InitMongoClient() {
-	disableOnDb := os.Getenv("AKTO_DISABLE_ON_DB")
-	disableOnDbFlag := disableOnDb == "true"
+var disableOnDbFlag = false
 
+func init() {
+	utils.InitVar("AKTO_DISABLE_ON_DB", &disableOnDbFlag)
+}
+
+func InitMongoClient() {
 	slog.Debug("Disable flag", "flag", disableOnDbFlag)
 
 	client, err := GetMongoClient()

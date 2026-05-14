@@ -3,19 +3,23 @@ package utils
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
-var printCounter = 1000
-var printCounterResetAt = time.Now()
+var (
+	printCounter                   = 1000
+	printCounterResetAt            = time.Now()
+	TrafficLogBpfSocketDataSubmits = true
+)
 
 const (
 	DirectionInbound  = 1
 	DirectionOutbound = 2
-	printCounterMax   = 1000
-	printCounterReset = 60 // seconds
+	printCounterMax   = 100
+	printCounterReset = 120 // seconds
 )
 
 /*
@@ -48,13 +52,40 @@ var ThreatEnabled = true
 
 const EnvoyProxyIp = "127.0.0.6"
 
+// HostMappingPath is the root where the real host filesystem is visible (Docker: "/host"
+// with -v /:/host; bare metal: "/").
+var HostMappingPath = "/host"
+
+// EbpfRootDir is the install root for the eBPF bundle (config, logs, BPF object layout).
+var EbpfRootDir = "/ebpf"
+
+// ResolveHostPath maps an absolute path on the real host (e.g. "/proc/1/exe") to the path
+// this process should open (e.g. "/host/proc/1/exe" in Docker, "/proc/1/exe" on bare metal).
+func ResolveHostPath(hostAbsPath string) string {
+	if hostAbsPath == "" {
+		return HostMappingPath
+	}
+	if HostMappingPath != "" && strings.HasPrefix(hostAbsPath, HostMappingPath) {
+		return hostAbsPath
+	}
+	return HostMappingPath + hostAbsPath
+}
+
+// EbpfInstallPath joins path elements under EbpfRootDir.
+func EbpfInstallPath(elem ...string) string {
+	return filepath.Join(append([]string{EbpfRootDir}, elem...)...)
+}
+
 func init() {
+	InitVar("HOST_MAPPING", &HostMappingPath)
+	InitVar("EBPF_ROOT", &EbpfRootDir)
 	SetupLogger()
 	InitVar("AKTO_IGNORE_IP_TRAFFIC", &IgnoreIpTraffic)
 	InitVar("AKTO_THREAT_ENABLED", &ThreatEnabled)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
+	InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &TrafficLogBpfSocketDataSubmits)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {
@@ -78,6 +109,14 @@ func InitVar(envVarName string, targetVar interface{}) {
 			if err == nil {
 				*v = temp
 				slog.Warn("Setting env value", "name", envVarName, "value", *v)
+			}
+		case *float64:
+			temp, err := strconv.ParseFloat(envVar, 64)
+			if err == nil {
+				*v = temp
+				slog.Warn("Setting env value", "name", envVarName, "value", *v)
+			} else {
+				slog.Warn("invalid float env, ignoring", "name", envVarName, "value", envVar, "error", err)
 			}
 		default:
 			slog.Warn("Unsupported type for targetVar", "type", v)

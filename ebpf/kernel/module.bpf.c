@@ -7,6 +7,21 @@
 
 #include "vmlinux.h"
 
+/*
+ * On arm64, libbpf's PT_REGS_* macros from bpf_tracing.h cast the probe context
+ * to struct user_pt_regs*. Some bpftool-generated vmlinux.h files only forward-
+ * declare user_pt_regs, which breaks compilation. The layout matches Linux
+ * arch/arm64 UAPI (include/uapi/asm/ptrace.h).
+ */
+#if defined(__TARGET_ARCH_arm64) || defined(__aarch64__)
+struct user_pt_regs {
+	__u64 regs[31];
+	__u64 sp;
+	__u64 pc;
+	__u64 pstate;
+};
+#endif
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -58,15 +73,19 @@
  * Casting that 64-bit kernel address to int gives garbage fd values.
  *
  * Fix: explicitly dereference the inner pt_regs using the correct field names
- * for each architecture (di/si/dx on x86-64, regs[0/1/2] on ARM64).
+ * for each architecture (di/si/dx on x86-64).
+ *
+ * On ARM64, BTF struct pt_regs often omits named user_regs/regs fields (anonymous
+ * unions). Syscall GPRs still match struct user_pt_regs at offset 0, so cast the
+ * inner regs pointer and BPF_CORE_READ user_pt_regs.regs[n] (CO-RE against the
+ * kernel's user_pt_regs type, not pt_regs layout names).
  */
 #ifdef TARGET_ARCH_AARCH64
-  #define SYSCALL_PARM1(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), regs[0])
-  #define SYSCALL_PARM2(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), regs[1])
-  #define SYSCALL_PARM3(ctx) \
-      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), regs[2])
+  #define __syscall_user_regs_ptr(ctx) \
+      ((const struct user_pt_regs *)(const void *)PT_REGS_PARM1(ctx))
+  #define SYSCALL_PARM1(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[0])
+  #define SYSCALL_PARM2(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[1])
+  #define SYSCALL_PARM3(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[2])
 #elif defined(TARGET_ARCH_X86_64)
   #define SYSCALL_PARM1(ctx) \
       BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), di)
@@ -85,6 +104,18 @@
  * Replaces the runtime Go string-substitution used in the BCC version.
  */
 volatile const bool print_bpf_logs = false;
+/* When true (env TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS), count each socket_data ringbuf submit. */
+volatile const bool log_socket_data_submit_stats = false;
+/* When true (env FILTER_LOCAL_TRAFFIC, default on), skip connections whose remote IP matches
+ * local_traffic_ip (set from env LOCAL_TRAFFIC_IP IPv4; loader converts to LE u32). */
+volatile const bool filter_local_traffic = true;
+volatile const __u32 local_traffic_ip = 16777343;
+/* When true (env TRAFFIC_STRICT_REMOTE_PORT_FILTER), only capture connections whose remote
+ * port matches strict_remote_port (default 10275). */
+volatile const bool filter_strict_remote_port = false;
+volatile const __u16 strict_remote_port = 10275;
+/* When true (env TRAFFIC_DISABLE_PERF_SUBMIT), skip all ringbuf_output calls. */
+volatile const bool disable_ring_submit = false;
 
 /*
  * CHUNK_SIZE_LIMIT must be a compile-time constant because it is used as the
@@ -98,6 +129,16 @@ volatile const bool print_bpf_logs = false;
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT  CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT   42
+#define SOCKET_DATA_RINGBUF_SHARDS 8
+#define SOCKET_DATA_RINGBUF_SHARD_SIZE (64 * 1024 * 1024)
+
+static __always_inline void increment_counter(void *counter_map) {
+    u32 key = 0;
+    u64 *total = bpf_map_lookup_elem(counter_map, &key);
+    if (total != NULL) {
+        (*total) += 1;
+    }
+}
 
 /*
  * Default connection map size.  The Go loader can resize individual maps via
@@ -292,20 +333,105 @@ struct {
     __type(value, int);
 } conn_counter SEC(".maps");
 
+/* Total socket_data bpf_ringbuf_output calls (userspace reads for windowed logs). */
 struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 64 * 1024 * 1024);
-} socket_data_events SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_data_submit_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_data_submit_failed_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_open_submit_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_open_submit_failed_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_close_submit_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} socket_close_submit_failed_total SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1024 * 1024);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_1 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_2 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_3 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_5 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_6 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
+} socket_data_events_7 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 64 * 1024 * 1024);
 } socket_open_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1024 * 1024);
+    __uint(max_entries, 64 * 1024 * 1024);
 } socket_close_events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u8);
+} system_cpu_ingest_paused SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -475,6 +601,28 @@ struct {
  * Helper functions
  * =================================================================== */
 
+static __always_inline bool is_system_cpu_ingest_paused(void) {
+    u32 key = 0;
+    u8 *paused = bpf_map_lookup_elem(&system_cpu_ingest_paused, &key);
+    return paused != NULL && *paused != 0;
+}
+
+static __noinline long output_to_data_shard(
+        void *data, u64 size) {
+    u32 shard = bpf_get_smp_processor_id() & (SOCKET_DATA_RINGBUF_SHARDS - 1);
+    switch (shard) {
+    case 0: return bpf_ringbuf_output(&socket_data_events_0, data, size, 0);
+    case 1: return bpf_ringbuf_output(&socket_data_events_1, data, size, 0);
+    case 2: return bpf_ringbuf_output(&socket_data_events_2, data, size, 0);
+    case 3: return bpf_ringbuf_output(&socket_data_events_3, data, size, 0);
+    case 4: return bpf_ringbuf_output(&socket_data_events_4, data, size, 0);
+    case 5: return bpf_ringbuf_output(&socket_data_events_5, data, size, 0);
+    case 6: return bpf_ringbuf_output(&socket_data_events_6, data, size, 0);
+    case 7: return bpf_ringbuf_output(&socket_data_events_7, data, size, 0);
+    default: return bpf_ringbuf_output(&socket_data_events_0, data, size, 0);
+    }
+}
+
 static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
@@ -602,6 +750,13 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
+    if (filter_local_traffic && conn_info.ip == local_traffic_ip) {
+        if (print_bpf_logs) {
+            bpf_printk("Dropping local traffic ip:%u fd:%d", conn_info.ip, args->fd);
+        }
+        return;
+    }
+
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
     if (isConnect) {
@@ -644,27 +799,37 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     bpf_map_update_elem(&conn_info_map_keys, &val_key, &tgid_fd, BPF_ANY);
     bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn_info, BPF_ANY);
 
-    struct socket_open_event_t socket_open_event = {};
-    socket_open_event.id            = conn_info.id;
-    socket_open_event.fd            = conn_info.fd;
-    socket_open_event.conn_start_ns = conn_info.conn_start_ns;
-    socket_open_event.port          = conn_info.port;
-    socket_open_event.ip            = conn_info.ip;
-    socket_open_event.src_ip        = srcIp;
-    socket_open_event.src_port      = lport;
+    struct socket_open_event_t *socket_open_event = NULL;
 
-    if (print_bpf_logs) {
-        bpf_printk("accept call: %llu %d %d",
-                         socket_open_event.id, socket_open_event.fd, isConnect);
-        bpf_printk("accept call 2: %llu %d %d",
-                         socket_open_event.ip, socket_open_event.port, isConnect);
-        bpf_printk("accept call 3: %llu %d %d",
-                         socket_open_event.src_ip, socket_open_event.src_port, isConnect);
+    if (!disable_ring_submit) {
+        increment_counter(&socket_open_submit_total);
+        socket_open_event = bpf_ringbuf_reserve(&socket_open_events,
+                                                sizeof(struct socket_open_event_t), 0);
+        if (socket_open_event == NULL) {
+            increment_counter(&socket_open_submit_failed_total);
+            return;
+        }
+
+        socket_open_event->id             = conn_info.id;
+        socket_open_event->fd             = conn_info.fd;
+        socket_open_event->conn_start_ns  = conn_info.conn_start_ns;
+        socket_open_event->port           = conn_info.port;
+        socket_open_event->ip             = conn_info.ip;
+        socket_open_event->src_ip         = srcIp;
+        socket_open_event->src_port       = lport;
+        socket_open_event->socket_open_ns = conn_info.conn_start_ns;
+
+        if (print_bpf_logs) {
+            bpf_printk("accept call: %llu %d %d",
+                             socket_open_event->id, socket_open_event->fd, isConnect);
+            bpf_printk("accept call 2: %llu %d %d",
+                             socket_open_event->ip, socket_open_event->port, isConnect);
+            bpf_printk("accept call 3: %llu %d %d",
+                             socket_open_event->src_ip, socket_open_event->src_port, isConnect);
+        }
+
+        bpf_ringbuf_submit(socket_open_event, 0);
     }
-
-    socket_open_event.socket_open_ns = conn_info.conn_start_ns;
-    bpf_ringbuf_output(&socket_open_events, &socket_open_event,
-                       sizeof(struct socket_open_event_t), 0);
 }
 
 static __always_inline void process_syscall_close(struct pt_regs* ctx,
@@ -687,20 +852,48 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
         return;
     }
 
-    struct socket_close_event_t socket_close_event = {};
-    socket_close_event.id            = conn_info->id;
-    socket_close_event.fd            = conn_info->fd;
-    socket_close_event.conn_start_ns = conn_info->conn_start_ns;
-    socket_close_event.port          = conn_info->port;
-    socket_close_event.ip            = conn_info->ip;
-
-    socket_close_event.socket_close_ns = bpf_ktime_get_ns();
-    bpf_ringbuf_output(&socket_close_events, &socket_close_event,
-                       sizeof(struct socket_close_event_t), 0);
+    if (!disable_ring_submit) {
+        increment_counter(&socket_close_submit_total);
+        struct socket_close_event_t *socket_close_event =
+            bpf_ringbuf_reserve(&socket_close_events, sizeof(struct socket_close_event_t), 0);
+        if (socket_close_event == NULL) {
+            increment_counter(&socket_close_submit_failed_total);
+        } else {
+            socket_close_event->id              = conn_info->id;
+            socket_close_event->fd              = conn_info->fd;
+            socket_close_event->conn_start_ns   = conn_info->conn_start_ns;
+            socket_close_event->port            = conn_info->port;
+            socket_close_event->ip              = conn_info->ip;
+            socket_close_event->socket_close_ns = bpf_ktime_get_ns();
+            bpf_ringbuf_submit(socket_close_event, 0);
+        }
+    }
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
-static __always_inline void process_syscall_data(struct pt_regs* ctx,
+/*
+ * Non-inline helper so the compiler cannot see through the call boundary
+ * and eliminate the bounds check.  The BPF verifier sees
+ * "if (size >= MAX_MSG_SIZE) size = MAX_MSG_SIZE" and proves
+ * size ∈ [0, MAX_MSG_SIZE] which fits in msg[MAX_MSG_SIZE].
+ *
+ * Returns the number of bytes actually read, or 0 on failure/skip.
+ */
+static __noinline u32 bounded_probe_read_user(
+        struct socket_data_event_t *event, u32 size, const void *src) {
+    if (size >= MAX_MSG_SIZE) {
+        size = MAX_MSG_SIZE;
+    }
+    if (size == 0) {
+        return 0;
+    }
+    if (bpf_probe_read_user(event->msg, size, src) != 0) {
+        return 0;
+    }
+    return size;
+}
+
+static __noinline void process_syscall_data(struct pt_regs* ctx,
                                            const struct data_args_t* args,
                                            u64 id, bool is_send, bool ssl) {
     int bytes_exchanged = PT_REGS_RC(ctx);
@@ -737,6 +930,18 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         return;
     }
 
+    if (filter_strict_remote_port && conn_info->port != strict_remote_port) {
+        return;
+    }
+
+    if (disable_ring_submit) {
+        return;
+    }
+
+    if (is_system_cpu_ingest_paused()) {
+        return;
+    }
+
     if (print_bpf_logs) {
         bpf_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
     }
@@ -767,24 +972,18 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
         }
         u32 current_size;
         if (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) {
-            current_size = (u32)(MAX_MSG_SIZE - 1);
+            current_size = (u32)MAX_MSG_SIZE;
         } else {
             current_size = (u32)bytes_remaining;
         }
-        if (current_size >= MAX_MSG_SIZE) {
-            current_size = (u32)(MAX_MSG_SIZE - 1);
-        }
-        current_size &= (u32)(MAX_MSG_SIZE - 1); /* verifier: umax = 30719 < 30720 */
 
-        if (current_size > 0) {
-            // args->buf is a user-space pointer; use bpf_probe_read_user so
-            // kernels >= 5.11 (where bpf_probe_read aliases _kernel) read it correctly.
-            if (bpf_probe_read_user(&socket_data_event->msg, current_size,
-                                    (const char *)args->buf + bytes_sent) != 0) {
-                break;
-            }
-            size_to_save = current_size;
+        u32 read_size = bounded_probe_read_user(
+            socket_data_event, current_size,
+            (const char *)args->buf + bytes_sent);
+        if (read_size == 0 && current_size > 0) {
+            break;
         }
+        size_to_save = read_size;
 
         if (is_send) {
             conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
@@ -808,14 +1007,20 @@ static __always_inline void process_syscall_data(struct pt_regs* ctx,
 
         socket_data_event->bytes_sent  = is_send ? 1 : -1;
         socket_data_event->bytes_sent *= size_to_save;
-        bpf_ringbuf_output(&socket_data_events, socket_data_event,
-                           sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save, 0);
+        if (log_socket_data_submit_stats) {
+            increment_counter(&socket_data_submit_total);
+        }
+        long ret = output_to_data_shard(socket_data_event,
+            sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+        if (ret != 0 && log_socket_data_submit_stats) {
+            increment_counter(&socket_data_submit_failed_total);
+        }
 
         bytes_sent += current_size;
     }
 }
 
-static __always_inline void process_syscall_data_vecs(struct pt_regs* ctx,
+static __noinline void process_syscall_data_vecs(struct pt_regs* ctx,
                                                 struct data_args_t* args,
                                                 u64 id, bool is_send) {
     int bytes_sent  = 0;
@@ -1821,10 +2026,15 @@ static __always_inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
     regs_heap_var->regs[7] = ctx->r10;
     regs_heap_var->regs[8] = ctx->r11;
 #elif defined(TARGET_ARCH_AARCH64)
-#pragma unroll
-    for (uint32_t i = 0; i < 9; i++) {
-        regs_heap_var->regs[i] = ctx->regs[i];
-    }
+    regs_heap_var->regs[0] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[0]);
+    regs_heap_var->regs[1] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[1]);
+    regs_heap_var->regs[2] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[2]);
+    regs_heap_var->regs[3] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[3]);
+    regs_heap_var->regs[4] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[4]);
+    regs_heap_var->regs[5] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[5]);
+    regs_heap_var->regs[6] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[6]);
+    regs_heap_var->regs[7] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[7]);
+    regs_heap_var->regs[8] = BPF_CORE_READ((const struct user_pt_regs *)(const void *)ctx, regs[8]);
 #else
 #error Target Architecture not supported
 #endif
@@ -1849,7 +2059,19 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
 #if defined(TARGET_ARCH_X86_64)
     const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.fsbase);
 #elif defined(TARGET_ARCH_AARCH64)
-    const void* fs_base = (void*)BPF_CORE_READ(task_ptr, thread.uw.tp_value);
+    /*
+     * Go's TLS base matches TPIDR_EL0, stored as the first word after
+     * cpu_context in arm64 thread_struct (see arch/arm64 processor.h: uw.tp_value).
+     * Several bpftool vmlinux.h variants omit uw / tp_value as usable member names
+     * on thread_struct, so we read at sizeof(cpu_context) with a CO-RE type size
+     * so the offset tracks the target kernel layout.
+     */
+    unsigned long tls_tp = 0;
+    const char *thread_bytes = (const char *)&task_ptr->thread;
+    if (bpf_probe_read_kernel(&tls_tp, sizeof(tls_tp),
+                              thread_bytes + bpf_core_type_size(struct cpu_context)) != 0)
+        return 0;
+    const void *fs_base = (const void *)tls_tp;
 #else
 #error Target architecture not supported
 #endif

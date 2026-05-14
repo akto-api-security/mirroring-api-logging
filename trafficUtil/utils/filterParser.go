@@ -2,8 +2,13 @@ package utils
 
 import (
 	"encoding/json"
-	"os"
 )
+
+var moduleDiscoveryConfigJSON = ""
+
+func init() {
+	InitVar("AKTO_MODULE_DISCOVERY_CONFIG", &moduleDiscoveryConfigJSON)
+}
 
 type FilterObject struct {
 	Key   KeyObject   `json:"key"`
@@ -32,7 +37,7 @@ func GetFilter() []FilterObject {
 			}
 		}]
 	*/
-	data := os.Getenv("AKTO_MODULE_DISCOVERY_CONFIG")
+	data := moduleDiscoveryConfigJSON
 
 	/* this default filter is configured to trace only
 	the traffic between envoy proxies and the application containers.

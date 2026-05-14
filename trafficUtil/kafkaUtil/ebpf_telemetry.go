@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -38,6 +39,8 @@ var (
 	cpuMutex        sync.Mutex
 )
 
+var hostSystemCPUSampler = utils.NewHostSystemCPUSampler()
+
 func getEnvData() map[string]string {
 	envMap := make(map[string]string)
 
@@ -51,7 +54,7 @@ func getEnvData() map[string]string {
 	return envMap
 }
 
-func getCPUUsage() (cpuPercent float64, cpuCoresUsed float64) {
+func getCPUUsage() (cpuPercent float64) {
 	var rusage syscall.Rusage
 	syscall.Getrusage(syscall.RUSAGE_SELF, &rusage)
 
@@ -67,13 +70,12 @@ func getCPUUsage() (cpuPercent float64, cpuCoresUsed float64) {
 		elapsed := now.Sub(lastMeasureTime).Seconds()
 		cpuDelta := totalCPUSec - lastCPUTime
 		cpuPercent = (cpuDelta / elapsed) * 100
-		cpuCoresUsed = cpuDelta / elapsed
 	}
 
 	lastCPUTime = totalCPUSec
 	lastMeasureTime = now
 
-	return cpuPercent, cpuCoresUsed
+	return cpuPercent
 }
 
 func getProfilingData() map[string]interface{} {
@@ -84,26 +86,30 @@ func getProfilingData() map[string]interface{} {
 	sysMB := float64(memStats.Sys) / 1024 / 1024
 	totalAllocMB := float64(memStats.TotalAlloc) / 1024 / 1024
 
-	cpuPercent, cpuCoresUsed := getCPUUsage()
+	cpuPercent := getCPUUsage()
+	systemCPUPct, _, _ := hostSystemCPUSampler.Step()
+	hostMem := utils.ReadHostMemoryMeminfo()
 
 	profiling := map[string]interface{}{
 		"memory_used_mb":       allocMB,
 		"memory_total_mb":      sysMB,
 		"memory_cumulative_mb": totalAllocMB,
+		"host_memory_used_mb":  hostMem.UsedMB,
+		"host_memory_total_mb": hostMem.TotalMB,
 		"cpu_percent":          cpuPercent,
-		"cpu_cores_used":       cpuCoresUsed,
 		"cpu_cores_total":      runtime.NumCPU(),
 		"goroutines":           runtime.NumGoroutine(),
 		"num_gc":               memStats.NumGC,
+		"system_cpu_percent":   systemCPUPct,
 	}
 
 	return profiling
 }
 
 func writeEnvFile() error {
-	dir := "/ebpf"
-	finalPath := "/ebpf/.env"
-	tmpPath := "/ebpf/.env.tmp"
+	dir := utils.EbpfRootDir
+	finalPath := utils.EbpfInstallPath(".env")
+	tmpPath := utils.EbpfInstallPath(".env.tmp")
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -131,14 +137,14 @@ func writeEnvFile() error {
 		slog.Error("Failed to write environment file", "path", tmpPath, "error", err)
 		return err
 	}
-	slog.Debug("Environment variables written to file", "path", tmpPath)
+	slog.Warn("Environment variables written to file", "path", tmpPath)
 	// Atomic replace
 	err = os.Rename(tmpPath, finalPath)
 	if err != nil {
 		slog.Error("Failed to rename environment file", "path", tmpPath, "error", err)
 		return err
 	}
-	slog.Debug("Environment variables renamed to file", "path", finalPath)
+	slog.Warn("Environment variables renamed to file", "path", finalPath)
 	return nil
 }
 
@@ -162,11 +168,11 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 			_, ok = command.DaemonEnvMap["ALL"]
 		}
 		if !ok {
-			slog.Debug("Restart command not for this daemon, ignoring",
+			slog.Warn("Restart command not for this daemon, ignoring",
 				"thisDaemonPodName", daemonPodName)
 			return
 		}
-		slog.Info("Restarting process...")
+		slog.Warn("Restarting process...")
 		restartSelf()
 		return
 	}
@@ -178,7 +184,7 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 			envVars, ok = command.DaemonEnvMap["ALL"]
 		}
 		if !ok {
-			slog.Debug("ENV_RELOAD not targeted at this daemon, ignoring",
+			slog.Warn("ENV_RELOAD not targeted at this daemon, ignoring",
 				"thisDaemonPodName", daemonPodName)
 			return
 		}
@@ -211,10 +217,12 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 }
 
 func StartConfigConsumer() {
-	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
-	if len(kafka_url) == 0 {
-		kafka_url = os.Getenv("AKTO_KAFKA_BROKER_URL")
+	if KafkaDisabled() {
+		slog.Warn("Kafka disabled (AKTO_KAFKA_DISABLED), config consumer not started")
+		return
 	}
+
+	kafka_url := KafkaBrokerURL()
 
 	if kafka_url == "" {
 		slog.Warn("Kafka URL not configured, config consumer disabled")
@@ -224,7 +232,7 @@ func StartConfigConsumer() {
 	topic := "akto.config.updates"
 	groupID := fmt.Sprintf("ebpf-config-consumer-%s", getDaemonPodName())
 
-	slog.Info("Starting config consumer", "topic", topic, "groupID", groupID, "daemonId", uniqueDaemonsetId)
+	utils.PrintLog("Starting config consumer", "topic", topic, "groupID", groupID, "daemonId", uniqueDaemonsetId)
 
 	// Create Kafka reader (consumer)
 	readerConfig := kafka.ReaderConfig{
@@ -254,7 +262,7 @@ func StartConfigConsumer() {
 				continue
 			}
 
-			slog.Debug("Received command message", "value", string(msg.Value))
+			slog.Warn("Received command message", "value", string(msg.Value))
 
 			var command TrafficAgentCommandMessage
 			err = json.Unmarshal(msg.Value, &command)
@@ -270,12 +278,12 @@ func StartConfigConsumer() {
 				slog.Error("Failed to commit message offset", "error", err)
 			}
 
-			slog.Debug("Received command message", "value", string(msg.Value))
+			slog.Warn("Received command message", "value", string(msg.Value))
 			processCommandMessage(command)
 		}
 	}()
 
-	slog.Info("Config consumer started successfully")
+	utils.PrintLog("Config consumer started successfully")
 }
 
 func sendHeartbeatMessage(ctx context.Context, daemonPodName, imageVersion string) {
@@ -300,7 +308,7 @@ func sendHeartbeatMessage(ctx context.Context, daemonPodName, imageVersion strin
 		"additionalData": string(additionalDataJSON),
 	}
 
-	slog.Debug("Sending Kafka heartbeat", "daemonPod", daemonPodName, "imageVersion", imageVersion, "heartbeatMessage", heartbeatMessage)
+	utils.PrintLog("Sending Kafka heartbeat", "daemonPod", daemonPodName, "imageVersion", imageVersion, "heartbeatMessage", heartbeatMessage)
 	err = ProduceHeartbeat(ctx, heartbeatMessage)
 	if err != nil {
 		slog.Error("Failed to send heartbeat to Kafka", "error", err)
@@ -316,7 +324,7 @@ func sendKafkaHeartbeat() {
 	daemonPodName := getDaemonPodName()
 	imageVersion := getImageVersion()
 
-	slog.Debug("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
+	utils.PrintLog("Starting Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds, "daemonPod", daemonPodName, "daemonId", uniqueDaemonsetId)
 	ctx := context.Background()
 
 	slog.Info("Sending initial heartbeat")
@@ -326,7 +334,7 @@ func sendKafkaHeartbeat() {
 		jitter := time.Duration(1+rand.Intn(5)) * time.Second
 		sleepDuration := time.Duration(heartbeatIntervalSeconds)*time.Second + jitter
 
-		slog.Debug("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
+		slog.Warn("Sleeping before next heartbeat", "base_interval", heartbeatIntervalSeconds, "jitter_seconds", jitter.Seconds(), "total_sleep", sleepDuration.Seconds())
 		time.Sleep(sleepDuration)
 
 		sendHeartbeatMessage(ctx, daemonPodName, imageVersion)

@@ -1,10 +1,8 @@
 package bpfwrapper
 
 import (
-	"bytes"
-	"encoding/binary"
 	"log/slog"
-	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -14,167 +12,163 @@ import (
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-
-	for data := range inputChan {
-		if data == nil {
-			return
-		}
-
-		if !connectionFactory.CanBeFilled() {
-			slog.Warn("Connections filled")
-			continue
-		}
-
-		var event structs.SocketOpenEvent
-		err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data)
-			return binary.Read(globalReader, binary.NativeEndian, &event)
-		}()
-		if err != nil {
-			slog.Error("Failed to decode received data on socket open", "error", err)
-			continue
-		}
-		connId := event.ConnId
-		metaUtils.LogIngest("Received socket open event",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port)
-		connectionFactory.CreateIfNotExists(connId)
-		connectionFactory.SendEvent(connId, &event)
-	}
-}
-
-func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-	for data := range inputChan {
-		if data == nil {
-			return
-		}
-		var event structs.SocketCloseEvent
-		err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data)
-			return binary.Read(globalReader, binary.NativeEndian, &event)
-		}()
-		if err != nil {
-			slog.Error("Failed to decode received data on socket close", "error", err)
-			continue
-		}
-
-		connId := event.ConnId
-		metaUtils.LogIngest("Received close on",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port)
-		connectionFactory.SendEvent(connId, &event)
-	}
-}
-
 var (
-	// this also includes space lost in padding.
+	openEventSize  = int(unsafe.Sizeof(structs.SocketOpenEvent{}))
+	closeEventSize = int(unsafe.Sizeof(structs.SocketCloseEvent{}))
+	// Go struct size (48) — includes 3 bytes of trailing padding after Ssl.
+	// The C struct sends at least this many bytes for every data event.
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
-	ignorePortsMap      = map[uint16]bool{
-		// kafka
-		9092:  true,
-		19092: true,
-		29092: true,
-		// zookeeper
-		2181: true,
-		// mongo
-		27017: true,
-		// redis
-		6379: true}
-	ignorePorts      = true
-	globalReader     = &bytes.Reader{}
-	globalReaderLock sync.Mutex
+
+	ignorePortsMap = map[uint16]bool{
+		9092: true, 19092: true, 29092: true, // kafka
+		2181:  true, // zookeeper
+		27017: true, // mongo
+		6379:  true, // redis
+	}
+	ignorePorts bool = true
 )
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
 }
 
-func min(a, b int32) int32 {
-	if a < b {
-		return a
+func SocketOpenEventCallback(data []byte, connectionFactory *connections.Factory) {
+	if !connectionFactory.CanBeFilled() {
+		metaUtils.LogIngest("Connections filled")
+		return
 	}
-	return b
+
+	if len(data) < openEventSize {
+		slog.Error("socket open event too short", "len", len(data), "need", openEventSize)
+		return
+	}
+
+	ev := *(*structs.SocketOpenEvent)(unsafe.Pointer(&data[0]))
+	connId := ev.ConnId
+	metaUtils.LogIngest("Received socket open event",
+		"fd", connId.Fd,
+		"id", connId.Id,
+		"timestamp", connId.Conn_start_ns,
+		"ip", connId.Ip,
+		"port", connId.Port)
+	connectionFactory.CreateIfNotExists(connId)
+	connectionFactory.SendEvent(connId, ev)
 }
 
-func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
-	for data := range inputChan {
-		if data == nil {
-			return
-		}
+func SocketCloseEventCallback(data []byte, connectionFactory *connections.Factory) {
+	if len(data) < closeEventSize {
+		slog.Error("socket close event too short", "len", len(data), "need", closeEventSize)
+		return
+	}
 
-		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
-			slog.Warn("Connections filled")
-			continue
-		}
+	ev := *(*structs.SocketCloseEvent)(unsafe.Pointer(&data[0]))
+	connId := ev.ConnId
+	metaUtils.LogIngest("Received close on",
+		"fd", connId.Fd,
+		"id", connId.Id,
+		"timestamp", connId.Conn_start_ns,
+		"ip", connId.Ip,
+		"port", connId.Port)
+	connectionFactory.SendEvent(connId, ev)
+}
 
-		var event structs.SocketDataEvent
+const socketDataInboundLogInterval = 10 * time.Second
 
-		// binary.Read require the input data to be at the same size of the object.
-		// Since the Msg field might be mostly empty, binary.read fails.
-		// So we split the loading into the fixed size attribute parts, and copying the message separately.
+var (
+	socketDataInboundCount   uint64
+	socketDataInboundLastLog time.Time
+)
 
-		// slog.Debug("data", "data", data)
+func noteSocketDataInboundBeforeSend() {
 
-		if err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, binary.NativeEndian, &event.Attr)
-		}(); err != nil {
-			slog.Error("Failed to decode received data", "error", err)
-			continue
-		}
+	if !metaUtils.TrafficLogBpfSocketDataSubmits {
+		return
+	}
 
-		bytesSent := event.Attr.Bytes_sent
+	socketDataInboundCount++
+	now := time.Now()
+	if socketDataInboundLastLog.IsZero() {
+		socketDataInboundLastLog = now
+		return
+	}
+	d := now.Sub(socketDataInboundLastLog)
+	if d < socketDataInboundLogInterval {
+		return
+	}
+	slog.Warn("socket_data events reaching eventCallback",
+		"countInWindow", socketDataInboundCount,
+		"window", d.String())
+	socketDataInboundCount = 0
+	socketDataInboundLastLog = now
+}
 
-		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 45
+// eventAttributesLogicalSize is the C-side offset of the msg field in socket_data_event_t.
+// It equals 45 bytes (the struct fields before msg[], without Go's trailing alignment padding).
+const eventAttributesLogicalSize = 45
 
-		if len(data) > eventAttributesLogicalSize {
-			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
-		}
+func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory) {
+	if metaUtils.SystemCPUIngestPaused() {
+		return
+	}
 
-		connId := event.Attr.ConnId
+	if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
+		metaUtils.LogIngest("Connections filled")
+		return
+	}
 
-		_, ok := ignorePortsMap[connId.Port]
-		if ignorePorts && ok {
+	if len(data) < eventAttributesSize {
+		slog.Error("socket data event too short", "len", len(data), "need", eventAttributesSize)
+		return
+	}
+
+	attr := *(*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
+
+	bytesSent := attr.Bytes_sent
+	n := int(utils.Abs(bytesSent))
+
+	connId := attr.ConnId
+	_, ok := ignorePortsMap[connId.Port]
+	if ignorePorts && ok {
+		if metaUtils.IngestLogsEnabled() {
 			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount)
-			continue
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount)
 		}
+		return
+	}
 
-		connectionFactory.CreateIfNotExists(connId)
+	msgOff := eventAttributesLogicalSize
+	var payload []byte
+	if n > 0 {
+		if len(data) < msgOff+n {
+			slog.Error("socket data ring record too short", "len", len(data), "need", msgOff+n)
+			return
+		}
+		payload = make([]byte, n)
+		copy(payload, data[msgOff:msgOff+n])
+	}
 
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+	connectionFactory.CreateIfNotExists(connId)
 
-		connectionFactory.SendEvent(connId, &event)
-		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-
+	if metaUtils.IngestLogsEnabled() && n > 0 {
+		previewLen := min(32, int32(n))
 		metaUtils.LogIngest("Got data",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
 			"ip", connId.Ip,
 			"port", connId.Port,
-			"data", dataStr,
-			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
-			"ssl", event.Attr.Ssl,
+			"data", string(payload[:previewLen]),
+			"rc", attr.ReadEventsCount,
+			"wc", attr.WriteEventsCount,
+			"ssl", attr.Ssl,
 			"bytesSent", bytesSent)
 	}
+
+	noteSocketDataInboundBeforeSend()
+	connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
+	connections.UpdateBufferSize(uint64(n))
 }

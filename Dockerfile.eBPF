@@ -1,22 +1,31 @@
 # syntax=docker/dockerfile:1
 
-# ── Runtime base (target arch) ───────────────────────────────────────────────
-# clang/bpftool are needed at container start-up to compile the BPF object
-# against the running kernel's BTF (/sys/kernel/btf/vmlinux).
-FROM alpine:3.22 AS base
-USER root
-RUN apk add --no-cache \
-    clang \
-    llvm \
-    libbpf-dev \
-    bpftool \
-    linux-headers \
-    build-base
+# ── BPF compiler (CO-RE: compile once, run everywhere) ──────────────────────
+# Compiles module.bpf.c into a relocatable .o at build time.
+# cilium/ebpf patches CO-RE relocations at load time against the host kernel's
+# BTF (/sys/kernel/btf/vmlinux) — no runtime clang needed.
+FROM alpine:3.22 AS bpf-builder
 
-# ── Go builder (always runs on the BUILD host's native arch) ─────────────────
-# Using --platform=$BUILDPLATFORM lets Docker run this stage natively
-# (no QEMU emulation). Go's built-in cross-compilation produces the binary
-# for the TARGET arch via GOARCH / GOOS env vars.
+ARG TARGETARCH
+ARG BPF_CHUNK_SIZE_LIMIT=4
+
+RUN apk add --no-cache clang llvm libbpf-dev bpftool linux-headers
+
+WORKDIR /bpf
+COPY ebpf/kernel/module.bpf.c kernel/module.bpf.c
+
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      ARCH_FLAG="-D__TARGET_ARCH_arm64"; \
+    else \
+      ARCH_FLAG="-D__TARGET_ARCH_x86"; \
+    fi && \
+    mkdir -p kernel && \
+    bpftool btf dump file /sys/kernel/btf/vmlinux format c > kernel/vmlinux.h && \
+    clang -O2 -g -Wall -target bpf -I./kernel $ARCH_FLAG \
+      -DCHUNK_SIZE_LIMIT=$BPF_CHUNK_SIZE_LIMIT \
+      -c kernel/module.bpf.c -o kernel/module.bpf.o
+
+# ── Go builder (native build host, cross-compile for target) ────────────────
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
@@ -30,16 +39,12 @@ WORKDIR /src/ebpf
 RUN go mod download
 RUN GOARCH=${TARGETARCH} GOOS=${TARGETOS} go build -o ebpf-logging
 
-# ── Final image (target arch) ─────────────────────────────────────────────────
-FROM base
+# ── Final image (no toolchain, just the binary + BPF object) ────────────────
+FROM alpine:3.22
 
 WORKDIR /ebpf
 COPY --from=builder /src/ebpf/ebpf-logging /ebpf/ebpf-logging
-
-# BPF source + Makefile — compiled at container start against the running
-# kernel's BTF via `make generate` in ebpf-run.sh.
-COPY ebpf/kernel/module.bpf.c /ebpf/kernel/module.bpf.c
-COPY ebpf/Makefile /ebpf/Makefile
+COPY --from=bpf-builder /bpf/kernel/module.bpf.o /ebpf/kernel/module.bpf.o
 
 COPY ebpf-run.sh /ebpf/ebpf-run.sh
 RUN chmod +x /ebpf/ebpf-run.sh

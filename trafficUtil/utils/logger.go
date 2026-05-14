@@ -3,6 +3,7 @@ package utils
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -53,6 +54,10 @@ func SetupLogger() {
 	SetupAllFileLoggers()
 }
 
+func LogLevel() slog.Level     { return level }
+func IngestLogsEnabled() bool  { return ingestLogs }
+func ProcessLogsEnabled() bool { return processLogs }
+
 func LogIngest(format string, args ...any) {
 	if ingestLogs {
 		slog.Debug(format, args...)
@@ -72,13 +77,19 @@ type textLogger struct {
 
 var fileHandlers = make(map[string]*textLogger)
 
-const HOST_MAPPING_PATH = "/ebpf/logs/akto/"
 const LOG_ROTATE_INTERVAL = 60 * 5 // 5 minutes
 
-const (
-	GoPidLogFile     = HOST_MAPPING_PATH + "gopidlog.txt"
-	LabelsMapLogFile = HOST_MAPPING_PATH + "labelsmaplog.txt"
-)
+func ebpfAktoLogDir() string {
+	return filepath.Join(EbpfRootDir, "logs", "akto")
+}
+
+func GoPidLogFilePath() string {
+	return filepath.Join(ebpfAktoLogDir(), "gopidlog.txt")
+}
+
+func LabelsMapLogFilePath() string {
+	return filepath.Join(ebpfAktoLogDir(), "labelsmaplog.txt")
+}
 
 func SetupFileLogger(filePath string) {
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -124,11 +135,11 @@ func SetupAllFileLoggers() {
 		slog.Warn("File logging is disabled, skipping setup")
 		return
 	}
-	if err := os.MkdirAll(HOST_MAPPING_PATH, 0755); err != nil {
-		slog.Error("Failed to create log directory", "path", HOST_MAPPING_PATH, "error", err)
+	if err := os.MkdirAll(ebpfAktoLogDir(), 0755); err != nil {
+		slog.Error("Failed to create log directory", "path", ebpfAktoLogDir(), "error", err)
 	}
-	SetupFileLogger(GoPidLogFile)
-	SetupFileLogger(LabelsMapLogFile)
+	SetupFileLogger(GoPidLogFilePath())
+	SetupFileLogger(LabelsMapLogFilePath())
 }
 
 // TODO: Call this somewhere in the shutdown process
