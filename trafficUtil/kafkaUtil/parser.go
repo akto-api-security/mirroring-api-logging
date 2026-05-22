@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -274,11 +275,9 @@ var (
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
-	parserMetricsMutex         = sync.Mutex{}
-	parserEventsInWindow       uint64
-	parserReceiveBytesWindow   uint64
-	parserSentBytesWindow      uint64
-	lastParserMetricsLog       time.Time
+	parserEventsAtomic         atomic.Uint64
+	parserReceiveBytesAtomic   atomic.Uint64
+	parserSentBytesAtomic      atomic.Uint64
 	injectTagsMap              = map[string]string{}
 	methodsMap                 = map[string]bool{
 		"GET":     true,
@@ -301,7 +300,7 @@ var (
 	bloomFilterFPRate   = 0.01
 	timeBucketDuration       = 10 * time.Minute
 	memSamplingEnabled       = false
-	parserMetricsEnabled     = false
+	parserMetricsEnabled     = true
 )
 
 var bloomFilter *bloomfilter.BloomFilter
@@ -310,33 +309,30 @@ const ONE_MINUTE = 60
 const parserMetricsInterval = 10 * time.Second
 
 func noteParserEvent(receiveBytes int, sentBytes int) {
-	parserMetricsMutex.Lock()
-	defer parserMetricsMutex.Unlock()
+	parserEventsAtomic.Add(1)
+	parserReceiveBytesAtomic.Add(uint64(receiveBytes))
+	parserSentBytesAtomic.Add(uint64(sentBytes))
+}
 
-	parserEventsInWindow++
-	parserReceiveBytesWindow += uint64(receiveBytes)
-	parserSentBytesWindow += uint64(sentBytes)
-
-	now := time.Now()
-	if lastParserMetricsLog.IsZero() {
-		lastParserMetricsLog = now
-		return
-	}
-
-	if now.Sub(lastParserMetricsLog) < parserMetricsInterval {
-		return
-	}
-
-	slog.Warn("parser events received",
-		"countInWindow", parserEventsInWindow,
-		"window", now.Sub(lastParserMetricsLog).String(),
-		"receiveBytesInWindow", parserReceiveBytesWindow,
-		"sentBytesInWindow", parserSentBytesWindow,
-	)
-	parserEventsInWindow = 0
-	parserReceiveBytesWindow = 0
-	parserSentBytesWindow = 0
-	lastParserMetricsLog = now
+func startParserMetricsFlushLoop() {
+	go func() {
+		ticker := time.NewTicker(parserMetricsInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			events := parserEventsAtomic.Swap(0)
+			recv := parserReceiveBytesAtomic.Swap(0)
+			sent := parserSentBytesAtomic.Swap(0)
+			if events == 0 && recv == 0 && sent == 0 {
+				continue
+			}
+			slog.Warn("parser events received",
+				"countInWindow", events,
+				"window", parserMetricsInterval.String(),
+				"receiveBytesInWindow", recv,
+				"sentBytesInWindow", sent,
+			)
+		}
+	}()
 }
 
 func init() {
@@ -350,6 +346,9 @@ func init() {
 	utils.InitVar("TIME_BUCKET_DURATION_MINUTES", &timeBucketDuration)
 	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
 	utils.InitVar("TRAFFIC_PARSER_METRICS_ENABLED", &parserMetricsEnabled)
+	if parserMetricsEnabled {
+		startParserMetricsFlushLoop()
+	}
 
 	if outputBandwidthLimitPerMin != -1 {
 		outputBandwidthLimitPerMin = outputBandwidthLimitPerMin * 1024 * 1024
