@@ -143,9 +143,94 @@ func InitKafka() {
 			// Start heartbeat routine
 			go sendKafkaHeartbeat()
 			slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
+
+			go sendWebSocketBatches()
+			slog.Info("Started WebSocket batch sender routine", "interval_minutes", 1)
 			break
 		}
 	}
+}
+
+func sendWebSocketBatches() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if WSConnectionManager == nil {
+			continue
+		}
+
+		connections := WSConnectionManager.GetAllConnections()
+		slog.Debug("WebSocket batch sender tick", "active_connections", len(connections))
+
+		for _, key := range connections {
+
+			parts := strings.Split(key, ":")
+			if len(parts) != 4 {
+				slog.Warn("Invalid WebSocket connection key format", "key", key)
+				continue
+			}
+
+			sourceIP, sourcePort, destIP, destPort := parts[0], parts[1], parts[2], parts[3]
+
+			batch, err := WSConnectionManager.GetAndClearBatch(sourceIP, sourcePort, destIP, destPort)
+			if err != nil {
+				slog.Debug("Failed to get WebSocket batch", "key", key, "error", err)
+				continue
+			}
+
+			if len(batch.Messages) == 0 {
+				continue
+			}
+
+			eventsJSON, _ := json.Marshal(convertMessagesToEventList(batch.Messages))
+			headersJSON, _ := json.Marshal(batch.Connection.Headers)
+
+			payload := map[string]string{
+				"ip":              batch.Connection.SourceIP,
+				"destIp":          batch.Connection.DestIP,
+				"time":            fmt.Sprint(batch.BatchTime.Unix()),
+				"akto_account_id": fmt.Sprint(1000000),
+				"akto_vxlan_id":   fmt.Sprint(0),
+				"source":          "WEBSOCKET_TRAFFIC",
+				"connection_type": "WEBSOCKET",
+				"headers":         string(headersJSON),
+				"events":          string(eventsJSON),
+			}
+
+			out, err := json.Marshal(payload)
+			if err != nil {
+				slog.Error("Failed to marshal WebSocket batch payload", "error", err)
+				continue
+			}
+
+			ctx := context.Background()
+			connectionID := sourceIP + ":" + sourcePort
+			err = ProduceStr(ctx, string(out), connectionID, sourceIP, "WEBSOCKET")
+			if err != nil {
+				slog.Error("Failed to write WebSocket batch to Kafka", "error", err)
+			} else {
+				slog.Debug("WebSocket batch sent to Kafka", "messages", len(batch.Messages), "source", sourceIP)
+			}
+		}
+	}
+}
+
+// convertMessagesToEventList converts WebSocketMessage slice to a list of event maps
+func convertMessagesToEventList(messages []WebSocketMessage) []map[string]interface{} {
+	eventList := make([]map[string]interface{}, 0)
+	for _, msg := range messages {
+		eventList = append(eventList, map[string]interface{}{
+			"event_type": msg.EventType,
+			"payload":    msg.Payload,
+			"direction":  msg.Direction,
+			"timestamp":  msg.Timestamp.Unix(),
+			"fin":        msg.FIN,
+			"opcode":     msg.Opcode,
+			"masked":     msg.Masked,
+		})
+	}
+	return eventList
 }
 
 func kafkaCompletion() func(messages []kafka.Message, err error) {

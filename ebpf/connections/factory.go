@@ -59,7 +59,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	for _, k := range keys {
 		if kPrev == -1 {
 			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the 
+			// For requests arriving after a time gap on the same underlying connection the
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
@@ -93,6 +93,10 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
+
+	// WebSocket connection tracking
+	wsConnectionsMutex sync.RWMutex
+	wsConnections      = make(map[string]bool) // keyed by "IP:Port:Pid:Fd"
 )
 
 func init() {
@@ -103,6 +107,32 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+}
+
+func buildWebSocketConnectionKey(connID structs.ConnID, srcIP uint32, srcPort uint16) string {
+	return fmt.Sprintf("%d:%d:%d:%d", connID.Ip, connID.Port, srcIP, srcPort)
+}
+
+func isWebSocketConnection(connID structs.ConnID, srcIP uint32, srcPort uint16) bool {
+	wsConnectionsMutex.RLock()
+	defer wsConnectionsMutex.RUnlock()
+	key := buildWebSocketConnectionKey(connID, srcIP, srcPort)
+	return wsConnections[key]
+}
+
+func markAsWebSocketConnection(connID structs.ConnID, srcIP uint32, srcPort uint16) {
+	wsConnectionsMutex.Lock()
+	defer wsConnectionsMutex.Unlock()
+	key := buildWebSocketConnectionKey(connID, srcIP, srcPort)
+	wsConnections[key] = true
+	slog.Debug("Marked connection as WebSocket", "key", key)
+}
+
+func unmarkWebSocketConnection(connID structs.ConnID, srcIP uint32, srcPort uint16) {
+	wsConnectionsMutex.Lock()
+	defer wsConnectionsMutex.Unlock()
+	key := buildWebSocketConnectionKey(connID, srcIP, srcPort)
+	delete(wsConnections, key)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -134,15 +164,79 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+	if isWebSocketConnection(connID, tracker.srcIp, tracker.srcPort) {
+		processWebSocketConnection(connID, destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, hostName)
+		return
+	}
+
+	isWebSocket := isWebSocketUpgradeData(sentBuffer, receiveBuffer)
+
+	if isWebSocket {
+		markAsWebSocketConnection(connID, tracker.srcIp, tracker.srcPort)
+
+		processWebSocketConnection(connID, destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, hostName)
+	} else if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 	}
-	if !disableEgress {
+	if !disableEgress && !isWebSocket {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
 		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
 			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 		}
 	}
+}
+
+func isWebSocketUpgradeData(sentBuffer, receiveBuffer []byte) bool {
+	if len(receiveBuffer) > 0 && bytes.Contains(receiveBuffer, []byte("101 Switching Protocols")) {
+
+		if bytes.Contains(receiveBuffer, []byte("Upgrade: websocket")) || bytes.Contains(receiveBuffer, []byte("upgrade: websocket")) {
+			if bytes.Contains(receiveBuffer, []byte("Connection: upgrade")) || bytes.Contains(receiveBuffer, []byte("connection: upgrade")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func processWebSocketConnection(connID structs.ConnID, destIpStr, srcIpStr string, receiveBuffer, sentBuffer []byte, isComplete bool, hostName string) {
+	destIP := kafkaUtil.ExtractIP(destIpStr)
+	destPort := kafkaUtil.ExtractPort(destIpStr)
+	srcIP := kafkaUtil.ExtractIP(srcIpStr)
+	srcPort := kafkaUtil.ExtractPort(srcIpStr)
+
+	if len(sentBuffer) > 0 {
+		frames := kafkaUtil.ParseWebSocketFrames(sentBuffer, "outgoing")
+		if len(frames) > 0 {
+			err := kafkaUtil.WSConnectionManager.AccumulateMessages(
+				destIP,
+				destPort,
+				srcIP,
+				srcPort,
+				frames,
+			)
+			if err != nil {
+				slog.Debug("Failed to accumulate WebSocket frames from sent buffer", "error", err)
+			}
+		}
+	}
+
+	if len(receiveBuffer) > 0 {
+		frames := kafkaUtil.ParseWebSocketFrames(receiveBuffer, "incoming")
+		if len(frames) > 0 {
+			err := kafkaUtil.WSConnectionManager.AccumulateMessages(
+				destIP,
+				destPort,
+				srcIP,
+				srcPort,
+				frames,
+			)
+			if err != nil {
+				slog.Debug("Failed to accumulate WebSocket frames from receive buffer", "error", err)
+			}
+		}
+	}
+
+	slog.Debug("WebSocket connection processed", "destIP", destIpStr, "srcIP", srcIpStr, "isComplete", isComplete)
 }
 
 func (factory *Factory) CanBeFilled() bool {
@@ -310,6 +404,10 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	}
 
 	if _, exists := factory.connections[connectionID]; exists {
+
+		if tracker, ok := factory.connections[connectionID]; ok {
+			unmarkWebSocketConnection(connectionID, tracker.srcIp, tracker.srcPort)
+		}
 		delete(factory.connections, connectionID)
 		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
@@ -331,6 +429,9 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 				if ch, exists := factory.processor[key]; exists {
 					close(ch)
 					delete(factory.processor, key)
+				}
+				if tracker, ok := factory.connections[key]; ok {
+					unmarkWebSocketConnection(key, tracker.srcIp, tracker.srcPort)
 				}
 				delete(factory.connections, key)
 			}
