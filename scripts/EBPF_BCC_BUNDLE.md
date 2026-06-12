@@ -1,6 +1,6 @@
-# Akto eBPF bcc — tarball bundle (bare Linux)
+# Akto Traffic Collector Platform Specific — tarball bundle (bare Linux)
 
-This document is for **clients** who install the **dockerless** eBPF bundle (Go binary + module.cc + shell wrappers), distributed as a versioned **`.tar.gz`**.
+This document is for **clients** who install the **dockerless** eBPF bundle (Go binary + module.cc(bcc) + shell wrappers), distributed as a versioned **`.tar.gz`**.
 
 Tarball naming convention:
 
@@ -54,7 +54,9 @@ If you install under a **different** directory, set **`EBPF_ROOT`** consistently
 
 ### 3. Run platform prerequisites
 
-The tarball includes a platform-specific setup script that installs required kernel headers and BCC libraries. Run it once after unpacking:
+The tarball includes a platform-specific setup script that installs required kernel headers and BCC libraries.
+This must be run before akto ebpf module is started everytime.
+Run it once after unpacking:
 
 | Platform | Script |
 |----------|--------|
