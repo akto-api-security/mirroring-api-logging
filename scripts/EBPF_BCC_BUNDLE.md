@@ -2,19 +2,19 @@
 
 This document is for **clients** who install the **dockerless** eBPF bundle (Go binary + module.cc + shell wrappers), distributed as a versioned **`.tar.gz`**.
 
-Typical object names:
+Tarball naming convention:
 
 `akto-mirroring-module-<version>-<os>-<kernel>-<arch>.tar.gz`
 
 ---
 
-## Prerequisites
+## Platform download URLs
 
-- **Linux** on the target host (amd64 or arm64 matching the tarball you download).
-- **Kernel / BPF**: eBPF expects bcc libraries and kernel headers to be present for your OS.  
-- See link for installation 
-https://github.com/iovisor/bcc/blob/master/INSTALL.md#amazon-linux-2---binary
-- **Network**: reachability to the Kafka broker you configure in `.env`.
+| Platform | Download URL |
+|----------|-------------|
+| Amazon Linux 2 — kernel 5.10, x86_64 | `https://akto.blob.core.windows.net/traffic-collector-binaries/akto-mirroring-module-1.0.0-amzn2-5.10-x86_64.tar.gz` |
+
+Contact Akto for a download URL if your platform is not listed.
 
 ---
 
@@ -22,7 +22,7 @@ https://github.com/iovisor/bcc/blob/master/INSTALL.md#amazon-linux-2---binary
 
 ### 1. Download the archive
 
-Use the HTTPS download URL Akto provides. Choose the build whose **arch** matches this machine (`amd64` vs `arm64`).
+Use the platform-specific URL from the table above.
 
 ```bash
 wget -O akto-mirroring-module-<version>-<os>-<kernel>-<arch>.tar.gz "<ARTIFACT_URL>"
@@ -35,7 +35,7 @@ wget -O akto-mirroring-module-<version>-<os>-<kernel>-<arch>.tar.gz "<ARTIFACT_U
 As **root** (paths in the archive are rooted at `ebpf/`):
 
 ```bash
-sudo tar -xzf akto-mirroring-module-<version>-<os>-<kernel>-<arch>.tar.gz -C /
+sudo mkdir -p /ebpf && sudo tar -xzf akto-mirroring-module-<version>-<os>-<kernel>-<arch>.tar.gz -C /ebpf --strip-components=1
 ```
 
 This creates **`/ebpf/`** including:
@@ -43,6 +43,7 @@ This creates **`/ebpf/`** including:
 | Path | Role |
 |------|------|
 | `ebpf/ebpf-logging` | Main Go binary |
+| `ebpf/<platform>-setup.sh` | Platform-specific prerequisite script |
 | `ebpf/kernel/module.cc` | C kernel code |
 | `ebpf/ebpf-bcc-run.sh` | Supervisor loop |
 | `ebpf/run-ebpf-bcc-host.sh` | Host entrypoint (sudo wrapper; **detached by default**) |
@@ -51,7 +52,17 @@ This creates **`/ebpf/`** including:
 
 If you install under a **different** directory, set **`EBPF_ROOT`** consistently (see below) and keep **`ebpf-bcc-run.sh`** and **`.env`** together under that directory.
 
-### 3. Configure
+### 3. Run platform prerequisites
+
+The tarball includes a platform-specific setup script that installs required kernel headers and BCC libraries. Run it once after unpacking:
+
+| Platform | Script |
+|----------|--------|
+| Amazon Linux 2 (kernel 5.10, x86\_64) | `sudo bash /ebpf/amzn2-5.10-setup.sh` |
+
+For reference, upstream BCC installation docs: https://github.com/iovisor/bcc/blob/master/INSTALL.md
+
+### 4. Configure
 
 Edit **`/ebpf/.env`** (or **`${EBPF_ROOT}/.env`**). At minimum set **`AKTO_KAFKA_BROKER_MAL`** to your broker (replace the `<kafka-ip>` placeholder in the shipped template).
 
@@ -61,7 +72,7 @@ Typical bare-metal defaults in that file:
 - **`HOST_MAPPING=/`** — host path prefix (use **`/host`** when running inside Docker with `-v /:/host`).
 - **`ENABLE_LOGS=false`** / **`LOG_FILE=/ebpf/dump.log`** — shipped defaults; if you change **`EBPF_ROOT`**, set **`LOG_FILE`** under that directory (for example **`/opt/akto/ebpf/dump.log`**).
 
-### 4. Run (detached by default)
+### 5. Run (detached by default)
 
 `run-ebpf-bcc-host.sh` starts the supervisor under **`nohup`** and returns immediately. It writes **`${EBPF_ROOT}/ebpf-bcc-run.pid`**. **`nohup.out`** is not used. With **`ENABLE_LOGS=false`**, **`ebpf-bcc-run.sh`** attaches non-TTY stdout/stderr to **`LOG_FILE`** (see **`.env`** / **`MAX_LOG_SIZE`** for rotation).
 
@@ -88,7 +99,7 @@ sudo EBPF_ROOT=/opt/akto/ebpf /opt/akto/ebpf/run-ebpf-bcc-host.sh
 
 Ensure **`EBPF_ROOT`** in the environment matches **`EBPF_ROOT`** in **`.env`** when you use a custom path.
 
-### 5. Uninstall
+### 6. Uninstall
 
 Stops **`ebpf-bcc-run.sh`** / **`ebpf-logging`** for this install (using the pidfile when present, then matching processes). It does **not** remove **`EBPF_ROOT`**.
 
