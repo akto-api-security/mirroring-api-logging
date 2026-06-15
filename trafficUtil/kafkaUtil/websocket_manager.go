@@ -93,6 +93,36 @@ func (wcm *WebSocketConnectionManager) RegisterConnection(sourceIP, sourcePort, 
 	return nil
 }
 
+func (wcm *WebSocketConnectionManager) RegisterConnectionNumeric(connIDId uint64, connIDFd uint32, destIPNumeric uint32, destPort uint16, srcIPNumeric uint32, srcPort uint16, headers map[string]string) error {
+	wcm.mutex.Lock()
+	defer wcm.mutex.Unlock()
+
+	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+
+	if _, exists := wcm.connections[key]; exists {
+		slog.Debug("WebSocket connection already registered", "key", key)
+		return nil
+	}
+
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+
+	wcm.connections[key] = &WebSocketConnection{
+		SourceIP:      fmt.Sprintf("%d", srcIPNumeric),
+		SourcePort:    fmt.Sprintf("%d", srcPort),
+		DestIP:        fmt.Sprintf("%d", destIPNumeric),
+		DestPort:      fmt.Sprintf("%d", destPort),
+		Headers:       headers,
+		EstablishedAt: time.Now(),
+		LastMessageAt: time.Now(),
+		Messages:      []WebSocketMessage{},
+	}
+
+	slog.Info("WebSocket connection registered (numeric)", "key", key)
+	return nil
+}
+
 // AccumulateMessages adds WebSocket messages to the connection's batch.
 func (wcm *WebSocketConnectionManager) AccumulateMessages(sourceIP, sourcePort, destIP, destPort string, messages []WebSocketMessage) error {
 	wcm.mutex.Lock()
@@ -112,12 +142,53 @@ func (wcm *WebSocketConnectionManager) AccumulateMessages(sourceIP, sourcePort, 
 	return nil
 }
 
+func (wcm *WebSocketConnectionManager) AccumulateMessagesNumeric(connIDId uint64, connIDFd uint32, messages []WebSocketMessage) error {
+	wcm.mutex.Lock()
+	defer wcm.mutex.Unlock()
+
+	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+
+	conn, exists := wcm.connections[key]
+	if !exists {
+		slog.Warn("WebSocket connection not found for accumulation", "key", key)
+		return fmt.Errorf("connection not found: %s", key)
+	}
+
+	conn.Messages = append(conn.Messages, messages...)
+	conn.LastMessageAt = time.Now()
+
+	return nil
+}
+
 // GetAndClearBatch retrieves accumulated messages and resets the batch.
 func (wcm *WebSocketConnectionManager) GetAndClearBatch(sourceIP, sourcePort, destIP, destPort string) (*WebSocketBatch, error) {
 	wcm.mutex.Lock()
 	defer wcm.mutex.Unlock()
 
 	key := buildConnectionKey(sourceIP, sourcePort, destIP, destPort)
+
+	conn, exists := wcm.connections[key]
+	if !exists {
+		return nil, fmt.Errorf("connection not found: %s", key)
+	}
+
+	batch := &WebSocketBatch{
+		ConnectionKey: key,
+		Connection:    *conn,
+		Messages:      conn.Messages,
+		BatchTime:     time.Now(),
+	}
+
+	conn.Messages = []WebSocketMessage{}
+
+	return batch, nil
+}
+
+func (wcm *WebSocketConnectionManager) GetAndClearBatchByConnID(connIDId uint64, connIDFd uint32) (*WebSocketBatch, error) {
+	wcm.mutex.Lock()
+	defer wcm.mutex.Unlock()
+
+	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
 
 	conn, exists := wcm.connections[key]
 	if !exists {
@@ -156,6 +227,15 @@ func (wcm *WebSocketConnectionManager) RemoveConnection(sourceIP, sourcePort, de
 	key := buildConnectionKey(sourceIP, sourcePort, destIP, destPort)
 	delete(wcm.connections, key)
 	slog.Debug("WebSocket connection removed", "key", key)
+}
+
+func (wcm *WebSocketConnectionManager) RemoveConnectionByConnID(connIDId uint64, connIDFd uint32) {
+	wcm.mutex.Lock()
+	defer wcm.mutex.Unlock()
+
+	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+	delete(wcm.connections, key)
+	slog.Info("WebSocket connection removed (closed)", "key", key)
 }
 
 // CleanupStaleConnections removes connections that haven't been active within the TTL.

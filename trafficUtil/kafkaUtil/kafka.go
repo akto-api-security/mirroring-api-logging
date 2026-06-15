@@ -166,14 +166,23 @@ func sendWebSocketBatches() {
 		for _, key := range connections {
 
 			parts := strings.Split(key, ":")
-			if len(parts) != 4 {
+			if len(parts) != 2 {
 				slog.Warn("Invalid WebSocket connection key format", "key", key)
 				continue
 			}
 
-			sourceIP, sourcePort, destIP, destPort := parts[0], parts[1], parts[2], parts[3]
+			connIDId, err := strconv.ParseUint(parts[0], 10, 64)
+			if err != nil {
+				slog.Warn("Failed to parse ConnID Id", "key", key, "error", err)
+				continue
+			}
+			connIDFd, err := strconv.ParseUint(parts[1], 10, 32)
+			if err != nil {
+				slog.Warn("Failed to parse ConnID Fd", "key", key, "error", err)
+				continue
+			}
 
-			batch, err := WSConnectionManager.GetAndClearBatch(sourceIP, sourcePort, destIP, destPort)
+			batch, err := WSConnectionManager.GetAndClearBatchByConnID(connIDId, uint32(connIDFd))
 			if err != nil {
 				slog.Debug("Failed to get WebSocket batch", "key", key, "error", err)
 				continue
@@ -205,8 +214,8 @@ func sendWebSocketBatches() {
 			}
 
 			ctx := context.Background()
-			connectionID := sourceIP + ":" + sourcePort
-			err = ProduceStr(ctx, string(out), connectionID, sourceIP, "WEBSOCKET")
+			sourceIP := batch.Connection.SourceIP
+			err = ProduceStr(ctx, string(out), key, sourceIP, "WEBSOCKET")
 			if err != nil {
 				slog.Error("Failed to write WebSocket batch to Kafka", "error", err)
 			} else {

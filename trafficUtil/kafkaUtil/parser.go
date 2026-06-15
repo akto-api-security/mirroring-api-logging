@@ -675,6 +675,10 @@ func ParseWebSocketFrames(payload []byte, direction string) []WebSocketMessage {
 			}
 		}
 
+		if opcode >= 0x8 && payloadLen == 0 {
+			continue
+		}
+
 		msg := WebSocketMessage{
 			Payload:   string(framePayload),
 			Direction: direction,
@@ -828,18 +832,18 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 				respHeadersJSON, _ := json.Marshal(headers.Response.StringMap)
 				
 				handshakePayload := map[string]string{
-					"ip":                sourceIP,
-					"destIp":            destIP,
-					"time":              fmt.Sprint(time.Now().Unix()),
-					"akto_account_id":   fmt.Sprint(1000000),
-					"akto_vxlan_id":     fmt.Sprint(ctx.VxlanID),
-					"source":            ctx.TrafficSource,
-					"connection_type":   "WEBSOCKET",
-					"path":              req.URL.String(),
-					"method":            req.Method,
-					"statusCode":        fmt.Sprint(resp.StatusCode),
-					"requestHeaders":    string(reqHeadersJSON),
-					"responseHeaders":   string(respHeadersJSON),
+					"ip":              sourceIP,
+					"destIp":          destIP,
+					"time":            fmt.Sprint(time.Now().Unix()),
+					"akto_account_id": fmt.Sprint(1000000),
+					"akto_vxlan_id":   fmt.Sprint(ctx.VxlanID),
+					"source":          ctx.TrafficSource,
+					"connection_type": "WEBSOCKET",
+					"path":            req.URL.String(),
+					"method":          req.Method,
+					"statusCode":      fmt.Sprint(resp.StatusCode),
+					"requestHeaders":  string(reqHeadersJSON),
+					"responseHeaders": string(respHeadersJSON),
 				}
 				
 				out, err := json.Marshal(handshakePayload)
