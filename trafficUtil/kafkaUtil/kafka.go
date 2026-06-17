@@ -201,7 +201,7 @@ func sendWebSocketBatches() {
 				"time":            fmt.Sprint(batch.BatchTime.Unix()),
 				"akto_account_id": fmt.Sprint(1000000),
 				"akto_vxlan_id":   fmt.Sprint(0),
-				"source":          "WEBSOCKET_TRAFFIC",
+				"source":          "MIRRORING",
 				"connection_type": "WEBSOCKET",
 				"headers":         string(headersJSON),
 				"events":          string(eventsJSON),
