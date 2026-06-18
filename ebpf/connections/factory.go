@@ -40,7 +40,7 @@ func NewFactory() *Factory {
 	}
 }
 
-func convertToSingleByteArr(bufMap map[int][]byte, skipSequenceCheck bool) []byte {
+func convertToSingleByteArr(bufMap map[int][]byte, isWebsocket bool) []byte {
 
 	if len(bufMap) == 0 {
 		return make([]byte, 0)
@@ -63,13 +63,13 @@ func convertToSingleByteArr(bufMap map[int][]byte, skipSequenceCheck bool) []byt
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
-			if !skipSequenceCheck && !sequenceCheckSkip && k != 1 {
+			if !isWebsocket && !sequenceCheckSkip && k != 1 {
 				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
 				break
 			}
 			kPrev = k
 		} else {
-			if !skipSequenceCheck && kPrev+1 != k {
+			if !isWebsocket && kPrev+1 != k {
 				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
 				break
 			}
