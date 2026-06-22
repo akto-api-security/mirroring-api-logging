@@ -1051,21 +1051,27 @@ static u32 get_fd(void *ssl, int sslVersion, bool rw) {
         SSL_rbio_offset = 16;
     switch (sslVersion)
     {
-    case 1: 
+    case 1:
         RBIO_num_offset = 40;
-      break;
-        case 2: 
+        break;
+    case 2:
         RBIO_num_offset = 48;
-      break;
-          case 3: 
+        break;
+    case 3:
         RBIO_num_offset = 56;
-      break;
-          case 4: 
+        break;
+    case 4:
         SSL_rbio_offset = 24;
         RBIO_num_offset = 24;
-      break;
+        break;
+    case 5:
+        // OpenSSL 3.2+ : rbio moved to ssl_connection_st (ssl_st base = 64 bytes)
+        // verified on OpenSSL 3.5.5: sudo gdb -batch -ex "add-symbol-file /usr/lib64/libssl.so.3.5.5" -ex "ptype /o struct ssl_connection_st" -ex "quit"
+        SSL_rbio_offset = 80;
+        RBIO_num_offset = 56;
+        break;
     default:
-      break;
+        break;
     }
 
     const void** rbio_ptr_addr = ssl + SSL_rbio_offset;
@@ -1134,6 +1140,15 @@ int probe_entry_SSL_write_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num
     u32 fd = get_fd(ssl, 3, false);
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_SSL_write_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_write_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 5, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_3_5: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
   return 0;
@@ -1217,6 +1232,15 @@ int probe_entry_SSL_read_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num)
     int32_t fd = get_fd(ssl, 3, true);
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_SSL_read_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_read_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 5, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_3_5: fd: %d", fd);
   }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
   return 0;
