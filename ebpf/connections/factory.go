@@ -40,7 +40,7 @@ func NewFactory() *Factory {
 	}
 }
 
-func convertToSingleByteArr(bufMap map[int][]byte, isWebsocket bool) []byte {
+func convertToSingleByteArr(bufMap map[int][]byte, skipSequenceCheck bool) []byte {
 
 	if len(bufMap) == 0 {
 		return make([]byte, 0)
@@ -63,13 +63,13 @@ func convertToSingleByteArr(bufMap map[int][]byte, isWebsocket bool) []byte {
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
-			if !isWebsocket && !sequenceCheckSkip && k != 1 {
+			if !skipSequenceCheck && !sequenceCheckSkip && k != 1 {
 				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
 				break
 			}
 			kPrev = k
 		} else {
-			if !isWebsocket && kPrev+1 != k {
+			if !skipSequenceCheck && kPrev+1 != k {
 				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
 				break
 			}
@@ -111,6 +111,7 @@ func init() {
 
 func buildWebSocketConnectionKey(connID structs.ConnID) string {
 	// Use only ConnID fields which are stable kernel identifiers
+	// (not tracker.srcIp/srcPort which can vary between calls)
 	return fmt.Sprintf("%d:%d", connID.Id, connID.Fd)
 }
 
@@ -126,7 +127,7 @@ func markAsWebSocketConnection(connID structs.ConnID) {
 	defer wsConnectionsMutex.Unlock()
 	key := buildWebSocketConnectionKey(connID)
 	wsConnections[key] = true
-	slog.Info("Marked connection as WebSocket", "key", key)
+	slog.Info("Marked connection as WebSocket", "key", key, "connID", connID)
 }
 
 func unmarkWebSocketConnection(connID structs.ConnID) {
@@ -137,7 +138,6 @@ func unmarkWebSocketConnection(connID structs.ConnID) {
 	slog.Info("Unmarked WebSocket connection (closed)", "key", key)
 }
 
-// hasCloseFrame checks if any of the frames contain a WebSocket close frame (opcode 8)
 func hasCloseFrame(frames []kafkaUtil.WebSocketMessage) bool {
 	for _, f := range frames {
 		if f.Opcode == 0x8 {
@@ -147,20 +147,58 @@ func hasCloseFrame(frames []kafkaUtil.WebSocketMessage) bool {
 	return false
 }
 
-// extractHTTPHeadersOnly returns the buffer up to and including \r\n\r\n (HTTP headers only)
-// This strips any WebSocket frames that may follow the headers
 func extractHTTPHeadersOnly(buffer []byte) []byte {
 	if len(buffer) < 4 {
 		return buffer
 	}
 
+	// Look for \r\n\r\n which marks the end of HTTP headers
 	headerEnd := bytes.Index(buffer, []byte("\r\n\r\n"))
 	if headerEnd == -1 {
-
+		// No header terminator found, return as-is
 		return buffer
 	}
 
+	// Return headers including the \r\n\r\n terminator
 	return buffer[:headerEnd+4]
+}
+
+func isTLSBuffer(buf []byte) bool {
+	if len(buf) < 3 {
+		return false
+	}
+	// TLS record types: 0x14 ChangeCipherSpec, 0x15 Alert, 0x16 Handshake, 0x17 ApplicationData
+	switch buf[0] {
+	case 0x14, 0x15, 0x16, 0x17:
+		return buf[1] == 0x03 && (buf[2] == 0x01 || buf[2] == 0x03 || buf[2] == 0x04)
+	default:
+		return false
+	}
+}
+
+func bufferPreview(buf []byte, maxLen int) string {
+	if len(buf) == 0 {
+		return "<empty>"
+	}
+	if isTLSBuffer(buf) {
+		return fmt.Sprintf("TLS-record(type=0x%02x,len=%d)", buf[0], len(buf))
+	}
+	n := len(buf)
+	if n > maxLen {
+		n = maxLen
+	}
+	prefix := buf[:n]
+	if bytes.HasPrefix(buf, httpBytes) ||
+		bytes.HasPrefix(buf, []byte("GET ")) ||
+		bytes.HasPrefix(buf, []byte("POST ")) ||
+		bytes.HasPrefix(buf, []byte("PUT ")) ||
+		bytes.HasPrefix(buf, []byte("DELETE ")) ||
+		bytes.HasPrefix(buf, []byte("PATCH ")) ||
+		bytes.HasPrefix(buf, []byte("HEAD ")) ||
+		bytes.HasPrefix(buf, []byte("OPTIONS ")) {
+		return string(prefix)
+	}
+	return fmt.Sprintf("binary(len=%d,hex=%x)", len(buf), prefix)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -168,6 +206,14 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	defer tracker.mutex.Unlock()
 
 	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
+		slog.Info("Skipping tracker processing, missing send or recv buffer",
+			"fd", connID.Fd,
+			"id", connID.Id,
+			"ssl", tracker.ssl,
+			"sentChunks", len(tracker.sentBuf),
+			"recvChunks", len(tracker.recvBuf),
+			"isComplete", isComplete,
+		)
 		return
 	}
 
@@ -176,6 +222,19 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	isKnownWebSocket := isWebSocketConnection(connID)
 	receiveBuffer := convertToSingleByteArr(tracker.recvBuf, isKnownWebSocket)
 	sentBuffer := convertToSingleByteArr(tracker.sentBuf, isKnownWebSocket)
+
+	slog.Info("Processing tracker data",
+		"connID", connID,
+		"isComplete", isComplete,
+		"isKnownWebSocket", isKnownWebSocket,
+		"ssl", tracker.ssl,
+		"sentLen", len(sentBuffer),
+		"recvLen", len(receiveBuffer),
+		"sentPreview", bufferPreview(sentBuffer, 80),
+		"recvPreview", bufferPreview(receiveBuffer, 80),
+		"sentIsTLS", isTLSBuffer(sentBuffer),
+		"recvIsTLS", isTLSBuffer(receiveBuffer),
+	)
 
 	originalInt := uint32(connID.Ip)
 	// Convert integer to little-endian byte slice
@@ -201,78 +260,146 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		return
 	}
 
-	isWebSocket := isWebSocketUpgradeData(sentBuffer, receiveBuffer)
+	isWebSocket, wsChecks := isWebSocketUpgradeData(sentBuffer, receiveBuffer)
+	slog.Info("WebSocket upgrade check",
+		"fd", connID.Fd,
+		"id", connID.Id,
+		"matched", isWebSocket,
+		"has101", wsChecks.has101,
+		"hasUpgradeResponseHeader", wsChecks.hasUpgradeResponseHeader,
+		"hasUpgradeRequestHeader", wsChecks.hasUpgradeRequestHeader,
+		"hasConnectionResponseHeader", wsChecks.hasConnectionResponseHeader,
+		"hasConnectionRequestHeader", wsChecks.hasConnectionRequestHeader,
+		"sentIsTLS", isTLSBuffer(sentBuffer),
+		"recvIsTLS", isTLSBuffer(receiveBuffer),
+	)
 
 	if isWebSocket {
+		slog.Info("Detected WebSocket upgrade, registering connection",
+			"fd", connID.Fd,
+			"id", connID.Id,
+			"ssl", tracker.ssl,
+		)
 		markAsWebSocketConnection(connID)
 
+		// Extract headers from the request buffer (receiveBuffer contains the WebSocket upgrade request)
 		headers := extractHeadersFromHTTPBuffer(receiveBuffer)
 
+		// Register the connection with the WebSocket manager using ConnID as stable key
 		kafkaUtil.WSConnectionManager.RegisterConnectionNumeric(connID.Id, connID.Fd, connID.Ip, connID.Port, tracker.srcIp, tracker.srcPort, headers)
 
-		// Send the initial handshake as a normal HTTP request/response pair
-		// Strip WebSocket frames from buffers first - only pass HTTP headers to tryReadFromBD
 		httpReceiveBuffer := extractHTTPHeadersOnly(receiveBuffer)
 		httpSentBuffer := extractHTTPHeadersOnly(sentBuffer)
-		tryReadFromBD(destIpStr, srcIpStr, httpReceiveBuffer, httpSentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		tryReadFromBD(destIpStr, srcIpStr, httpReceiveBuffer, httpSentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName) // call as http for first time
 	} else if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+		slog.Info("Matched inbound HTTP response, sending to parser",
+			"fd", connID.Fd,
+			"id", connID.Id,
+			"ssl", tracker.ssl,
+			"destIp", destIpStr,
+			"srcIp", srcIpStr,
+		)
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+	} else {
+		slog.Info("No inbound HTTP/WebSocket match",
+			"fd", connID.Fd,
+			"id", connID.Id,
+			"ssl", tracker.ssl,
+			"sentStartsHTTP", len(sentBuffer) >= len(httpBytes) && bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes),
+			"sentIsTLS", isTLSBuffer(sentBuffer),
+			"recvIsTLS", isTLSBuffer(receiveBuffer),
+		)
 	}
 	if !disableEgress && !isWebSocket {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
 		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
+			slog.Info("Matched outbound HTTP request, sending to parser",
+				"fd", connID.Fd,
+				"id", connID.Id,
+				"ssl", tracker.ssl,
+				"destIp", destIpStr,
+				"srcIp", srcIpStr,
+			)
 			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 		}
 	}
 }
 
-func isWebSocketUpgradeData(sentBuffer, receiveBuffer []byte) bool {
+type webSocketUpgradeChecks struct {
+	has101                      bool
+	hasUpgradeResponseHeader    bool
+	hasUpgradeRequestHeader     bool
+	hasConnectionResponseHeader bool
+	hasConnectionRequestHeader  bool
+}
+
+func isWebSocketUpgradeData(sentBuffer, receiveBuffer []byte) (bool, webSocketUpgradeChecks) {
+	checks := webSocketUpgradeChecks{}
+	slog.Info("Checking for WebSocket upgrade",
+		"sentPreview", bufferPreview(sentBuffer, 80),
+		"recvPreview", bufferPreview(receiveBuffer, 80),
+		"sentIsTLS", isTLSBuffer(sentBuffer),
+		"recvIsTLS", isTLSBuffer(receiveBuffer),
+	)
 	if len(sentBuffer) == 0 || len(receiveBuffer) == 0 {
-		return false
+		return false, checks
 	}
 
 	if bytes.Contains(sentBuffer, []byte(":9092")) || bytes.Contains(receiveBuffer, []byte(":9092")) {
-		return false
+		return false, checks
 	}
 
 	// Check for 101 Switching Protocols in sent buffer (response)
-	has101 := bytes.Contains(sentBuffer, []byte("101 Switching Protocols"))
+	checks.has101 = bytes.Contains(sentBuffer, []byte("101 Switching Protocols"))
 
-	hasUpgradeResponseHeader := bytes.Contains(sentBuffer, []byte("Upgrade: websocket")) ||
+	// Check for Upgrade: websocket header (case-insensitive in both buffers)
+	// sentBuffer (response) should have it
+	checks.hasUpgradeResponseHeader = bytes.Contains(sentBuffer, []byte("Upgrade: websocket")) ||
 		bytes.Contains(sentBuffer, []byte("upgrade: websocket"))
 
-	hasUpgradeRequestHeader := bytes.Contains(receiveBuffer, []byte("Upgrade: websocket")) ||
+	// receiveBuffer (request) should have it
+	checks.hasUpgradeRequestHeader = bytes.Contains(receiveBuffer, []byte("Upgrade: websocket")) ||
 		bytes.Contains(receiveBuffer, []byte("upgrade: websocket"))
 
-	hasConnectionResponseHeader := bytes.Contains(sentBuffer, []byte("Connection: Upgrade")) ||
+	// Check for Connection: Upgrade/upgrade header (case-insensitive in both buffers)
+	// sentBuffer (response) should have it
+	checks.hasConnectionResponseHeader = bytes.Contains(sentBuffer, []byte("Connection: Upgrade")) ||
 		bytes.Contains(sentBuffer, []byte("Connection: upgrade")) ||
 		bytes.Contains(sentBuffer, []byte("connection: Upgrade")) ||
 		bytes.Contains(sentBuffer, []byte("connection: upgrade"))
 
-	hasConnectionRequestHeader := bytes.Contains(receiveBuffer, []byte("Connection: Upgrade")) ||
+	// receiveBuffer (request) should have it
+	checks.hasConnectionRequestHeader = bytes.Contains(receiveBuffer, []byte("Connection: Upgrade")) ||
 		bytes.Contains(receiveBuffer, []byte("Connection: upgrade")) ||
 		bytes.Contains(receiveBuffer, []byte("connection: Upgrade")) ||
 		bytes.Contains(receiveBuffer, []byte("connection: upgrade"))
 
-	return has101 && hasUpgradeResponseHeader && hasUpgradeRequestHeader &&
-		hasConnectionResponseHeader && hasConnectionRequestHeader
+	// All conditions must be met: 101 status + upgrade headers in both request and response
+	matched := checks.has101 && checks.hasUpgradeResponseHeader && checks.hasUpgradeRequestHeader &&
+		checks.hasConnectionResponseHeader && checks.hasConnectionRequestHeader
+	return matched, checks
 }
 
+// extractHeadersFromHTTPBuffer extracts HTTP headers from raw buffer (request or response line format)
 func extractHeadersFromHTTPBuffer(buffer []byte) map[string]string {
 	headers := make(map[string]string)
 	if len(buffer) == 0 {
 		return headers
 	}
 
+	// Split into lines
 	lines := bytes.Split(buffer, []byte("\r\n"))
 
+	// Skip first line (request line or status line)
 	for i := 1; i < len(lines); i++ {
 		line := lines[i]
 
+		// Empty line marks end of headers
 		if len(line) == 0 {
 			break
 		}
 
+		// Split header into key and value
 		parts := bytes.SplitN(line, []byte(":"), 2)
 		if len(parts) == 2 {
 			key := string(bytes.TrimSpace(parts[0]))
@@ -286,7 +413,6 @@ func extractHeadersFromHTTPBuffer(buffer []byte) map[string]string {
 
 func processWebSocketConnection(connID structs.ConnID, receiveBuffer, sentBuffer []byte, isComplete bool, hostName string) {
 	connectionClosed := false
-
 	if len(sentBuffer) > 0 {
 		frames := kafkaUtil.ParseWebSocketFrames(sentBuffer, "outgoing")
 		if len(frames) > 0 {
@@ -321,7 +447,6 @@ func processWebSocketConnection(connID structs.ConnID, receiveBuffer, sentBuffer
 		}
 	}
 
-	// If a close frame was seen, unmark so the fd can be reused cleanly by a new connection
 	if connectionClosed {
 		unmarkWebSocketConnection(connID)
 		kafkaUtil.WSConnectionManager.RemoveConnectionByConnID(connID.Id, connID.Fd)
@@ -496,10 +621,6 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 
 	if _, exists := factory.connections[connectionID]; exists {
 
-		if _, ok := factory.connections[connectionID]; ok {
-			// Don't unmark WebSocket connections - they maintain their type across the connection lifetime
-			// even if factory.connections is cleaned up during inactivity
-		}
 		delete(factory.connections, connectionID)
 		utils.LogProcessing("Deleted connection", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Ip, "port", connectionID.Port)
 		requestProcessCount++
@@ -521,10 +642,7 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 				if ch, exists := factory.processor[key]; exists {
 					close(ch)
 					delete(factory.processor, key)
-				}
-				if _, ok := factory.connections[key]; ok {
-					// Don't unmark WebSocket connections - they maintain their type across the connection lifetime
-				}
+			}
 				delete(factory.connections, key)
 			}
 		}
