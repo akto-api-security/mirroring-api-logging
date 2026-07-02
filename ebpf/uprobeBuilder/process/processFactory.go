@@ -81,90 +81,117 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 		}
 	}
 	slog.Debug("Attempt for processes", "count", len(pidSet))
+	attempted := 0
+	skippedAttached := 0
+	skippedUnattached := 0
+	skippedSelf := 0
+	skippedNoLibraries := 0
 	for pid := range pidSet {
 		time.Sleep(200 * time.Millisecond)
 		_, ok := processFactory.unattachedProcess[pid]
 		if ok {
-			slog.Debug("Not attempting for process", "pid", pid)
+			skippedUnattached++
+			slog.Debug("Not attempting for process", "pid", pid, "reason", "previously_failed")
 			continue
 		}
 		_, ok = processFactory.processMap[pid]
-		if !ok {
+		if ok {
+			skippedAttached++
+			slog.Debug("Skipping process, probes already attached", "pid", pid, "probeType", processFactory.processMap[pid].probeType)
+			continue
+		}
 
-			if checkSelf(pid) {
-				slog.Debug("Self process", "pid", pid)
-				continue
-			}
+		if checkSelf(pid) {
+			skippedSelf++
+			slog.Debug("Self process", "pid", pid)
+			continue
+		}
 
-			containers, err := CheckProcessCGroupBelongToKube(pid)
-			// probe only k8s processes
-			// TODO: check this once again.
-			if err != nil {
-				if !probeAllPid {
-					slog.Debug("No libraries for process", "pid", pid, "error", err)
-					processFactory.unattachedProcess[pid] = true
-					continue
-				}
-			}
-
-			libraries, err := FindLibrariesPathInMapFile(pid)
-			if err != nil {
-				slog.Debug("No libraries for process", "pid", pid, "error", err)
+		containers, err := CheckProcessCGroupBelongToKube(pid)
+		// probe only k8s processes
+		// TODO: check this once again.
+		if err != nil {
+			if !probeAllPid {
+				skippedNoLibraries++
+				slog.Debug("No libraries for process", "pid", pid, "error", err, "reason", "not_k8s_process")
 				processFactory.unattachedProcess[pid] = true
 				continue
 			}
-
-			slog.Debug("Attempting for process", "pid", pid, "libraries", len(libraries))
-			// openssl probes here are being attached on dynamically linked SSL libraries only.
-			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
-
-			if len(containers) == 0 {
-				containers = append(containers, "unknown")
-			}
-
-			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    DynamicLink,
-					probeType:   ssl.OpenSSL,
-				}
-				processFactory.processMap[pid] = p
-				continue
-			} else if err != nil {
-				slog.Error("openSSL probing error", "pid", pid, "error", err)
-			}
-
-			attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
-			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    StaticLink,
-					probeType:   ssl.GoTLS,
-				}
-				processFactory.processMap[pid] = p
-				continue
-			} else if err != nil {
-				slog.Error("GoTLS probing error", "pid", pid, "error", err)
-			}
-
-			attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
-			if attached {
-				p := Process{
-					pid:         pid,
-					containerId: containers[0],
-					linkType:    StaticLink,
-					probeType:   ssl.Node,
-				}
-				processFactory.processMap[pid] = p
-				continue
-			} else if err != nil {
-				slog.Error("Node probing error", "pid", pid, "error", err)
-			}
-			processFactory.unattachedProcess[pid] = true
 		}
+
+		libraries, err := FindLibrariesPathInMapFile(pid)
+		if err != nil {
+			skippedNoLibraries++
+			slog.Debug("No libraries for process", "pid", pid, "error", err, "reason", "maps_read_failed")
+			processFactory.unattachedProcess[pid] = true
+			continue
+		}
+
+		attempted++
+		slog.Info("Attempting for process", "pid", pid, "libraries", len(libraries))
+		// openssl probes here are being attached on dynamically linked SSL libraries only.
+		attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
+
+		if len(containers) == 0 {
+			containers = append(containers, "unknown")
+		}
+
+		if attached {
+			p := Process{
+				pid:         pid,
+				containerId: containers[0],
+				linkType:    DynamicLink,
+				probeType:   ssl.OpenSSL,
+			}
+			processFactory.processMap[pid] = p
+			slog.Info("Attached OpenSSL probes", "pid", pid)
+			continue
+		} else if err != nil {
+			slog.Error("openSSL probing error", "pid", pid, "error", err)
+		}
+
+		attached, err = ssl.TryGoTLSProbes(pid, libraries, bpfModule)
+		if attached {
+			p := Process{
+				pid:         pid,
+				containerId: containers[0],
+				linkType:    StaticLink,
+				probeType:   ssl.GoTLS,
+			}
+			processFactory.processMap[pid] = p
+			slog.Info("Attached GoTLS probes", "pid", pid)
+			continue
+		} else if err != nil {
+			slog.Error("GoTLS probing error", "pid", pid, "error", err)
+		}
+
+		attached, err = ssl.TryNodeProbes(pid, libraries, bpfModule)
+		if attached {
+			p := Process{
+				pid:         pid,
+				containerId: containers[0],
+				linkType:    StaticLink,
+				probeType:   ssl.Node,
+			}
+			processFactory.processMap[pid] = p
+			slog.Info("Attached Node TLS probes", "pid", pid)
+			continue
+		} else if err != nil {
+			slog.Error("Node probing error", "pid", pid, "error", err)
+		}
+		processFactory.unattachedProcess[pid] = true
+		slog.Info("All probe types failed for process, blacklisting until restart", "pid", pid)
 	}
+	slog.Info("Finished process probe scan",
+		"totalPids", len(pidSet),
+		"attempted", attempted,
+		"skippedAlreadyAttached", skippedAttached,
+		"skippedPreviouslyFailed", skippedUnattached,
+		"skippedSelf", skippedSelf,
+		"skippedNoLibraries", skippedNoLibraries,
+		"currentlyAttached", len(processFactory.processMap),
+		"blacklisted", len(processFactory.unattachedProcess),
+	)
 }
 
 func checkSelf(pid int32) bool {

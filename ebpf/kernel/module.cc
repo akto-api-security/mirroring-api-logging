@@ -1339,6 +1339,7 @@ struct go_symaddrs_t {
   u64 FDSysFDOffset;
   u64 TLSConnOffset;
   u64 GIDOffset;
+  u64 TLSGOffset;
 	u64 TCPConnOffset;
 	u64 IsClientOffset;
 
@@ -1355,7 +1356,7 @@ struct go_symaddrs_t {
 };
 
 struct go_regabi_regs {
-  uint64_t regs[9];
+  uint64_t regs[16];
 };
 
 BPF_PERCPU_ARRAY(regs_heap, struct go_regabi_regs, 1);
@@ -1379,7 +1380,7 @@ static __inline uint64_t* go_regabi_regs(const struct pt_regs* ctx) {
   regs_heap_var->regs[8] = ctx->r11;
 #elif defined(TARGET_ARCH_AARCH64)
 #pragma unroll
-  for (uint32_t i = 0; i < 9; i++) {
+  for (uint32_t i = 0; i < 16; i++) {
     regs_heap_var->regs[i] = ctx->regs[i];
   }
 #else
@@ -1406,27 +1407,37 @@ static inline uint64_t get_goid(struct pt_regs* ctx) {
     return 0;
   }
 
+  size_t g_addr = 0;
+
 #if defined(TARGET_ARCH_X86_64)
+  // On amd64, Go stores a pointer to `struct g` at fsbase - 8.
   const void* fs_base = (void*)task_ptr->thread.fsbase;
+  bpf_probe_read_user(&g_addr, sizeof(void*), (void*)(fs_base - 8));
 #elif defined(TARGET_ARCH_AARCH64)
-  const void* fs_base = (void*)task_ptr->thread.uw.tp_value;
+  // On linux/arm64, Go keeps the current goroutine in R28 for pure-Go code.
+  // TLS is only used when cgo is linked (runtime.iscgo), so try R28 first.
+  g_addr = ctx->regs[28];
+  if (g_addr == 0 && common_symaddrs->TLSGOffset != 0) {
+    const void* tp = (void*)task_ptr->thread.uw.tp_value;
+    bpf_probe_read_user(&g_addr, sizeof(void*), (void*)(tp + common_symaddrs->TLSGOffset));
+  }
 #else
 #error Target architecture not supported
 #endif
 
-  // Get ptr to `struct g` from 8 bytes before fsbase and then access the goID.
-  int32_t g_addr_offset = -8;
-  uint64_t goid;
-  size_t g_addr;
-  bpf_probe_read_user(&g_addr, sizeof(void*), (void*)(fs_base + g_addr_offset));
-  bpf_probe_read_user(&goid, sizeof(void*), (void*)(g_addr + common_symaddrs->GIDOffset));
+  if (g_addr == 0) {
+    return 0;
+  }
+
+  uint64_t goid = 0;
+  bpf_probe_read_user(&goid, sizeof(goid), (void*)(g_addr + common_symaddrs->GIDOffset));
   return goid;
 }
 
 static __inline void assign_arg(void* arg, size_t arg_size, struct location_t loc, const void* sp,
                                 uint64_t* regs) {
   if (loc.type == kLocationTypeStack) {
-    bpf_probe_read(arg, arg_size, sp + loc.offset);
+    bpf_probe_read_user(arg, arg_size, sp + loc.offset);
   } else if (loc.type == kLocationTypeRegisters) {
     if (loc.offset >= 0) {
       bpf_probe_read(arg, arg_size, (char*)regs + loc.offset);
@@ -1437,16 +1448,16 @@ static __inline void assign_arg(void* arg, size_t arg_size, struct location_t lo
 static __inline int32_t get_fd_from_conn_intf_core(struct go_interface conn_intf,
                                                    const struct go_symaddrs_t* symaddrs) {
 
-    bpf_probe_read(&conn_intf, sizeof(conn_intf), conn_intf.ptr + symaddrs->TLSConnOffset);
+    bpf_probe_read_user(&conn_intf, sizeof(conn_intf), conn_intf.ptr + symaddrs->TLSConnOffset);
 
     if (conn_intf.type != symaddrs->TCPConnOffset) {
         return 0;
     }
 
     void* fd_ptr;
-    bpf_probe_read(&fd_ptr, sizeof(fd_ptr), conn_intf.ptr);
+    bpf_probe_read_user(&fd_ptr, sizeof(fd_ptr), conn_intf.ptr);
     __u64 sysfd;
-    bpf_probe_read(&sysfd, sizeof(sysfd), fd_ptr + symaddrs->FDSysFDOffset);
+    bpf_probe_read_user(&sysfd, sizeof(sysfd), fd_ptr + symaddrs->FDSysFDOffset);
     return sysfd;
 }
 

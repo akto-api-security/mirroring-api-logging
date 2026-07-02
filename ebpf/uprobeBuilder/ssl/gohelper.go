@@ -99,6 +99,7 @@ type GoTLSSymbolAddress struct {
 	FDSysFDOffset  uint64
 	TLSConnOffset  uint64
 	GIDOffset      uint64
+	TLSGOffset     uint64
 	TCPConnOffset  uint64
 	IsClientOffset uint64
 
@@ -164,6 +165,10 @@ func generateGOTLSSymbolOffsets(elfFile *elf.File, v *version.Version) (*GoTLSSy
 	assignError = assignGoTLSStructureOffset(assignError, reader, goTLSConnSymbol, "conn", &symbolAddresses.TLSConnOffset)
 	assignError = assignGoTLSStructureOffset(assignError, reader, goTLSRuntimeG, "goid", &symbolAddresses.GIDOffset)
 	assignError = assignGoTLSStructureOffset(assignError, reader, goTLSConnSymbol, "isClient", &symbolAddresses.IsClientOffset)
+
+	if sym := elfFile.FindSymbol("runtime.tls_g"); sym != nil {
+		symbolAddresses.TLSGOffset = sym.Location
+	}
 
 	// write
 	assignError = assignGoTLSArgsLocation(assignError, writeFunction, "c", &symbolAddresses.WriteConnectionLoc)

@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 
@@ -59,6 +60,15 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	defer conn.mutex.Unlock()
 
 	if !conn.ssl && event.Attr.Ssl {
+		slog.Info("SSL uprobe took over connection, clearing encrypted socket buffers",
+			"fd", conn.connID.Fd,
+			"id", conn.connID.Id,
+			"port", conn.connID.Port,
+			"clearedSentChunks", len(conn.sentBuf),
+			"clearedRecvChunks", len(conn.recvBuf),
+			"clearedSentBytes", conn.sentBytes,
+			"clearedRecvBytes", conn.recvBytes,
+		)
 		for k := range conn.sentBuf {
 			conn.sentBuf[k] = []byte{}
 		}
@@ -71,18 +81,40 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	}
 
 	if conn.ssl != event.Attr.Ssl {
+		metaUtils.LogProcessing("Dropping data event due to SSL mode mismatch",
+			"fd", conn.connID.Fd,
+			"id", conn.connID.Id,
+			"trackerSsl", conn.ssl,
+			"eventSsl", event.Attr.Ssl,
+			"bytesSent", event.Attr.Bytes_sent,
+			"readCount", event.Attr.ReadEventsCount,
+			"writeCount", event.Attr.WriteEventsCount,
+		)
 		return
 	}
 
 	bytesSent := event.Attr.Bytes_sent
+	chunkSize := utils.Abs(bytesSent)
 
 	if bytesSent > 0 {
-		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
-		conn.sentBytes += uint64(utils.Abs(bytesSent))
+		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:chunkSize]...)
+		conn.sentBytes += uint64(chunkSize)
 	} else {
-		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
-		conn.recvBytes += uint64(utils.Abs(bytesSent))
+		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:chunkSize]...)
+		conn.recvBytes += uint64(chunkSize)
 	}
+
+	metaUtils.LogProcessing("Tracker data event accumulated",
+		"fd", conn.connID.Fd,
+		"id", conn.connID.Id,
+		"ssl", conn.ssl,
+		"isSend", bytesSent > 0,
+		"chunkBytes", chunkSize,
+		"totalSentBytes", conn.sentBytes,
+		"totalRecvBytes", conn.recvBytes,
+		"sentChunks", len(conn.sentBuf),
+		"recvChunks", len(conn.recvBuf),
+	)
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }
