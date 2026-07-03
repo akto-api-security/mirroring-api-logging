@@ -267,36 +267,20 @@ func processWebSocketConnection(connID structs.ConnID, receiveBuffer, sentBuffer
 	connectionClosed := false
 
 	if len(sentBuffer) > 0 {
-		frames := kafkaUtil.ParseWebSocketFrames(sentBuffer, "outgoing")
-		if len(frames) > 0 {
-			if hasCloseFrame(frames) {
-				connectionClosed = true
-			}
-			err := kafkaUtil.WSConnectionManager.AccumulateMessagesNumeric(
-				connID.Id,
-				connID.Fd,
-				frames,
-			)
-			if err != nil {
-				slog.Debug("Failed to accumulate WebSocket frames from sent buffer", "error", err)
-			}
+		msgs, err := kafkaUtil.WSConnectionManager.AccumulatePayloadNumeric(connID.Id, connID.Fd, sentBuffer, "outgoing")
+		if err != nil {
+			slog.Debug("Failed to accumulate WebSocket payload from sent buffer", "error", err)
+		} else if hasCloseFrame(msgs) {
+			connectionClosed = true
 		}
 	}
 
 	if len(receiveBuffer) > 0 {
-		frames := kafkaUtil.ParseWebSocketFrames(receiveBuffer, "incoming")
-		if len(frames) > 0 {
-			if hasCloseFrame(frames) {
-				connectionClosed = true
-			}
-			err := kafkaUtil.WSConnectionManager.AccumulateMessagesNumeric(
-				connID.Id,
-				connID.Fd,
-				frames,
-			)
-			if err != nil {
-				slog.Debug("Failed to accumulate WebSocket frames from receive buffer", "error", err)
-			}
+		msgs, err := kafkaUtil.WSConnectionManager.AccumulatePayloadNumeric(connID.Id, connID.Fd, receiveBuffer, "incoming")
+		if err != nil {
+			slog.Debug("Failed to accumulate WebSocket payload from receive buffer", "error", err)
+		} else if hasCloseFrame(msgs) {
+			connectionClosed = true
 		}
 	}
 

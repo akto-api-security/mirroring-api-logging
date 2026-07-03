@@ -608,11 +608,44 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	}
 }
 
-func ParseWebSocketFrames(payload []byte, direction string) []WebSocketMessage {
+// WSFragmentAssembler reassembles fragmented WebSocket messages per RFC 6455 §5.4.
+type WSFragmentAssembler struct {
+	active bool
+	opcode uint8
+	buf    bytes.Buffer
+}
+
+func ParseWebSocketFrames(payload []byte, direction string, asm *WSFragmentAssembler) []WebSocketMessage {
 	messages := []WebSocketMessage{}
 
 	if len(payload) == 0 {
 		return messages
+	}
+
+	emitMessage := func(opcode uint8, fin bool, masked bool, framePayload []byte) {
+		slog.Info("WebSocket message emitted",
+			"direction", direction,
+			"opcode", opcode,
+			"fin", fin,
+			"masked", masked,
+			"payloadLen", len(framePayload))
+		messages = append(messages, WebSocketMessage{
+			Payload:   string(framePayload),
+			Direction: direction,
+			Timestamp: time.Now(),
+			FIN:       fin,
+			Opcode:    opcode,
+			Masked:    masked,
+			EventType: "",
+		})
+	}
+
+	resetAssembler := func() {
+		if asm != nil {
+			asm.active = false
+			asm.opcode = 0
+			asm.buf.Reset()
+		}
 	}
 
 	i := 0
@@ -621,19 +654,16 @@ func ParseWebSocketFrames(payload []byte, direction string) []WebSocketMessage {
 			break
 		}
 
-		// Byte 0: FIN (1 bit) + RSV (3 bits) + opcode (4 bits)
 		byte0 := payload[i]
 		fin := (byte0 & 0x80) != 0
 		opcode := byte0 & 0x0F
 		i++
 
-		// Byte 1: MASK (1 bit) + payload length (7 bits)
 		byte1 := payload[i]
 		masked := (byte1 & 0x80) != 0
 		payloadLen := int(byte1 & 0x7F)
 		i++
 
-		// Extended payload length (2 or 8 bytes)
 		if payloadLen == 126 {
 			if i+2 > len(payload) {
 				break
@@ -651,7 +681,6 @@ func ParseWebSocketFrames(payload []byte, direction string) []WebSocketMessage {
 			i += 8
 		}
 
-		// Masking key (4 bytes if masked)
 		var maskingKey [4]byte
 		if masked {
 			if i+4 > len(payload) {
@@ -661,36 +690,103 @@ func ParseWebSocketFrames(payload []byte, direction string) []WebSocketMessage {
 			i += 4
 		}
 
-		// Payload data
 		if i+payloadLen > len(payload) {
 			break
 		}
 		framePayload := payload[i : i+payloadLen]
 		i += payloadLen
 
-		// Unmask payload if needed
 		if masked {
 			for j := 0; j < len(framePayload); j++ {
 				framePayload[j] ^= maskingKey[j%4]
 			}
 		}
 
-		if opcode >= 0x8 && payloadLen == 0 {
+		if asm == nil {
+			msg := WebSocketMessage{
+				Payload:   string(framePayload),
+				Direction: direction,
+				Timestamp: time.Now(),
+				FIN:       fin,
+				Opcode:    opcode,
+				Masked:    masked,
+			}
+			messages = append(messages, msg)
 			continue
 		}
 
-		msg := WebSocketMessage{
-			Payload:   string(framePayload),
-			Direction: direction,
-			Timestamp: time.Now(),
-			FIN:       fin,
-			Opcode:    opcode,
-			Masked:    masked,
-			EventType: "", // Can be populated with custom logic later
-		}
+		slog.Info("WebSocket frame decoded",
+			"direction", direction,
+			"opcode", opcode,
+			"fin", fin,
+			"masked", masked,
+			"payloadLen", len(framePayload),
+			"asmActive", asm.active,
+			"asmOpcode", asm.opcode,
+			"asmBufLen", asm.buf.Len())
 
-		messages = append(messages, msg)
+		switch {
+		case opcode >= 0x8:
+			if !fin {
+				slog.Info("WebSocket control frame must not be fragmented",
+					"direction", direction, "opcode", opcode, "fin", fin)
+				resetAssembler()
+				continue
+			}
+			slog.Info("WebSocket control frame emit",
+				"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+			emitMessage(opcode, fin, masked, framePayload)
+
+		case opcode == 0x1 || opcode == 0x2:
+			if asm.active {
+				slog.Info("WebSocket data frame started while fragment in progress",
+					"direction", direction, "opcode", opcode, "fin", fin, "prevAsmOpcode", asm.opcode)
+				resetAssembler()
+			}
+			if fin {
+				slog.Info("WebSocket complete data frame",
+					"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+				emitMessage(opcode, true, masked, framePayload)
+			} else {
+				slog.Info("WebSocket fragment started",
+					"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+				asm.active = true
+				asm.opcode = opcode
+				asm.buf.Reset()
+				asm.buf.Write(framePayload)
+			}
+
+		case opcode == 0x0:
+			if !asm.active {
+				slog.Info("WebSocket continuation frame without active fragment",
+					"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+				continue
+			}
+			asm.buf.Write(framePayload)
+			slog.Info("WebSocket continuation appended",
+				"direction", direction, "opcode", opcode, "fin", fin,
+				"storedOpcode", asm.opcode, "asmBufLen", asm.buf.Len())
+			if fin {
+				slog.Info("WebSocket fragment complete",
+					"direction", direction, "storedOpcode", asm.opcode, "fin", fin, "totalLen", asm.buf.Len())
+				emitMessage(asm.opcode, true, masked, asm.buf.Bytes())
+				resetAssembler()
+			}
+
+		default:
+			slog.Info("WebSocket unsupported opcode",
+				"direction", direction, "opcode", opcode, "fin", fin)
+			resetAssembler()
+		}
 	}
+
+	if i < len(payload) {
+		slog.Info("WebSocket parse stopped with trailing bytes",
+			"direction", direction, "consumed", i, "total", len(payload), "remaining", len(payload)-i)
+	}
+
+	slog.Info("WebSocket parse complete",
+		"direction", direction, "inputLen", len(payload), "messagesEmitted", len(messages))
 
 	return messages
 }
