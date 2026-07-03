@@ -93,10 +93,6 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
-
-	// WebSocket connection tracking
-	wsConnectionsMutex sync.RWMutex
-	wsConnections      = make(map[string]bool) // keyed by "IP:Port:Pid:Fd"
 )
 
 func init() {
@@ -109,33 +105,14 @@ func init() {
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
 }
 
-func buildWebSocketConnectionKey(connID structs.ConnID) string {
-	// Use only ConnID fields which are stable kernel identifiers
-	// (not tracker.srcIp/srcPort which can vary between calls)
-	return fmt.Sprintf("%d:%d", connID.Id, connID.Fd)
-}
-
-func isWebSocketConnection(connID structs.ConnID) bool {
-	wsConnectionsMutex.RLock()
-	defer wsConnectionsMutex.RUnlock()
-	key := buildWebSocketConnectionKey(connID)
-	return wsConnections[key]
-}
-
-func markAsWebSocketConnection(connID structs.ConnID) {
-	wsConnectionsMutex.Lock()
-	defer wsConnectionsMutex.Unlock()
-	key := buildWebSocketConnectionKey(connID)
-	wsConnections[key] = true
-	slog.Info("Marked connection as WebSocket", "key", key, "connID", connID)
-}
-
-func unmarkWebSocketConnection(connID structs.ConnID) {
-	wsConnectionsMutex.Lock()
-	defer wsConnectionsMutex.Unlock()
-	key := buildWebSocketConnectionKey(connID)
-	delete(wsConnections, key)
-	slog.Info("Unmarked WebSocket connection (closed)", "key", key)
+func isKnownWebSocketConnection(connID structs.ConnID) bool {
+	if kafkaUtil.WSConnectionManager == nil {
+		return false
+	}
+	slog.Info("Skipping tracker processing, missing send or recv buffer",
+		"connID.id", connID.Id,
+		"connID.fd", connID.Fd)
+	return kafkaUtil.WSConnectionManager.IsRegisteredByConnID(connID.Id, connID.Fd)
 }
 
 func hasCloseFrame(frames []kafkaUtil.WebSocketMessage) bool {
@@ -219,7 +196,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 
 	// Check if this is already a known WebSocket connection - if so, skip sequence checks
 	// since binary WebSocket frames won't have sequential packet numbering
-	isKnownWebSocket := isWebSocketConnection(connID)
+	isKnownWebSocket := isKnownWebSocketConnection(connID)
 	receiveBuffer := convertToSingleByteArr(tracker.recvBuf, isKnownWebSocket)
 	sentBuffer := convertToSingleByteArr(tracker.sentBuf, isKnownWebSocket)
 
@@ -255,7 +232,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if isWebSocketConnection(connID) {
+	if isKnownWebSocket {
 		processWebSocketConnection(connID, receiveBuffer, sentBuffer, isComplete, hostName)
 		return
 	}
@@ -280,7 +257,6 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 			"id", connID.Id,
 			"ssl", tracker.ssl,
 		)
-		markAsWebSocketConnection(connID)
 
 		// Extract headers from the request buffer (receiveBuffer contains the WebSocket upgrade request)
 		headers := extractHeadersFromHTTPBuffer(receiveBuffer)
@@ -448,7 +424,6 @@ func processWebSocketConnection(connID structs.ConnID, receiveBuffer, sentBuffer
 	}
 
 	if connectionClosed {
-		unmarkWebSocketConnection(connID)
 		kafkaUtil.WSConnectionManager.RemoveConnectionByConnID(connID.Id, connID.Fd)
 	}
 
@@ -642,8 +617,11 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 				if ch, exists := factory.processor[key]; exists {
 					close(ch)
 					delete(factory.processor, key)
-			}
+				}
 				delete(factory.connections, key)
+				if kafkaUtil.WSConnectionManager != nil {
+					kafkaUtil.WSConnectionManager.RemoveConnectionByConnID(key.Id, key.Fd)
+				}
 			}
 		}
 	}

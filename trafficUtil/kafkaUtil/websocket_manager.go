@@ -59,6 +59,22 @@ func buildConnectionKey(sourceIP, sourcePort, destIP, destPort string) string {
 	return fmt.Sprintf("%s:%s:%s:%s", sourceIP, sourcePort, destIP, destPort)
 }
 
+func buildConnIDKey(connIDId uint64, connIDFd uint32) string {
+	return fmt.Sprintf("%d:%d", connIDId, connIDFd)
+}
+
+// IsRegisteredByConnID reports whether an eBPF ConnID is tracked as WebSocket.
+func (wcm *WebSocketConnectionManager) IsRegisteredByConnID(connIDId uint64, connIDFd uint32) bool {
+	wcm.mutex.RLock()
+	defer wcm.mutex.RUnlock()
+	_, exists := wcm.connections[buildConnIDKey(connIDId, connIDFd)]
+	slog.Info("Skipping tracker processing, missing send or recv buffer",
+		"connID.id", connIDId,
+		"connID.fd", connIDId,
+		"exists", exists)
+	return exists
+}
+
 // RegisterConnection registers a new WebSocket connection with initial HTTP handshake headers.
 func (wcm *WebSocketConnectionManager) RegisterConnection(sourceIP, sourcePort, destIP, destPort string, req *http.Request) error {
 	wcm.mutex.Lock()
@@ -97,7 +113,7 @@ func (wcm *WebSocketConnectionManager) RegisterConnectionNumeric(connIDId uint64
 	wcm.mutex.Lock()
 	defer wcm.mutex.Unlock()
 
-	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+	key := buildConnIDKey(connIDId, connIDFd)
 
 	if _, exists := wcm.connections[key]; exists {
 		slog.Debug("WebSocket connection already registered", "key", key)
@@ -146,7 +162,7 @@ func (wcm *WebSocketConnectionManager) AccumulateMessagesNumeric(connIDId uint64
 	wcm.mutex.Lock()
 	defer wcm.mutex.Unlock()
 
-	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+	key := buildConnIDKey(connIDId, connIDFd)
 
 	conn, exists := wcm.connections[key]
 	if !exists {
@@ -188,7 +204,7 @@ func (wcm *WebSocketConnectionManager) GetAndClearBatchByConnID(connIDId uint64,
 	wcm.mutex.Lock()
 	defer wcm.mutex.Unlock()
 
-	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+	key := buildConnIDKey(connIDId, connIDFd)
 
 	conn, exists := wcm.connections[key]
 	if !exists {
@@ -233,7 +249,10 @@ func (wcm *WebSocketConnectionManager) RemoveConnectionByConnID(connIDId uint64,
 	wcm.mutex.Lock()
 	defer wcm.mutex.Unlock()
 
-	key := fmt.Sprintf("%d:%d", connIDId, connIDFd)
+	key := buildConnIDKey(connIDId, connIDFd)
+	if _, exists := wcm.connections[key]; !exists {
+		return
+	}
 	delete(wcm.connections, key)
 	slog.Info("WebSocket connection removed (closed)", "key", key)
 }
