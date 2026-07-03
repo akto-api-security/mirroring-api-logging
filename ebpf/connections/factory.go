@@ -93,10 +93,6 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
-
-	// WebSocket connection tracking
-	wsConnectionsMutex sync.RWMutex
-	wsConnections      = make(map[string]bool) // keyed by "IP:Port:Pid:Fd"
 )
 
 func init() {
@@ -109,32 +105,11 @@ func init() {
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
 }
 
-func buildWebSocketConnectionKey(connID structs.ConnID) string {
-	// Use only ConnID fields which are stable kernel identifiers
-	return fmt.Sprintf("%d:%d", connID.Id, connID.Fd)
-}
-
-func isWebSocketConnection(connID structs.ConnID) bool {
-	wsConnectionsMutex.RLock()
-	defer wsConnectionsMutex.RUnlock()
-	key := buildWebSocketConnectionKey(connID)
-	return wsConnections[key]
-}
-
-func markAsWebSocketConnection(connID structs.ConnID) {
-	wsConnectionsMutex.Lock()
-	defer wsConnectionsMutex.Unlock()
-	key := buildWebSocketConnectionKey(connID)
-	wsConnections[key] = true
-	slog.Info("Marked connection as WebSocket", "key", key)
-}
-
-func unmarkWebSocketConnection(connID structs.ConnID) {
-	wsConnectionsMutex.Lock()
-	defer wsConnectionsMutex.Unlock()
-	key := buildWebSocketConnectionKey(connID)
-	delete(wsConnections, key)
-	slog.Info("Unmarked WebSocket connection (closed)", "key", key)
+func isKnownWebSocketConnection(connID structs.ConnID) bool {
+	if kafkaUtil.WSConnectionManager == nil {
+		return false
+	}
+	return kafkaUtil.WSConnectionManager.IsRegisteredByConnID(connID.Id, connID.Fd)
 }
 
 // hasCloseFrame checks if any of the frames contain a WebSocket close frame (opcode 8)
@@ -173,7 +148,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 
 	// Check if this is already a known WebSocket connection - if so, skip sequence checks
 	// since binary WebSocket frames won't have sequential packet numbering
-	isKnownWebSocket := isWebSocketConnection(connID)
+	isKnownWebSocket := isKnownWebSocketConnection(connID)
 	receiveBuffer := convertToSingleByteArr(tracker.recvBuf, isKnownWebSocket)
 	sentBuffer := convertToSingleByteArr(tracker.sentBuf, isKnownWebSocket)
 
@@ -196,7 +171,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if isWebSocketConnection(connID) {
+	if isKnownWebSocket {
 		processWebSocketConnection(connID, receiveBuffer, sentBuffer, isComplete, hostName)
 		return
 	}
@@ -204,7 +179,11 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	isWebSocket := isWebSocketUpgradeData(sentBuffer, receiveBuffer)
 
 	if isWebSocket {
-		markAsWebSocketConnection(connID)
+		slog.Info("Detected WebSocket upgrade, registering connection",
+			"fd", connID.Fd,
+			"id", connID.Id,
+			"ssl", tracker.ssl,
+		)
 
 		headers := extractHeadersFromHTTPBuffer(receiveBuffer)
 
@@ -323,7 +302,6 @@ func processWebSocketConnection(connID structs.ConnID, receiveBuffer, sentBuffer
 
 	// If a close frame was seen, unmark so the fd can be reused cleanly by a new connection
 	if connectionClosed {
-		unmarkWebSocketConnection(connID)
 		kafkaUtil.WSConnectionManager.RemoveConnectionByConnID(connID.Id, connID.Fd)
 	}
 
@@ -526,6 +504,9 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 					// Don't unmark WebSocket connections - they maintain their type across the connection lifetime
 				}
 				delete(factory.connections, key)
+				if kafkaUtil.WSConnectionManager != nil {
+					kafkaUtil.WSConnectionManager.RemoveConnectionByConnID(key.Id, key.Fd)
+				}
 			}
 		}
 	}
