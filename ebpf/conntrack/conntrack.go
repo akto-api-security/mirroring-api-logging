@@ -239,7 +239,6 @@ func EnumerateExistingConnections(pid uint32) ([]ConnectionInfo, error) {
 			})
 		}
 	}
-	slog.Debug("Existing connections", "for pid", pid, " number: ", len(connections))
 	return connections, nil
 }
 
@@ -307,17 +306,25 @@ func PopulateExistingConnections(
 	connInfoTable, connCounterTable, connInfoMapKeysTable *bcc.Table,
 	maxMapSize int,
 ) {
+	var totalConnFound, totalConnPopulated int
+	var enumerationFailures, populationFailures int
+
+	// Don't actually prefill in C maps, finding conn is still done
+	// to know how many are typically open and therefore data is not captured.
+	if !enableConnPrefill {
+		slog.Debug("connection prefill disabled", "enableConnPrefill", enableConnPrefill)
+	}
+
 	for _, pid := range pids {
 		connections, err := EnumerateExistingConnections(pid)
 		if err != nil {
-			slog.Warn("failed to enumerate connections for pid", "pid", pid, "error", err)
+			enumerationFailures++
 			continue
 		}
 
-		// Don't actually prefill in C maps, finding conn is still done 
-		// to know how many are typically open and therefore data is not captured.
+		totalConnFound += len(connections)
+
 		if !enableConnPrefill {
-			slog.Debug("prefill connection skipped due to", "enableConnPrefill: ", enableConnPrefill)
 			continue
 		}
 
@@ -340,16 +347,19 @@ func PopulateExistingConnections(
 				tgidFd, connInfo, maxMapSize,
 			)
 			if err != nil {
-				slog.Warn("failed to populate conn_info", "pid", pid, "fd", conn.Fd, "error", err)
+				populationFailures++
 				continue
 			}
 
-			slog.Info("populated pre-existing connection",
-				"pid", pid,
-				"fd", conn.Fd,
-				"remote_ip", conn.RemoteIP,
-				"remote_port", conn.RemotePort,
-			)
+			totalConnPopulated++
 		}
 	}
+
+	slog.Info("completed connection prefill",
+		"pids_processed", len(pids),
+		"total_connections_found", totalConnFound,
+		"total_connections_populated", totalConnPopulated,
+		"enumeration_failures", enumerationFailures,
+		"population_failures", populationFailures,
+	)
 }

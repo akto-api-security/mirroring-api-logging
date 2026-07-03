@@ -146,9 +146,10 @@ func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
 	if info, ok := w.pidHostNameMap[pid]; ok {
 		return info.ProcessName
 	}
-	slog.Debug("Process name not found for", "processId", pid)
+	// slog.Debug("Process name not found for", "processId", pid)
 	return ""
 }
+
 
 func (w *PodInformer) BuildPidHostNameMap() {
 
@@ -172,7 +173,7 @@ func (w *PodInformer) BuildPidHostNameMap() {
 			}
 		}
 	}
-	slog.Debug("PID to Hostname map built successfully")
+	// slog.Debug("PID to Hostname map built successfully", "map", w.pidHostNameMap)
 	w.logPidHostNameMap()
 }
 
@@ -208,7 +209,7 @@ func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (str
 }
 
 func (w *PodInformer) logPidHostNameMap() {
-	// slog.Debug("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
+	// slog.Warn("Logging PID to Hostname Map to file", "file", utils.GoPidLogFile)
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 
@@ -246,7 +247,7 @@ func (w *PodInformer) logPodNameLabelsMap() {
 		result += fmt.Sprintf("Name: %s, Labels: %s; ", key, value)
 		return true
 	})
-	slog.Debug("Pod Name Labels Map", "map", result)
+	// slog.Debug("Pod Name Labels Map", "map", result)
 	w.logPodLabelsMapFile()
 }
 

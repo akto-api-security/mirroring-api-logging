@@ -1,8 +1,6 @@
 module github.com/akto-api-security/mirroring-api-logging/ebpf
 
-go 1.24.0
-
-toolchain go1.24.3
+go 1.25.8
 
 require (
 	github.com/akto-api-security/mirroring-api-logging/trafficUtil v0.0.0-00010101000000-000000000000
@@ -12,6 +10,8 @@ require (
 )
 
 require (
+	github.com/bits-and-blooms/bitset v1.24.2 // indirect
+	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect

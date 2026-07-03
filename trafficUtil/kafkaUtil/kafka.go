@@ -43,6 +43,10 @@ var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()
 var moduleType = "TRAFFIC_COLLECTOR"
 
+var globalTransport *kafka.Transport
+var transportOnce sync.Once
+var KafkaDisabled = false
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -56,9 +60,16 @@ func init() {
 	utils.InitVar("KAFKA_ERROR_THRESHOLD", &kafkaErrorThreshold)
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
+	utils.InitVar("KAFKA_DISABLED", &KafkaDisabled)
 }
 
 func InitKafka() {
+
+	if KafkaDisabled {
+		slog.Info("Kafka is disabled, skipping initialization")
+		return
+	}
+
 	if apiProcessor.CloudTrafficProcessorModeEnabled {
 		return
 	}
@@ -115,6 +126,9 @@ func InitKafka() {
 			kafkaWriterMutex.Lock()
 			kafkaWriter.Close()
 			kafkaWriterMutex.Unlock()
+			if globalTransport != nil {
+				globalTransport.CloseIdleConnections()
+			}
 			time.Sleep(time.Second * 2)
 		} else {
 			utils.PrintLog("connection establishing with kafka successfully")
@@ -431,6 +445,7 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 
 func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
 	topic := "akto.api.logs"
+	checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 
 	msg := kafka.Message{
 		Topic:   topic,
@@ -446,6 +461,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost, method string
 
 	if err != nil {
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
+		checkDebugUrlAndPrint(url, reqHost, fmt.Sprintf("Kafka write failed: %v", err))
 		return err
 	}
 	checkDebugUrlAndPrint(url, reqHost, "Kafka write successful: ")
@@ -494,6 +510,19 @@ func getKafkaDialer() *kafka.Dialer {
 	return dialer
 }
 
+func getGlobalTransport() *kafka.Transport {
+	transportOnce.Do(func() {
+		dialer := getKafkaDialer()
+		globalTransport = &kafka.Transport{
+			TLS:         dialer.TLS,
+			SASL:        dialer.SASLMechanism,
+			IdleTimeout: 30 * time.Second,
+			MetadataTTL: 60 * time.Second,
+		}
+	})
+	return globalTransport
+}
+
 func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
 	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
@@ -507,12 +536,6 @@ func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) 
 		Compression:  kafka.Lz4,
 	}
 
-	dialer := getKafkaDialer()
-	transport := &kafka.Transport{
-		TLS:  dialer.TLS,
-		SASL: dialer.SASLMechanism,
-	}
-
-	kafkaWriter.Transport = transport
+	kafkaWriter.Transport = getGlobalTransport()
 	return &kafkaWriter
 }

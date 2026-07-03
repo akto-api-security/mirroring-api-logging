@@ -18,6 +18,12 @@ import (
 
 var httpBytes = []byte("HTTP")
 
+var sequenceCheckSkip = false
+
+func init() {
+	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
+}
+
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
 	processor   map[structs.ConnID]chan interface{}
@@ -57,10 +63,10 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
-			// if k != 1 {
-				// utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
-				// break
-			// }
+			if !sequenceCheckSkip && k != 1 {
+				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
+				break
+			}
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
@@ -221,13 +227,14 @@ func resetTimer(t *time.Timer, d time.Duration) {
 }
 
 // Worker lifecycle:
-//   ACTIVE:
-//     - socket data/open -> reset inactivity timer on each event
-//     - socket close     -> schedule delayed termination
-//     - inactivity timer -> terminate immediately
 //
-//   TERMINATION is final and happens exactly once.
-//  either due to inactivityThreshold or due to socker close event
+//	 ACTIVE:
+//	   - socket data/open -> reset inactivity timer on each event
+//	   - socket close     -> schedule delayed termination
+//	   - inactivity timer -> terminate immediately
+//
+//	 TERMINATION is final and happens exactly once.
+//	either due to inactivityThreshold or due to socker close event
 func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 	go func(connID structs.ConnID, tracker *Tracker, ch chan interface{}) {
 
@@ -243,11 +250,11 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 					tracker.AddDataEvent(*e)
-					if tracker.GetSentBytes() + tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
+					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Ip, "port", connID.Port)
 						factory.StopProcessing(connID)
 						return
-					}else{
+					} else {
 						resetTimer(inactivityTimer, inactivityThreshold)
 					}
 				case *structs.SocketOpenEvent:
@@ -279,7 +286,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 	}(connectionID, tracker, ch)
 }
 
-func (factory *Factory) StopProcessing(connID structs.ConnID){
+func (factory *Factory) StopProcessing(connID structs.ConnID) {
 	factory.ProcessAndStopWorker(connID)
 	factory.DeleteWorker(connID)
 }
