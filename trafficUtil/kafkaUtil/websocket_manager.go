@@ -18,6 +18,8 @@ type WebSocketConnection struct {
 	EstablishedAt time.Time
 	LastMessageAt time.Time
 	Messages      []WebSocketMessage
+	incomingAsm   WSFragmentAssembler
+	outgoingAsm   WSFragmentAssembler
 }
 
 // WebSocketMessage represents a single WebSocket frame or message.
@@ -68,10 +70,6 @@ func (wcm *WebSocketConnectionManager) IsRegisteredByConnID(connIDId uint64, con
 	wcm.mutex.RLock()
 	defer wcm.mutex.RUnlock()
 	_, exists := wcm.connections[buildConnIDKey(connIDId, connIDFd)]
-	slog.Info("Skipping tracker processing, missing send or recv buffer",
-		"connID.id", connIDId,
-		"connID.fd", connIDId,
-		"exists", exists)
 	return exists
 }
 
@@ -174,6 +172,41 @@ func (wcm *WebSocketConnectionManager) AccumulateMessagesNumeric(connIDId uint64
 	conn.LastMessageAt = time.Now()
 
 	return nil
+}
+
+func (wcm *WebSocketConnectionManager) AccumulatePayloadNumeric(connIDId uint64, connIDFd uint32, payload []byte, direction string) ([]WebSocketMessage, error) {
+	wcm.mutex.Lock()
+	defer wcm.mutex.Unlock()
+
+	key := buildConnIDKey(connIDId, connIDFd)
+	conn, exists := wcm.connections[key]
+	if !exists {
+		slog.Warn("WebSocket connection not found for payload accumulation", "key", key)
+		return nil, fmt.Errorf("connection not found: %s", key)
+	}
+
+	var asm *WSFragmentAssembler
+	if direction == "outgoing" {
+		asm = &conn.outgoingAsm
+	} else {
+		asm = &conn.incomingAsm
+	}
+
+	msgs := ParseWebSocketFrames(payload, direction, asm)
+	if len(msgs) > 0 {
+		conn.Messages = append(conn.Messages, msgs...)
+		conn.LastMessageAt = time.Now()
+		slog.Info("WebSocket messages accumulated",
+			"key", key, "direction", direction,
+			"newMsgs", len(msgs), "totalPending", len(conn.Messages),
+			"asmActive", asm.active, "asmBufLen", asm.buf.Len())
+	} else {
+		slog.Info("WebSocket parse yielded no messages",
+			"key", key, "direction", direction, "payloadLen", len(payload),
+			"asmActive", asm.active, "asmBufLen", asm.buf.Len())
+	}
+
+	return msgs, nil
 }
 
 // GetAndClearBatch retrieves accumulated messages and resets the batch.
