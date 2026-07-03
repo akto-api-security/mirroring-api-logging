@@ -623,12 +623,7 @@ func ParseWebSocketFrames(payload []byte, direction string, asm *WSFragmentAssem
 	}
 
 	emitMessage := func(opcode uint8, fin bool, masked bool, framePayload []byte) {
-		slog.Info("WebSocket message emitted",
-			"direction", direction,
-			"opcode", opcode,
-			"fin", fin,
-			"masked", masked,
-			"payloadLen", len(framePayload))
+
 		messages = append(messages, WebSocketMessage{
 			Payload:   string(framePayload),
 			Direction: direction,
@@ -715,7 +710,7 @@ func ParseWebSocketFrames(payload []byte, direction string, asm *WSFragmentAssem
 			continue
 		}
 
-		slog.Info("WebSocket frame decoded",
+		slog.Debug("WebSocket frame decoded",
 			"direction", direction,
 			"opcode", opcode,
 			"fin", fin,
@@ -728,28 +723,21 @@ func ParseWebSocketFrames(payload []byte, direction string, asm *WSFragmentAssem
 		switch {
 		case opcode >= 0x8:
 			if !fin {
-				slog.Info("WebSocket control frame must not be fragmented",
-					"direction", direction, "opcode", opcode, "fin", fin)
 				resetAssembler()
 				continue
 			}
-			slog.Info("WebSocket control frame emit",
-				"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+			
 			emitMessage(opcode, fin, masked, framePayload)
 
 		case opcode == 0x1 || opcode == 0x2:
 			if asm.active {
-				slog.Info("WebSocket data frame started while fragment in progress",
-					"direction", direction, "opcode", opcode, "fin", fin, "prevAsmOpcode", asm.opcode)
+
 				resetAssembler()
 			}
 			if fin {
-				slog.Info("WebSocket complete data frame",
-					"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
 				emitMessage(opcode, true, masked, framePayload)
 			} else {
-				slog.Info("WebSocket fragment started",
-					"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+				
 				asm.active = true
 				asm.opcode = opcode
 				asm.buf.Reset()
@@ -758,34 +746,29 @@ func ParseWebSocketFrames(payload []byte, direction string, asm *WSFragmentAssem
 
 		case opcode == 0x0:
 			if !asm.active {
-				slog.Info("WebSocket continuation frame without active fragment",
-					"direction", direction, "opcode", opcode, "fin", fin, "payloadLen", len(framePayload))
+				
 				continue
 			}
 			asm.buf.Write(framePayload)
-			slog.Info("WebSocket continuation appended",
-				"direction", direction, "opcode", opcode, "fin", fin,
-				"storedOpcode", asm.opcode, "asmBufLen", asm.buf.Len())
+
 			if fin {
-				slog.Info("WebSocket fragment complete",
-					"direction", direction, "storedOpcode", asm.opcode, "fin", fin, "totalLen", asm.buf.Len())
 				emitMessage(asm.opcode, true, masked, asm.buf.Bytes())
 				resetAssembler()
 			}
 
 		default:
-			slog.Info("WebSocket unsupported opcode",
+			slog.Debug("WebSocket unsupported opcode",
 				"direction", direction, "opcode", opcode, "fin", fin)
 			resetAssembler()
 		}
 	}
 
 	if i < len(payload) {
-		slog.Info("WebSocket parse stopped with trailing bytes",
+		slog.Debug("WebSocket parse stopped with trailing bytes",
 			"direction", direction, "consumed", i, "total", len(payload), "remaining", len(payload)-i)
 	}
 
-	slog.Info("WebSocket parse complete",
+	slog.Debug("WebSocket parse complete",
 		"direction", direction, "inputLen", len(payload), "messagesEmitted", len(messages))
 
 	return messages
@@ -917,16 +900,16 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 				slog.Warn("Failed to register WebSocket connection", "error", err)
 			} else {
 				slog.Info("WebSocket connection upgraded", "sourceIP", ctx.SourceIP, "destIP", ctx.DestIP)
-				
+
 				// Send initial WebSocket handshake message to Kafka
 				sourceIP := ExtractIP(ctx.SourceIP)
 				sourcePort := ExtractPort(ctx.SourceIP)
 				destIP := ExtractIP(ctx.DestIP)
-				
+
 				// Convert headers to JSON
 				reqHeadersJSON, _ := json.Marshal(headers.Request.StringMap)
 				respHeadersJSON, _ := json.Marshal(headers.Response.StringMap)
-				
+
 				handshakePayload := map[string]string{
 					"ip":              sourceIP,
 					"destIp":          destIP,
@@ -941,14 +924,14 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 					"requestHeaders":  string(reqHeadersJSON),
 					"responseHeaders": string(respHeadersJSON),
 				}
-				
+
 				out, err := json.Marshal(handshakePayload)
 				if err == nil {
 					bgCtx := context.Background()
 					connectionID := sourceIP + ":" + sourcePort
 					ProduceStr(bgCtx, string(out), connectionID, sourceIP, "WEBSOCKET_UPGRADE")
 				}
-				
+
 				continue
 			}
 		}
