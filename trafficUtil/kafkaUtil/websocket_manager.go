@@ -52,7 +52,7 @@ type WebSocketConnectionManager struct {
 func NewWebSocketConnectionManager() *WebSocketConnectionManager {
 	return &WebSocketConnectionManager{
 		connections: make(map[string]*WebSocketConnection),
-		cleanupTTL:  30 * time.Minute,
+		cleanupTTL:  5 * time.Minute,
 	}
 }
 
