@@ -133,12 +133,23 @@ BPF_HASH(active_ssl_read_args_map, uint64_t, struct data_args_t);
 BPF_HASH(active_ssl_write_args_map, uint64_t, struct data_args_t);
 
 /*
-Maintain a map of kubernetes pids, and only process, if data is from them. 
+Maintain a map of kubernetes pids, and only process, if data is from them.
 This should reduce the noise a lot.
 */
 BPF_HASH(kubernetes_pids, u32, u8);
 
+/*
+When set to 1, all processes are traced regardless of kubernetes_pids.
+Used when TRACE_PIDS env variable is not set.
+*/
+BPF_ARRAY(trace_all_flag, u32, 1);
+
 static __inline bool should_trace_tgid(u64 id) {
+  u32 zero = 0;
+  u32 *flag = trace_all_flag.lookup(&zero);
+  if (flag != NULL && *flag == 1) {
+    return true;
+  }
   u32 tgid = id >> 32;
   u8 *enabled = kubernetes_pids.lookup(&tgid);
   if (enabled == NULL) {

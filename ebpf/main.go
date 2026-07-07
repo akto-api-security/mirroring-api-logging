@@ -303,7 +303,14 @@ func setupTracePids(bpfModule *bcc.Module) []uint32 {
 			}
 		}
 	} else {
-		slog.Warn("TRACE_PIDS env variable not set, no PIDs will be traced")
+		slog.Warn("TRACE_PIDS env variable not set, tracing all processes")
+		traceAllTable := bcc.NewTable(bpfModule.TableId("trace_all_flag"), bpfModule)
+		var key [4]byte
+		var val [4]byte
+		binary.LittleEndian.PutUint32(val[:], 1)
+		if err := traceAllTable.Set(key[:], val[:]); err != nil {
+			slog.Error("failed to set trace_all_flag", "error", err)
+		}
 	}
 	return tracedPids
 }
