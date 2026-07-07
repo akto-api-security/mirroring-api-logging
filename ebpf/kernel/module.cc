@@ -142,7 +142,8 @@ BPF_HASH(kubernetes_pids, u32, u8);
 Map of allowed process comm names (max 16 bytes each).
 Populated from TRACE_COMMS env variable.
 */
-BPF_HASH(allowed_comms, char[16], u8);
+typedef char comm_t[16];
+BPF_HASH(allowed_comms, comm_t, u8);
 
 /*
 When set to 1, all processes are traced regardless of kubernetes_pids or allowed_comms.
@@ -159,7 +160,6 @@ static __inline bool should_trace_comm() {
   char comm[16];
   bpf_get_current_comm(&comm, sizeof(comm));
   u8 *enabled = allowed_comms.lookup(&comm);
-  bpf_trace_printk("DEBUG_PROCESS_TRACE_COMM: comm=%s found=%d", comm, enabled != NULL);
   return enabled != NULL;
 }
 
