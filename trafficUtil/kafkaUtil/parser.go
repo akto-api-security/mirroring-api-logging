@@ -118,6 +118,7 @@ func buildJSONPayload(input PayloadInput) map[string]string {
 		"process_id":      fmt.Sprint(input.Context.ProcessID),
 		"socket_id":       fmt.Sprint(input.Context.SocketFD),
 		"daemonset_id":    fmt.Sprint(input.Context.DaemonsetIdentifier),
+		"process_name": PodInformerInstance.GetProcessNameByProcessId(int32(input.Context.ProcessID)),
 		"enable_graph":    fmt.Sprint(utils.EnableGraph),
 	}
 }
@@ -684,7 +685,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		value := buildJSONPayload(input)
 
 		// Debug logging
-		log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v",
+		log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v, processName=%v",
 			ctx.Direction,
 			headers.Request.StringMap["host"],
 			value["path"],
@@ -693,6 +694,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			value["socket_id"],
 			ctx.ProcessID,
 			ctx.HostName,
+			PodInformerInstance.GetProcessNameByProcessId(int32(ctx.ProcessID)),
 		)
 		checkDebugUrlAndPrint(url, req.Host, log)
 
