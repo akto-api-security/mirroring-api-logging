@@ -425,6 +425,9 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->writeEventsCount = conn_info->writeEventsCount;
     socket_data_event->readEventsCount = conn_info->readEventsCount;
 
+    if(PRINT_BPF_LOGS){
+          bpf_trace_printk("rc: %d wc: %d data: %s", socket_data_event->readEventsCount, socket_data_event->writeEventsCount, socket_data_event->msg);
+    }
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
     socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
@@ -479,7 +482,6 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
 
 
     if (!should_trace_comm()) {
-        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: tgid %d NOT in kubernetes_pids", tgid); }
         return 0;
     }
 
