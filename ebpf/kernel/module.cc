@@ -385,7 +385,10 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->ssl = conn_info->ssl;
 
     if (PRINT_BPF_LOGS){
-      bpf_trace_printk("data_loop_start: id=%llu fd=%d total_bytes=%d", id, conn_info->fd, bytes_exchanged);
+      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
+      u32 ip = conn_info->ip;
+      bpf_trace_printk("data: ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
+      bpf_trace_printk("data: ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->port));
     }
 
     int bytes_sent = 0;
