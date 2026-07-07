@@ -118,8 +118,21 @@ func run() {
 	defer bpfModule.Close()
 
 	// Populate kubernetes_pids map from TRACE_PIDS env variable (comma-separated list of PIDs)
+	// Populate allowed_comms map from TRACE_COMMS env variable (comma-separated list of comm names)
+	// If both are empty, trace_all_flag is set so all processes are traced.
 	tracedPids := setupTracePids(bpfModule)
-	slog.Info("here are the traced", "pids", tracedPids)
+	tracedComms := setupTraceComms(bpfModule)
+	if len(tracedPids) == 0 && len(tracedComms) == 0 {
+		slog.Warn("both TRACE_PIDS and TRACE_COMMS are empty, tracing all processes")
+		traceAllTable := bcc.NewTable(bpfModule.TableId("trace_all_flag"), bpfModule)
+		var key [4]byte
+		var val [4]byte
+		binary.LittleEndian.PutUint32(val[:], 1)
+		if err := traceAllTable.Set(key[:], val[:]); err != nil {
+			slog.Error("failed to set trace_all_flag", "error", err)
+		}
+	}
+	slog.Info("here are the traced", "pids", tracedPids, "comms", tracedComms)
 	// TODO: pids should be of K8 services only ??
 	fillExistingConnections(bpfModule, tracedPids)
 
@@ -303,16 +316,35 @@ func setupTracePids(bpfModule *bcc.Module) []uint32 {
 			}
 		}
 	} else {
-		slog.Warn("TRACE_PIDS env variable not set, tracing all processes")
-		traceAllTable := bcc.NewTable(bpfModule.TableId("trace_all_flag"), bpfModule)
-		var key [4]byte
-		var val [4]byte
-		binary.LittleEndian.PutUint32(val[:], 1)
-		if err := traceAllTable.Set(key[:], val[:]); err != nil {
-			slog.Error("failed to set trace_all_flag", "error", err)
-		}
+		slog.Warn("TRACE_PIDS env variable not set")
 	}
 	return tracedPids
+}
+
+// Use this when specific comm name tracing is required.
+func setupTraceComms(bpfModule *bcc.Module) []string {
+	allowedCommsTable := bcc.NewTable(bpfModule.TableId("allowed_comms"), bpfModule)
+	var tracedComms []string
+	if traceComms := os.Getenv("TRACE_COMMS"); traceComms != "" {
+		for _, comm := range strings.Split(traceComms, ",") {
+			comm = strings.TrimSpace(comm)
+			if comm == "" {
+				continue
+			}
+			// BPF comm keys are fixed 16 bytes, null-padded
+			var commKey [16]byte
+			copy(commKey[:], comm)
+			if err := allowedCommsTable.Set(commKey[:], []byte{1}); err != nil {
+				slog.Error("failed to add comm to allowed_comms map", "comm", comm, "error", err)
+			} else {
+				slog.Info("added comm to allowed_comms map", "comm", comm)
+				tracedComms = append(tracedComms, comm)
+			}
+		}
+	} else {
+		slog.Warn("TRACE_COMMS env variable not set")
+	}
+	return tracedComms
 }
 
 func captureMemoryProfile() {
