@@ -64,13 +64,13 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
 			if !sequenceCheckSkip && k != 1 {
-				utils.LogProcessing("Bad start sequence", "key", k, "value", string(bufMap[k]))
+				slog.Warn("Bad start sequence", "key", k, "value", string(bufMap[k]))
 				break
 			}
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
-				utils.LogProcessing("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
+				slog.Warn("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
 				break
 			}
 			kPrev = k
