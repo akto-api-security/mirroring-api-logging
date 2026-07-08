@@ -946,14 +946,17 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
         return 0;
     }
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_read: pid: %d", id);
-  }
-
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
     if (read_args != NULL && read_args->sock_event) {
-        process_syscall_data(ctx, read_args, id, false, false);
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_read pid=%d fd=%d sock_event=1", id >> 32, read_args->fd);
+      }
+      process_syscall_data(ctx, read_args, id, false, false);
+    } else if (read_args != NULL) {
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_read pid=%d fd=%d sock_event=0 skipping", id >> 32, read_args->fd);
+      }
     }
 
     active_read_args_map.delete(&id);
@@ -1059,7 +1062,7 @@ int syscall__probe_entry_write(struct pt_regs* ctx, int fd, char* buf, size_t co
     struct data_args_t write_args = {};
     write_args.buf = buf;
     write_args.fd = fd;
-	write_args.source_fn = kSyscallWrite;
+	  write_args.source_fn = kSyscallWrite;
 
     struct data_args_t* existing_write_args = active_write_args_map.lookup(&id);
     if (existing_write_args != NULL && existing_write_args->sock_event) {
@@ -1090,13 +1093,15 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
     if (write_args != NULL && write_args->sock_event) {
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_write data process: pid: %d", id >> 32);
-  }
-
-    process_syscall_data(ctx, write_args, id, true, false);
-  }
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_write data process: pid=%d fd=%d sock_event=1", id >> 32, write_args->fd);
+      }
+      process_syscall_data(ctx, write_args, id, true, false);
+    } else if (write_args != NULL) {
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_write pid=%d fd=%d sock_event=0 skipping", id >> 32, write_args->fd);
+      }
+    }
 
     active_write_args_map.delete(&id);
     return 0;
@@ -1153,10 +1158,6 @@ int probe_entry_setsockopt(struct pt_regs* ctx, int socket, int level, int optio
     return 0;
   }
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_setsockopt: pid=%d fd=%d", id >> 32, socket);
-  }
-
   struct data_args_t* write_args = active_write_args_map.lookup(&id);
   if (write_args != NULL) {
     write_args->sock_event = true;
@@ -1164,6 +1165,12 @@ int probe_entry_setsockopt(struct pt_regs* ctx, int socket, int level, int optio
   struct data_args_t* read_args = active_read_args_map.lookup(&id);
   if (read_args != NULL) {
     read_args->sock_event = true;
+  }
+
+  if(PRINT_BPF_LOGS){
+    int wfd = write_args != NULL ? write_args->fd : -1;
+    int rfd = read_args != NULL ? read_args->fd : -1;
+    bpf_trace_printk("probe_entry_setsockopt: pid=%d wfd=%d rfd=%d", id >> 32, wfd, rfd);
   }
   return 0;
 }
