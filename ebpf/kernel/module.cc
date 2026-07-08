@@ -1113,12 +1113,13 @@ int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
     return 0;
   }
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_security_socket_sendmsg: pid: %d", id >> 32);
-  }
+
   struct data_args_t* write_args = active_write_args_map.lookup(&id);
   if (write_args != NULL) {
     write_args->sock_event = true;
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("probe_entry_security_socket_sendmsg: pid: %d, fd: %d", id >> 32, write_args->fd);
+    }
   }
   return 0;
 }
@@ -1132,13 +1133,14 @@ int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
     return 0;
   }
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_security_socket_recvmsg: pid: %d", id >> 32);
-  }
+  
   
   struct data_args_t* read_args = active_read_args_map.lookup(&id);
   if (read_args != NULL) {
     read_args->sock_event = true;
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("probe_entry_security_socket_recvmsg: pid: %d, fd: %d", id >> 32, read_args->fd);
+    }
   }
   return 0;
 }
@@ -1152,7 +1154,7 @@ int probe_entry_setsockopt(struct pt_regs* ctx, int socket, int level, int optio
   }
 
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_setsockopt: pid: %d", id >> 32);
+    bpf_trace_printk("probe_entry_setsockopt: pid=%d fd=%d", id >> 32, socket);
   }
 
   struct data_args_t* write_args = active_write_args_map.lookup(&id);
