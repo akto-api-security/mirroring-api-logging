@@ -18,6 +18,9 @@ type SocketDataEventAttr struct {
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
 	Ssl              bool
+	Padding          [3]byte // alignment padding before role
+	Role             uint32  // endpoint_role_t: 0=unknown, 1=client, 2=server
+	Direction        uint32  // traffic_direction_t: 0=egress, 1=ingress
 }
 
 /*
@@ -29,6 +32,9 @@ u32 ip;
 int bytes_sent;
 u32 readEventsCount;
 u32 writeEventsCount;
+bool ssl;
+enum endpoint_role_t role;
+enum traffic_direction_t direction;
 char msg[MAX_MSG_SIZE];
 */
 
@@ -65,15 +71,16 @@ type SocketCloseEvent struct {
 //	u32 readEventsCount;
 //	u32 writeEventsCount;
 type ConnInfoT struct {
-	Id              uint64
-	Fd              uint32
-	Padding1        [4]byte // alignment padding for conn_start_ns
-	ConnStartNs     uint64
-	Port            uint16
-	Padding2        [2]byte // alignment padding for ip
-	Ip              uint32
-	Ssl             bool
-	Padding3        [3]byte // alignment padding for readEventsCount
+	Id               uint64
+	Fd               uint32
+	Padding1         [4]byte // alignment padding for conn_start_ns
+	ConnStartNs      uint64
+	Port             uint16
+	Padding2         [2]byte // alignment padding for ip
+	Ip               uint32
+	Ssl              bool
+	Padding3         [3]byte // alignment padding for readEventsCount
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
+	Role             uint32  // endpoint_role_t: 0=unknown, 1=client, 2=server
 }

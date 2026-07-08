@@ -40,6 +40,23 @@ enum source_function_t {
   kGoTLSRead
 };
 
+enum endpoint_role_t {
+  kRoleUnknown = 0,
+  kRoleClient  = 1,
+  kRoleServer  = 2,
+};
+
+enum traffic_direction_t {
+  kEgress  = 0,
+  kIngress = 1,
+};
+
+enum message_type_t {
+  kUnknown  = 0,
+  kRequest  = 1,
+  kResponse = 2,
+};
+
 struct conn_info_t {
     u64 id;
     u32 fd;
@@ -49,6 +66,7 @@ struct conn_info_t {
     bool ssl;
     u32 readEventsCount;
     u32 writeEventsCount;
+    enum endpoint_role_t role;
 };
 
 union sockaddr_t {
@@ -108,6 +126,8 @@ struct socket_data_event_t {
     u32 readEventsCount;
     u32 writeEventsCount;
     bool ssl;
+    enum endpoint_role_t role;
+    enum traffic_direction_t direction;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -140,6 +160,20 @@ This should reduce the noise a lot.
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
+}
+
+static __inline enum message_type_t infer_http_message(const char* buf, size_t count) {
+    if (count < 16) return kUnknown;
+    char b[8];
+    bpf_probe_read(&b, sizeof(b), buf);
+    if (b[0]=='H' && b[1]=='T' && b[2]=='T' && b[3]=='P') return kResponse;
+    if (b[0]=='G' && b[1]=='E' && b[2]=='T')               return kRequest;
+    if (b[0]=='P' && b[1]=='O' && b[2]=='S' && b[3]=='T') return kRequest;
+    if (b[0]=='P' && b[1]=='U' && b[2]=='T')               return kRequest;
+    if (b[0]=='H' && b[1]=='E' && b[2]=='A' && b[3]=='D') return kRequest;
+    if (b[0]=='D' && b[1]=='E' && b[2]=='L' && b[3]=='E') return kRequest;
+    if (b[0]=='P' && b[1]=='A' && b[2]=='T' && b[3]=='C') return kRequest;
+    return kUnknown;
 }
 
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
@@ -229,6 +263,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     }
 
     conn_info.ssl = false;
+    conn_info.role = isConnect ? kRoleClient : kRoleServer;
 
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
@@ -372,7 +407,20 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->port = conn_info->port;
     socket_data_event->ip = conn_info->ip; 
     socket_data_event->ssl = conn_info->ssl;
-    
+
+    enum traffic_direction_t direction = is_send ? kEgress : kIngress;
+
+    if (conn_info->role == kRoleUnknown && args->buf != NULL) {
+        enum message_type_t msg_type = infer_http_message(args->buf, bytes_exchanged);
+        if (msg_type != kUnknown) {
+            conn_info->role = ((direction == kEgress) ^ (msg_type == kResponse))
+                                  ? kRoleClient : kRoleServer;
+        }
+    }
+
+    socket_data_event->role      = conn_info->role;
+    socket_data_event->direction = direction;
+
     int bytes_sent = 0;
     size_t size_to_save = 0;
     int i =0;
