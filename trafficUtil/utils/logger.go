@@ -95,7 +95,7 @@ func SetupFileLogger(filePath string) {
 
 func LogToSpecificFile(filePath string, message string, args ...any) {
 	if !FileLoggingEnabled {
-		slog.Debug("File logging is disabled, skipping log to file", "filePath", filePath)
+		// slog.Debug("File logging is disabled, skipping log to file", "filePath", filePath)
 		return
 	}
 

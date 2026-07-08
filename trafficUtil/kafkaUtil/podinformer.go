@@ -146,7 +146,7 @@ func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
 	if info, ok := w.pidHostNameMap[pid]; ok {
 		return info.ProcessName
 	}
-	// slog.Debug("Process name not found for", "processId", pid)
+	slog.Debug("Process name not found for", "processId", pid)
 	return ""
 }
 
@@ -335,7 +335,7 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 		slog.Error("Pod handler received invalid", "pod", obj)
 		return
 	}
-	slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
+	// slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Store(pod.Name, pod.Labels)
 	// Build the PID to Hostname map again to ensure it is up-to-date
 	// TODO: Optimize this ? What's the rate of pod add events?
@@ -354,7 +354,7 @@ func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
 		slog.Error("Pod handler received invalid", "pod", newObj)
 		return
 	}
-	slog.Debug("Pod update:", "namespace", newPod.Namespace, "podName", newPod.Name)
+	// slog.Debug("Pod update:", "namespace", newPod.Namespace, "podName", newPod.Name)
 	w.podNameLabelsMap.Delete(oldPod.Name)
 	w.podNameLabelsMap.Store(newPod.Name, newPod.Labels)
 	w.BuildPidHostNameMap()
@@ -366,7 +366,7 @@ func (w *PodInformer) handlePodDelete(obj interface{}) {
 		slog.Error("Pod handler received invalid", "pod", obj)
 		return
 	}
-	slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
+	// slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Delete(pod.Name)
 	// Build the PID to Hostname map again to ensure it is up-to-date
 	// TODO: Optimize this ? What's the rate of pod add events?
