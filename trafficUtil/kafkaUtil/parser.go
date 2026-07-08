@@ -123,7 +123,7 @@ func buildJSONPayload(input PayloadInput) map[string]string {
 
 // resolvePodLabels resolves pod labels for inbound traffic and adds them to the value map.
 func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host string) {
-		
+
 	if PodInformerInstance == nil {
 		checkDebugUrlAndPrint(url, host, "Pod labels not resolved, PodInformerInstance is nil")
 		return
@@ -148,7 +148,7 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 
 	podLabels, err := PodInformerInstance.ResolvePodLabels(ctx.HostName, url, host)
 	if err != nil {
-		slog.Error("Failed to resolve pod labels", "hostName", ctx.HostName, "error", err)
+		slog.Debug("Failed to resolve pod labels", "hostName", ctx.HostName, "error", err)
 		checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+ctx.HostName)
 		return
 	}
@@ -514,10 +514,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	for i := 0; i < len(requests); i++ {
 		req := &requests[i]
 		resp := &responses[i]
-		
+
 		url := req.URL.String()
 		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
-		
+
 		// Convert headers in a single pass (both protobuf and string map formats)
 		headers := convertHeaders(req, resp, shouldPrint)
 
