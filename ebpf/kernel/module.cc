@@ -264,11 +264,12 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
       u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
       u32 dip = conn_info.ip;
       u32 sip = srcIp;
-      bpf_trace_printk("new_conn: type=%s ret_fd=%d assigned_fd=%d", isConnect ? "connect" : "accept", ret_fd, fd_assigned);
-      bpf_trace_printk("new_conn: src_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: src_ip=%d.%d src_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
-      bpf_trace_printk("new_conn: dst_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: dst_ip=%d.%d dst_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.port));
+      bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
+      bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
+      bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+      bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
+      bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
+      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.port));
     }
 
     u32 tgid = id >> 32;
