@@ -178,7 +178,7 @@ func (w *PodInformer) BuildPidHostNameMap() {
 }
 
 func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (string, error) {
-	checkDebugUrlAndPrint(url, reqHost, "Resolving Pod Name to labels for "+podName)
+	// checkDebugUrlAndPrint(url, reqHost, "Resolving Pod Name to labels for "+podName)
 
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
 	// Hostname captured from PID has the format clusterName-nodeName-podName

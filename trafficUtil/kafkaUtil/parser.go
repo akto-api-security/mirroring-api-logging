@@ -685,7 +685,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		value := buildJSONPayload(input)
 
 		// Debug logging
-		log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v, processName=%v",
+		log := fmt.Sprintf("before resolving pod labels direction log: direction=%v, host=%v, path=%v, sourceIp=%v, destIp=%v, socketId=%v, processId=%v, hostName=%v, processName=%v, debugToken=%v",
 			ctx.Direction,
 			headers.Request.StringMap["host"],
 			value["path"],
@@ -695,6 +695,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			ctx.ProcessID,
 			ctx.HostName,
 			PodInformerInstance.GetProcessNameByProcessId(int32(ctx.ProcessID)),
+			headers.Request.StringMap["x-debug-token"],
 		)
 		checkDebugUrlAndPrint(url, req.Host, log)
 
@@ -703,11 +704,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 		mergeInjectTags(value)
 
-		checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
+		// checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
 		out, err := json.Marshal(value)
 		if err != nil {
 			slog.Error("Failed to json marshal the payload", "error", err)
-			checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
+			// checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
 			return
 		}
 

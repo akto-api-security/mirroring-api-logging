@@ -445,7 +445,7 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 
 func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
 	topic := "akto.api.logs"
-	checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
+	// checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 
 	msg := kafka.Message{
 		Topic:   topic,
