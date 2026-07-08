@@ -58,6 +58,11 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
+	if event.Attr.SrcIp != 0 {
+		conn.srcIp = event.Attr.SrcIp
+		conn.srcPort = event.Attr.SrcPort
+	}
+
 	if !conn.ssl && event.Attr.Ssl {
 		for k := range conn.sentBuf {
 			conn.sentBuf[k] = []byte{}

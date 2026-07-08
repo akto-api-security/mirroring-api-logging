@@ -46,6 +46,8 @@ struct conn_info_t {
     u64 conn_start_ns;
     unsigned short port;
     u32 ip;
+    u32 src_ip;
+    unsigned short src_port;
     bool ssl;
     u32 readEventsCount;
     u32 writeEventsCount;
@@ -104,6 +106,8 @@ struct socket_data_event_t {
     u64 conn_start_ns;
     unsigned short port;
     u32 ip;
+    u32 src_ip;
+    unsigned short src_port;
     int bytes_sent;
     u32 readEventsCount;
     u32 writeEventsCount;
@@ -256,6 +260,8 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     }
 
     conn_info.ssl = false;
+    conn_info.src_ip = srcIp;
+    conn_info.src_port = lport;
 
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
@@ -394,13 +400,18 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
     socket_data_event->port = conn_info->port;
     socket_data_event->ip = conn_info->ip;
+    socket_data_event->src_ip = conn_info->src_ip;
+    socket_data_event->src_port = conn_info->src_port;
     socket_data_event->ssl = conn_info->ssl;
 
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
       u32 ip = conn_info->ip;
-      bpf_trace_printk("data: ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
-      bpf_trace_printk("data: ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->port));
+      bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
+      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->port));
+      u32 sip = conn_info->src_ip;
+      bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->src_port);
     }
 
     int bytes_sent = 0;

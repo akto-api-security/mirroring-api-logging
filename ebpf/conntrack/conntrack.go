@@ -337,6 +337,8 @@ func PopulateExistingConnections(
 				ConnStartNs:      0, // Unknown for pre-existing connections
 				Port:             conn.RemotePort,
 				Ip:               conn.RemoteIP,
+				SrcIp:            conn.LocalIP,
+				SrcPort:          conn.LocalPort,
 				Ssl:              false,
 				ReadEventsCount:  0,
 				WriteEventsCount: 0,
