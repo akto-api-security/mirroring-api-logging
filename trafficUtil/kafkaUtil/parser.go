@@ -695,7 +695,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			ctx.ProcessID,
 			ctx.HostName,
 			PodInformerInstance.GetProcessNameByProcessId(int32(ctx.ProcessID)),
-			headers.Request.StringMap["x-debug-token"],
+			headers.Request.StringMap["X-Debug-Token"],
 		)
 		checkDebugUrlAndPrint(url, req.Host, log)
 

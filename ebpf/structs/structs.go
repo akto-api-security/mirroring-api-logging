@@ -5,17 +5,17 @@ type ConnID struct {
 	Fd            uint32
 	Padding1      [4]byte
 	Conn_start_ns uint64
-	// this is destination port / remote port
-	Port    uint16
+	// remote port
+	Rport   uint16
 	Padding [2]byte
-	// this is destination IP / remote IP
-	Ip uint32
+	// remote IP
+	Raddr uint32
 }
 
 type SocketDataEventAttr struct {
 	ConnId           ConnID
-	SrcIp            uint32
-	SrcPort          uint16
+	Laddr            uint32
+	Lport            uint16
 	Padding2         [2]byte
 	Bytes_sent       int32
 	ReadEventsCount  uint32
@@ -44,9 +44,9 @@ type SocketDataEvent struct {
 
 type SocketOpenEvent struct {
 	ConnId ConnID
-	// source IP and port
-	SrcIp          uint32
-	SrcPort        uint16
+	// local IP and port
+	Laddr          uint32
+	Lport          uint16
 	Padding        [2]byte
 	Socket_open_ns uint64
 }
@@ -72,11 +72,11 @@ type ConnInfoT struct {
 	Fd               uint32
 	Padding1         [4]byte // alignment padding for conn_start_ns
 	ConnStartNs      uint64
-	Port             uint16
-	Padding2         [2]byte // alignment padding for ip
-	Ip               uint32
-	SrcIp            uint32
-	SrcPort          uint16
+	Rport            uint16
+	Padding2         [2]byte // alignment padding for raddr
+	Raddr            uint32
+	Laddr            uint32
+	Lport            uint16
 	Ssl              bool
 	Padding3         [1]byte // alignment padding for readEventsCount
 	ReadEventsCount  uint32

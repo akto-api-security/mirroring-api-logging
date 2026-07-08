@@ -25,9 +25,9 @@ type Tracker struct {
 	mutex   sync.RWMutex
 	ssl     bool
 
-	// source IP-Port / local IP-Port
-	srcIp   uint32
-	srcPort uint16
+	// local IP-Port
+	laddr uint32
+	lport uint16
 
 	foundHTTP bool
 }
@@ -58,9 +58,9 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if event.Attr.SrcIp != 0 {
-		conn.srcIp = event.Attr.SrcIp
-		conn.srcPort = event.Attr.SrcPort
+	if event.Attr.Laddr != 0 {
+		conn.laddr = event.Attr.Laddr
+		conn.lport = event.Attr.Lport
 	}
 
 	if !conn.ssl && event.Attr.Ssl {
@@ -102,8 +102,8 @@ func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	}
 	conn.openTimestamp = now
 	conn.lastAccessTimestamp = now
-	conn.srcIp = event.SrcIp
-	conn.srcPort = event.SrcPort
+	conn.laddr = event.Laddr
+	conn.lport = event.Lport
 }
 
 func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {

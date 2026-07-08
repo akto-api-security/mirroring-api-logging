@@ -44,10 +44,10 @@ struct conn_info_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
-    u32 src_ip;
-    unsigned short src_port;
+    unsigned short rport;
+    u32 raddr;
+    u32 laddr;
+    unsigned short lport;
     bool ssl;
     u32 readEventsCount;
     u32 writeEventsCount;
@@ -84,10 +84,10 @@ struct socket_open_event_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
-    u32 src_ip;
-    unsigned short src_port;
+    unsigned short rport;
+    u32 raddr;
+    u32 laddr;
+    unsigned short lport;
     u64 socket_open_ns;
 };
 
@@ -95,8 +95,8 @@ struct socket_close_event_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
+    unsigned short rport;
+    u32 raddr;
     u64 socket_close_ns;
 };
 
@@ -104,10 +104,10 @@ struct socket_data_event_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
-    u32 src_ip;
-    unsigned short src_port;
+    unsigned short rport;
+    u32 raddr;
+    u32 laddr;
+    unsigned short lport;
     int bytes_sent;
     u32 readEventsCount;
     u32 writeEventsCount;
@@ -216,16 +216,16 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         bpf_probe_read_kernel(&family, sizeof(family), &sk_common->skc_family);
         bpf_probe_read_kernel(&rport, sizeof(rport), &sk_common->skc_dport);
         bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
-        conn_info.port = rport;
+        conn_info.rport = rport;
         if (family == AF_INET) {
-          bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
+          bpf_probe_read_kernel(&(conn_info.raddr), sizeof(conn_info.raddr), &sk_common->skc_daddr);
           bpf_probe_read_kernel(&(srcIp), sizeof(srcIp), &sk_common->skc_rcv_saddr);
         } else if (family == AF_INET6) {
           struct in6_addr in_addr;
           struct in6_addr in_addr_2;
           bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
           bpf_probe_read_kernel(&(in_addr_2), sizeof(in_addr_2), &sk_common->skc_v6_rcv_saddr);
-          conn_info.ip = (in_addr.s6_addr32)[3];
+          conn_info.raddr = (in_addr.s6_addr32)[3];
           srcIp = (in_addr_2.s6_addr32)[3];
         } else {
           if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: unknown family %d, returning", family); }
@@ -248,34 +248,34 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     if(!socketConn){
     if ( addr->sa.sa_family == AF_INET ){
         struct sockaddr_in* sock_in = (struct sockaddr_in *)addr;
-        conn_info.port = sock_in->sin_port;
+        conn_info.rport = sock_in->sin_port;
         struct in_addr *in_addr_ptr = &(sock_in->sin_addr);
-        conn_info.ip = in_addr_ptr->s_addr;
+        conn_info.raddr = in_addr_ptr->s_addr;
     } else {
         struct sockaddr_in6* sock_in = (struct sockaddr_in6 *)addr;
-        conn_info.port = sock_in->sin6_port;
+        conn_info.rport = sock_in->sin6_port;
         struct in6_addr *in_addr_ptr = &(sock_in->sin6_addr);
-        conn_info.ip = (in_addr_ptr->s6_addr32)[3];
+        conn_info.raddr = (in_addr_ptr->s6_addr32)[3];
     }
     }
 
     conn_info.ssl = false;
-    conn_info.src_ip = srcIp;
-    conn_info.src_port = lport;
+    conn_info.laddr = srcIp;
+    conn_info.lport = lport;
 
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
     if (PRINT_BPF_LOGS) {
       u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
-      u32 dip = conn_info.ip;
+      u32 dip = conn_info.raddr;
       u32 sip = srcIp;
       bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
       bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
       bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
       bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
       bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.port));
+      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.rport));
     }
 
     u32 tgid = id >> 32;
@@ -321,10 +321,10 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     socket_open_event.id = conn_info.id;
     socket_open_event.fd = conn_info.fd;
     socket_open_event.conn_start_ns = conn_info.conn_start_ns;
-    socket_open_event.port = conn_info.port;
-    socket_open_event.ip = conn_info.ip;
-    socket_open_event.src_ip = srcIp;
-    socket_open_event.src_port = lport;
+    socket_open_event.rport = conn_info.rport;
+    socket_open_event.raddr = conn_info.raddr;
+    socket_open_event.laddr = srcIp;
+    socket_open_event.lport = lport;
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
     socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
@@ -352,8 +352,8 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     socket_close_event.id = conn_info->id;
     socket_close_event.fd = conn_info->fd;
     socket_close_event.conn_start_ns = conn_info->conn_start_ns;
-    socket_close_event.port = conn_info->port;
-    socket_close_event.ip = conn_info->ip;
+    socket_close_event.rport = conn_info->rport;
+    socket_close_event.raddr = conn_info->raddr;
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
@@ -398,20 +398,20 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->id = conn_info->id;
     socket_data_event->fd = conn_info->fd;
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
-    socket_data_event->port = conn_info->port;
-    socket_data_event->ip = conn_info->ip;
-    socket_data_event->src_ip = conn_info->src_ip;
-    socket_data_event->src_port = conn_info->src_port;
+    socket_data_event->rport = conn_info->rport;
+    socket_data_event->raddr = conn_info->raddr;
+    socket_data_event->laddr = conn_info->laddr;
+    socket_data_event->lport = conn_info->lport;
     socket_data_event->ssl = conn_info->ssl;
 
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
-      u32 ip = conn_info->ip;
+      u32 ip = conn_info->raddr;
       bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
-      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->port));
-      u32 sip = conn_info->src_ip;
+      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->rport));
+      u32 sip = conn_info->laddr;
       bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
-      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->src_port);
+      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
     }
 
     int bytes_sent = 0;

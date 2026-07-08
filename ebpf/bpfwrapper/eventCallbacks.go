@@ -43,8 +43,8 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port)
+			"raddr", connId.Raddr,
+			"rport", connId.Rport)
 		connectionFactory.CreateIfNotExists(connId)
 		connectionFactory.SendEvent(connId, &event)
 	}
@@ -72,8 +72,8 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port)
+			"raddr", connId.Raddr,
+			"rport", connId.Rport)
 		connectionFactory.SendEvent(connId, &event)
 	}
 }
@@ -148,7 +148,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		connId := event.Attr.ConnId
 
-		_, ok := ignorePortsMap[connId.Port]
+		_, ok := ignorePortsMap[connId.Rport]
 		if ignorePorts && ok {
 			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
@@ -173,8 +173,8 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port,
+			"raddr", connId.Raddr,
+			"rport", connId.Rport,
 			"data", dataStr,
 			"rc", event.Attr.ReadEventsCount,
 			"wc", event.Attr.WriteEventsCount,
