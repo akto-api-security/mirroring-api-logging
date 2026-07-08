@@ -149,7 +149,7 @@ func resolvePodLabels(value map[string]string, ctx TrafficContext, url, host str
 
 	podLabels, err := PodInformerInstance.ResolvePodLabels(ctx.HostName, url, host)
 	if err != nil {
-		slog.Error("Failed to resolve pod labels", "hostName", ctx.HostName, "error", err)
+		slog.Debug("Failed to resolve pod labels", "hostName", ctx.HostName, "error", err)
 		checkDebugUrlAndPrint(url, host, "Error resolving pod labels "+ctx.HostName)
 		return
 	}
