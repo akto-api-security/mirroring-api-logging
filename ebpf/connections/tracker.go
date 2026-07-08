@@ -29,6 +29,8 @@ type Tracker struct {
 	laddr uint32
 	lport uint16
 
+	role uint32 // 0=unknown, 1=client, 2=server
+
 	foundHTTP bool
 }
 
@@ -61,6 +63,9 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	if event.Attr.Laddr != 0 {
 		conn.laddr = event.Attr.Laddr
 		conn.lport = event.Attr.Lport
+	}
+	if event.Attr.Role != 0 && conn.role == 0 {
+		conn.role = event.Attr.Role
 	}
 
 	if !conn.ssl && event.Attr.Ssl {

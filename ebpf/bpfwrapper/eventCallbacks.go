@@ -140,7 +140,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		bytesSent := event.Attr.Bytes_sent
 
 		// The 3 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 53
+		eventAttributesLogicalSize := 64
 
 		if len(data) > eventAttributesLogicalSize {
 			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
