@@ -362,7 +362,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
     if (conn_info == NULL) {
       if (PRINT_BPF_LOGS){
-        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, fd);
+        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, args->fd);
       }
       return;
     }
