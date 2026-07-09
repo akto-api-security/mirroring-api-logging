@@ -420,7 +420,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
-    socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
+    socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t));
 
     bytes_sent += current_size;
   }
