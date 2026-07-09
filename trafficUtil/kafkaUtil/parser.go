@@ -608,6 +608,220 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	}
 }
 
+// WSFragmentAssembler reassembles fragmented WebSocket messages per RFC 6455 §5.4.
+type WSFragmentAssembler struct {
+	active bool
+	opcode uint8
+	buf    bytes.Buffer
+}
+
+func ParseWebSocketFrames(payload []byte, direction string, asm *WSFragmentAssembler) []WebSocketMessage {
+	messages := []WebSocketMessage{}
+
+	if len(payload) == 0 {
+		return messages
+	}
+
+	emitMessage := func(opcode uint8, fin bool, masked bool, framePayload []byte) {
+
+		messages = append(messages, WebSocketMessage{
+			Payload:   string(framePayload),
+			Direction: direction,
+			Timestamp: time.Now(),
+			FIN:       fin,
+			Opcode:    opcode,
+			Masked:    masked,
+			EventType: "",
+		})
+	}
+
+	resetAssembler := func() {
+		if asm != nil {
+			asm.active = false
+			asm.opcode = 0
+			asm.buf.Reset()
+		}
+	}
+
+	i := 0
+	for i < len(payload) {
+		if i+2 > len(payload) {
+			break
+		}
+
+		byte0 := payload[i]
+		fin := (byte0 & 0x80) != 0
+		opcode := byte0 & 0x0F
+		i++
+
+		byte1 := payload[i]
+		masked := (byte1 & 0x80) != 0
+		payloadLen := int(byte1 & 0x7F)
+		i++
+
+		if payloadLen == 126 {
+			if i+2 > len(payload) {
+				break
+			}
+			payloadLen = int(payload[i])<<8 | int(payload[i+1])
+			i += 2
+		} else if payloadLen == 127 {
+			if i+8 > len(payload) {
+				break
+			}
+			payloadLen = int(payload[i])<<56 | int(payload[i+1])<<48 |
+				int(payload[i+2])<<40 | int(payload[i+3])<<32 |
+				int(payload[i+4])<<24 | int(payload[i+5])<<16 |
+				int(payload[i+6])<<8 | int(payload[i+7])
+			i += 8
+		}
+
+		var maskingKey [4]byte
+		if masked {
+			if i+4 > len(payload) {
+				break
+			}
+			copy(maskingKey[:], payload[i:i+4])
+			i += 4
+		}
+
+		if i+payloadLen > len(payload) {
+			break
+		}
+		framePayload := payload[i : i+payloadLen]
+		i += payloadLen
+
+		if masked {
+			for j := 0; j < len(framePayload); j++ {
+				framePayload[j] ^= maskingKey[j%4]
+			}
+		}
+
+		if asm == nil {
+			msg := WebSocketMessage{
+				Payload:   string(framePayload),
+				Direction: direction,
+				Timestamp: time.Now(),
+				FIN:       fin,
+				Opcode:    opcode,
+				Masked:    masked,
+			}
+			messages = append(messages, msg)
+			continue
+		}
+
+		slog.Debug("WebSocket frame decoded",
+			"direction", direction,
+			"opcode", opcode,
+			"fin", fin,
+			"masked", masked,
+			"payloadLen", len(framePayload),
+			"asmActive", asm.active,
+			"asmOpcode", asm.opcode,
+			"asmBufLen", asm.buf.Len())
+
+		switch {
+		case opcode >= 0x8:
+			if !fin {
+				resetAssembler()
+				continue
+			}
+			
+			emitMessage(opcode, fin, masked, framePayload)
+
+		case opcode == 0x1 || opcode == 0x2:
+			if asm.active {
+
+				resetAssembler()
+			}
+			if fin {
+				emitMessage(opcode, true, masked, framePayload)
+			} else {
+				
+				asm.active = true
+				asm.opcode = opcode
+				asm.buf.Reset()
+				asm.buf.Write(framePayload)
+			}
+
+		case opcode == 0x0:
+			if !asm.active {
+				
+				continue
+			}
+			asm.buf.Write(framePayload)
+
+			if fin {
+				emitMessage(asm.opcode, true, masked, asm.buf.Bytes())
+				resetAssembler()
+			}
+
+		default:
+			slog.Debug("WebSocket unsupported opcode",
+				"direction", direction, "opcode", opcode, "fin", fin)
+			resetAssembler()
+		}
+	}
+
+	if i < len(payload) {
+		slog.Debug("WebSocket parse stopped with trailing bytes",
+			"direction", direction, "consumed", i, "total", len(payload), "remaining", len(payload)-i)
+	}
+
+	slog.Debug("WebSocket parse complete",
+		"direction", direction, "inputLen", len(payload), "messagesEmitted", len(messages))
+
+	return messages
+}
+
+func detectWebSocketUpgrade(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		return false
+	}
+
+	upgrade := strings.ToLower(resp.Header.Get("Upgrade"))
+	connection := strings.ToLower(resp.Header.Get("Connection"))
+
+	isUpgrade := upgrade == "websocket"
+	isConnection := strings.Contains(connection, "upgrade")
+
+	return isUpgrade && isConnection
+}
+
+func ExtractIP(ipPort string) string {
+	if ipPort == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(ipPort, "[") {
+		if idx := strings.LastIndex(ipPort, "]"); idx > 0 {
+			return ipPort[1:idx]
+		}
+	}
+
+	if idx := strings.LastIndex(ipPort, ":"); idx > 0 {
+		return ipPort[:idx]
+	}
+	return ipPort
+}
+
+func ExtractPort(ipPort string) string {
+	if ipPort == "" {
+		return "0"
+	}
+
+	if strings.HasPrefix(ipPort, "[") {
+		if idx := strings.LastIndex(ipPort, "]"); idx > 0 && idx+1 < len(ipPort) && ipPort[idx+1] == ':' {
+			return ipPort[idx+2:]
+		}
+	}
+
+	if idx := strings.LastIndex(ipPort, ":"); idx > 0 {
+		return ipPort[idx+1:]
+	}
+	return "0"
+}
+
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
 	if KafkaDisabled {
 		return
@@ -665,6 +879,61 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		// Check all filter conditions
 		if !shouldProcessRequest(req, headers.Request.StringMap, ctx) {
 			continue
+		}
+
+		// Check for WebSocket upgrade
+		if detectWebSocketUpgrade(resp) {
+			// Extract ports from context IPs (format: "IP:Port")
+			// In eBPF flow: ctx.SourceIP is dest IP in "IP:Port" format, ctx.DestIP is source IP
+			sourcePort := ExtractPort(ctx.SourceIP)
+			destPort := ExtractPort(ctx.DestIP)
+
+			// Register the WebSocket connection
+			err := WSConnectionManager.RegisterConnection(
+				ExtractIP(ctx.SourceIP),
+				sourcePort,
+				ExtractIP(ctx.DestIP),
+				destPort,
+				req,
+			)
+			if err != nil {
+				slog.Warn("Failed to register WebSocket connection", "error", err)
+			} else {
+				slog.Info("WebSocket connection upgraded", "sourceIP", ctx.SourceIP, "destIP", ctx.DestIP)
+
+				// Send initial WebSocket handshake message to Kafka
+				sourceIP := ExtractIP(ctx.SourceIP)
+				sourcePort := ExtractPort(ctx.SourceIP)
+				destIP := ExtractIP(ctx.DestIP)
+
+				// Convert headers to JSON
+				reqHeadersJSON, _ := json.Marshal(headers.Request.StringMap)
+				respHeadersJSON, _ := json.Marshal(headers.Response.StringMap)
+
+				handshakePayload := map[string]string{
+					"ip":              sourceIP,
+					"destIp":          destIP,
+					"time":            fmt.Sprint(time.Now().Unix()),
+					"akto_account_id": fmt.Sprint(1000000),
+					"akto_vxlan_id":   fmt.Sprint(ctx.VxlanID),
+					"source":          ctx.TrafficSource,
+					"connection_type": "WEBSOCKET",
+					"path":            req.URL.String(),
+					"method":          req.Method,
+					"statusCode":      fmt.Sprint(resp.StatusCode),
+					"requestHeaders":  string(reqHeadersJSON),
+					"responseHeaders": string(respHeadersJSON),
+				}
+
+				out, err := json.Marshal(handshakePayload)
+				if err == nil {
+					bgCtx := context.Background()
+					connectionID := sourceIP + ":" + sourcePort
+					ProduceStr(bgCtx, string(out), connectionID, sourceIP, "WEBSOCKET_UPGRADE")
+				}
+
+				continue
+			}
 		}
 
 		// Get source IP from headers
