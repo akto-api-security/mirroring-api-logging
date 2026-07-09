@@ -4,8 +4,14 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-#define AF_INET  2
-#define AF_INET6 10
+#define AF_INET      2
+#define AF_INET6     10
+#define EINPROGRESS  115
+
+// Set from Go via spec.Variables. When false, compiler dead-code-eliminates.
+const volatile bool ENABLE_BPF_METRICS = false;
+const volatile bool ENABLE_BPF_DEBUG = false;
+const volatile u32  TRACE_MODE = 0; // 0=all, 1=pid, 2=comm (enum trace_mode_t)
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -17,9 +23,28 @@ enum endpoint_role_t {
     kRoleServer  = 2,
 };
 
-enum event_type_t {
+enum conn_event_type_t {
     kEventOpen  = 0,
     kEventClose = 1,
+};
+
+enum trace_mode_t {
+    kTraceModeAll  = 0,  // trace every process
+    kTraceModePid  = 1,  // trace only PIDs in traced_pids map
+    kTraceModeComm = 2,  // trace only comms in traced_comms map
+};
+
+enum metric_t {
+    METRIC_CONN_OPEN = 0,
+    METRIC_CONN_CLOSE,
+    METRIC_RINGBUF_DROP,
+    METRIC_ACCEPT_FEXIT_MISS,   // fexit/inet_csk_accept didn't fire before sys_exit_accept
+    METRIC_FILTERED,
+    METRIC_CONNECT_SKIP_NON_TCP,
+    METRIC_ACCEPT_FAILED,
+    METRIC_CONNECT_FAILED,
+    METRIC_CONNMAP_FULL,        // conn_info_map update failed (map full)
+    __METRIC_MAX,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,15 +65,8 @@ struct conn_info_t {
 
 // Sent to userspace via ring buffer
 struct conn_event_t {
-    u64 id;
-    u32 fd;
-    u64 timestamp_ns;
-    u32 raddr;
-    u32 laddr;
-    u16 rport;
-    u16 lport;
-    u32 role;
-    u32 event_type;  // event_type_t
+    struct conn_info_t conn;
+    u32 event_type;  // conn_event_type_t
 };
 
 // Temp: saved at sys_enter_accept, consumed at sys_exit_accept
@@ -117,10 +135,10 @@ struct {
     __type(value, struct laddr_info_t);
 } active_connect_sock SEC(".maps");
 
-// Events to userspace
+// Events to userspace — max_entries overridden from Go (default 4MB)
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 20);  // 1MB
+    __uint(max_entries, 1 << 22);  // 4MB default
 } socket_control_events SEC(".maps");
 
 // PID/comm filtering
@@ -139,56 +157,60 @@ struct {
     __type(value, u8);
 } traced_comms SEC(".maps");
 
+
+// Metrics — per-CPU counters, zero lock contention
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, __METRIC_MAX);
     __type(key, u32);
-    __type(value, u32);
-} trace_all_flag SEC(".maps");
+    __type(value, u64);
+} metrics SEC(".maps");
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+static __always_inline void metric_inc(u32 key) {
+    if (!ENABLE_BPF_METRICS) return;
+    u64 *val = bpf_map_lookup_elem(&metrics, &key);
+    if (val) (*val)++;
+}
 
 static __always_inline u64 gen_tgid_fd(u32 tgid, u32 fd) {
     return ((u64)tgid << 32) | fd;
 }
 
 static __always_inline bool should_trace() {
-    u32 zero = 0;
-    u32 *flag = bpf_map_lookup_elem(&trace_all_flag, &zero);
-    if (flag && *flag == 1)
+    if (TRACE_MODE == kTraceModeAll)
         return true;
 
-    u64 id = bpf_get_current_pid_tgid();
-    u32 tgid = id >> 32;
-    u8 *pid_enabled = bpf_map_lookup_elem(&traced_pids, &tgid);
-    if (pid_enabled)
-        return true;
+    if (TRACE_MODE == kTraceModePid) {
+        u64 id = bpf_get_current_pid_tgid();
+        u32 tgid = id >> 32;
+        if (bpf_map_lookup_elem(&traced_pids, &tgid))
+            return true;
+    }
 
-    char comm[16];
-    bpf_get_current_comm(&comm, sizeof(comm));
-    u8 *comm_enabled = bpf_map_lookup_elem(&traced_comms, &comm);
-    if (comm_enabled)
-        return true;
+    if (TRACE_MODE == kTraceModeComm) {
+        char comm[16];
+        bpf_get_current_comm(&comm, sizeof(comm));
+        if (bpf_map_lookup_elem(&traced_comms, &comm))
+            return true;
+    }
 
+    metric_inc(METRIC_FILTERED);
     return false;
 }
 
 static __always_inline void emit_conn_event(void *ctx, struct conn_info_t *ci, u32 event_type) {
     struct conn_event_t *e = bpf_ringbuf_reserve(&socket_control_events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        metric_inc(METRIC_RINGBUF_DROP);
         return;
+    }
 
-    e->id           = ci->id;
-    e->fd           = ci->fd;
-    e->timestamp_ns = ci->conn_start_ns;
-    e->raddr        = ci->raddr;
-    e->laddr        = ci->laddr;
-    e->rport        = ci->rport;
-    e->lport        = ci->lport;
-    e->role         = ci->role;
-    e->event_type   = event_type;
+    __builtin_memcpy(&e->conn, ci, sizeof(*ci));
+    e->event_type = event_type;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -209,7 +231,7 @@ static __always_inline int handle_sys_enter_accept(struct trace_event_raw_sys_en
 
     bpf_map_update_elem(&active_accept_args, &id, &args, BPF_ANY);
 
-    bpf_printk("sys_enter_accept: pid=%d listen_fd=%d", id >> 32, (int)ctx->args[0]);
+    if (ENABLE_BPF_DEBUG) bpf_printk("sys_enter_accept: pid=%d listen_fd=%d", id >> 32, (int)ctx->args[0]);
     return 0;
 }
 
@@ -251,7 +273,7 @@ int BPF_PROG(fexit_inet_csk_accept, struct sock *sk, int flags, int *err, bool k
 
     bpf_map_update_elem(&active_accept_sock, &id, &info, BPF_ANY);
 
-    bpf_printk("fexit_inet_csk_accept: pid=%d family=%d lport=%d", id >> 32, info.family, info.lport);
+    if (ENABLE_BPF_DEBUG) bpf_printk("fexit_inet_csk_accept: pid=%d family=%d lport=%d", id >> 32, info.family, info.lport);
     return 0;
 }
 
@@ -273,7 +295,8 @@ static __always_inline int handle_sys_exit_accept(struct trace_event_raw_sys_exi
     struct accept_sock_info_t *sock_info = bpf_map_lookup_elem(&active_accept_sock, &id);
 
     if (ret_fd < 0) {
-        bpf_printk("sys_exit_accept: pid=%d FAILED ret=%d", tgid, ret_fd);
+        metric_inc(METRIC_ACCEPT_FAILED);
+        if (ENABLE_BPF_DEBUG) bpf_printk("sys_exit_accept: pid=%d FAILED ret=%d", tgid, ret_fd);
         goto cleanup;
     }
 
@@ -288,6 +311,8 @@ static __always_inline int handle_sys_exit_accept(struct trace_event_raw_sys_exi
     if (sock_info) {
         conn.laddr = sock_info->laddr;
         conn.lport = sock_info->lport;
+    } else {
+        metric_inc(METRIC_ACCEPT_FEXIT_MISS);
     }
 
     // Read remote IP from userspace sockaddr (kernel filled it during accept)
@@ -311,13 +336,22 @@ static __always_inline int handle_sys_exit_accept(struct trace_event_raw_sys_exi
 
     // Store in conn_info_map
     u64 tgid_fd = gen_tgid_fd(tgid, (u32)ret_fd);
-    bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn, BPF_ANY);
+    if (bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn, BPF_ANY) != 0) {
+        metric_inc(METRIC_CONNMAP_FULL);
+        goto cleanup;
+    }
 
     // Emit event to userspace
+    metric_inc(METRIC_CONN_OPEN);
     emit_conn_event(ctx, &conn, kEventOpen);
 
-    bpf_printk("accept: pid=%d fd=%d role=server", tgid, ret_fd);
-    bpf_printk("accept: laddr=0x%x:%d raddr=0x%x", conn.laddr, conn.lport, conn.raddr);
+    if (ENABLE_BPF_DEBUG) {
+        bpf_printk("accept: pid=%d fd=%d role=server", tgid, ret_fd);
+        bpf_printk("accept: laddr=%d.%d", conn.laddr & 0xFF, (conn.laddr >> 8) & 0xFF);
+        bpf_printk("accept: laddr=%d.%d:%d", (conn.laddr >> 16) & 0xFF, (conn.laddr >> 24) & 0xFF, conn.lport);
+        bpf_printk("accept: raddr=%d.%d", conn.raddr & 0xFF, (conn.raddr >> 8) & 0xFF);
+        bpf_printk("accept: raddr=%d.%d:%d", (conn.raddr >> 16) & 0xFF, (conn.raddr >> 24) & 0xFF, __builtin_bswap16(conn.rport));
+    }
 
 cleanup:
     bpf_map_delete_elem(&active_accept_args, &id);
@@ -352,14 +386,14 @@ int tp_sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
 
     bpf_map_update_elem(&active_connect_args, &id, &args, BPF_ANY);
 
-    bpf_printk("sys_enter_connect: pid=%d fd=%d", id >> 32, args.fd);
+    if (ENABLE_BPF_DEBUG) bpf_printk("sys_enter_connect: pid=%d fd=%d", id >> 32, args.fd);
     return 0;
 }
 
 // fexit/tcp_v4_connect — capture local IP after route selection
 SEC("fexit/tcp_v4_connect")
 int BPF_PROG(fexit_tcp_v4_connect, struct sock *sk, struct sockaddr *uaddr, int addr_len, int ret) {
-    if (ret != 0)
+    if (ret != 0 && ret != -EINPROGRESS)
         return 0;
 
     u64 id = bpf_get_current_pid_tgid();
@@ -374,14 +408,14 @@ int BPF_PROG(fexit_tcp_v4_connect, struct sock *sk, struct sockaddr *uaddr, int 
 
     bpf_map_update_elem(&active_connect_sock, &id, &info, BPF_ANY);
 
-    bpf_printk("fexit_tcp_v4_connect: pid=%d laddr=0x%x lport=%d", id >> 32, info.laddr, info.lport);
+    if (ENABLE_BPF_DEBUG) bpf_printk("fexit_tcp_v4_connect: pid=%d lport=%d", id >> 32, info.lport);
     return 0;
 }
 
 // fexit/tcp_v6_connect — same for IPv6
 SEC("fexit/tcp_v6_connect")
 int BPF_PROG(fexit_tcp_v6_connect, struct sock *sk, struct sockaddr *uaddr, int addr_len, int ret) {
-    if (ret != 0)
+    if (ret != 0 && ret != -115)
         return 0;
 
     u64 id = bpf_get_current_pid_tgid();
@@ -399,7 +433,7 @@ int BPF_PROG(fexit_tcp_v6_connect, struct sock *sk, struct sockaddr *uaddr, int 
 
     bpf_map_update_elem(&active_connect_sock, &id, &info, BPF_ANY);
 
-    bpf_printk("fexit_tcp_v6_connect: pid=%d lport=%d", id >> 32, info.lport);
+    if (ENABLE_BPF_DEBUG) bpf_printk("fexit_tcp_v6_connect: pid=%d lport=%d", id >> 32, info.lport);
     return 0;
 }
 
@@ -414,8 +448,16 @@ int tp_sys_exit_connect(struct trace_event_raw_sys_exit *ctx) {
         return 0;
 
     // connect can return -EINPROGRESS for non-blocking sockets — that's OK
-    if (ret != 0 && ret != -115) { // -115 = -EINPROGRESS
-        bpf_printk("sys_exit_connect: pid=%d FAILED ret=%d", tgid, ret);
+    if (ret != 0 && ret != -EINPROGRESS) {
+        metric_inc(METRIC_CONNECT_FAILED);
+        if (ENABLE_BPF_DEBUG) bpf_printk("sys_exit_connect: pid=%d FAILED ret=%d", tgid, ret);
+        goto cleanup;
+    }
+
+    // If fexit/tcp_v4_connect didn't fire, this isn't TCP — skip (UDP, Unix, etc.)
+    struct laddr_info_t *linfo = bpf_map_lookup_elem(&active_connect_sock, &id);
+    if (!linfo) {
+        metric_inc(METRIC_CONNECT_SKIP_NON_TCP);
         goto cleanup;
     }
 
@@ -424,13 +466,8 @@ int tp_sys_exit_connect(struct trace_event_raw_sys_exit *ctx) {
     conn.fd = args->fd;
     conn.conn_start_ns = bpf_ktime_get_ns();
     conn.role = kRoleClient;
-
-    // Read local IP from fexit data
-    struct laddr_info_t *linfo = bpf_map_lookup_elem(&active_connect_sock, &id);
-    if (linfo) {
-        conn.laddr = linfo->laddr;
-        conn.lport = linfo->lport;
-    }
+    conn.laddr = linfo->laddr;
+    conn.lport = linfo->lport;
 
     // Read remote IP from userspace sockaddr (saved at sys_enter_connect)
     if (args->addr) {
@@ -452,13 +489,22 @@ int tp_sys_exit_connect(struct trace_event_raw_sys_exit *ctx) {
 
     // Store in conn_info_map
     u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn, BPF_ANY);
+    if (bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn, BPF_ANY) != 0) {
+        metric_inc(METRIC_CONNMAP_FULL);
+        goto cleanup;
+    }
 
     // Emit event to userspace
+    metric_inc(METRIC_CONN_OPEN);
     emit_conn_event(ctx, &conn, kEventOpen);
 
-    bpf_printk("connect: pid=%d fd=%d role=client", tgid, args->fd);
-    bpf_printk("connect: laddr=0x%x:%d raddr=0x%x", conn.laddr, conn.lport, conn.raddr);
+    if (ENABLE_BPF_DEBUG) {
+        bpf_printk("connect: pid=%d fd=%d role=client", tgid, args->fd);
+        bpf_printk("connect: laddr=%d.%d", conn.laddr & 0xFF, (conn.laddr >> 8) & 0xFF);
+        bpf_printk("connect: laddr=%d.%d:%d", (conn.laddr >> 16) & 0xFF, (conn.laddr >> 24) & 0xFF, conn.lport);
+        bpf_printk("connect: raddr=%d.%d", conn.raddr & 0xFF, (conn.raddr >> 8) & 0xFF);
+        bpf_printk("connect: raddr=%d.%d:%d", (conn.raddr >> 16) & 0xFF, (conn.raddr >> 24) & 0xFF, __builtin_bswap16(conn.rport));
+    }
 
 cleanup:
     bpf_map_delete_elem(&active_connect_args, &id);
@@ -482,9 +528,10 @@ int tp_sys_enter_close(struct trace_event_raw_sys_enter *ctx) {
         return 0;
 
     // Emit close event before deleting
+    metric_inc(METRIC_CONN_CLOSE);
     emit_conn_event(ctx, conn, kEventClose);
 
-    bpf_printk("close: pid=%d fd=%d", tgid, fd);
+    if (ENABLE_BPF_DEBUG) bpf_printk("close: pid=%d fd=%d", tgid, fd);
 
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
     return 0;
