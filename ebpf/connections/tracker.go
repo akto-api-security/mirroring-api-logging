@@ -105,49 +105,51 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	bytesSent := event.Attr.Bytes_sent
 	absBytes := utils.Abs(bytesSent)
 
-	// Existing flat buffer path (kept for inactivity-timer flush)
-	if bytesSent > 0 {
-		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:absBytes]...)
-		conn.sentBytes += uint64(absBytes)
-	} else {
-		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:absBytes]...)
-		conn.recvBytes += uint64(absBytes)
-	}
-
-	// msg_seq based buffering for incremental pair flushing
-	msgSeq := event.Attr.MsgSeq
-	if UseMsgSeqFlush && msgSeq > 0 {
-		group, exists := conn.msgGroups[msgSeq]
-		if !exists {
-			group = &msgSeqGroup{
-				msgSeq:    msgSeq,
-				direction: event.Attr.Direction,
-				chunks:    make(map[int][]byte),
+	if UseMsgSeqFlush {
+		// msg_seq based buffering for incremental pair flushing
+		msgSeq := event.Attr.MsgSeq
+		if msgSeq > 0 {
+			group, exists := conn.msgGroups[msgSeq]
+			if !exists {
+				group = &msgSeqGroup{
+					msgSeq:    msgSeq,
+					direction: event.Attr.Direction,
+					chunks:    make(map[int][]byte),
+				}
+				conn.msgGroups[msgSeq] = group
 			}
-			conn.msgGroups[msgSeq] = group
-		}
 
-		var chunkKey int
-		if group.direction == 0 { // kEgress
-			chunkKey = int(event.Attr.WriteEventsCount)
-		} else { // kIngress
-			chunkKey = int(event.Attr.ReadEventsCount)
-		}
-		group.chunks[chunkKey] = append(group.chunks[chunkKey], event.Msg[:absBytes]...)
+			var chunkKey int
+			if group.direction == 0 { // kEgress
+				chunkKey = int(event.Attr.WriteEventsCount)
+			} else { // kIngress
+				chunkKey = int(event.Attr.ReadEventsCount)
+			}
+			group.chunks[chunkKey] = append(group.chunks[chunkKey], event.Msg[:absBytes]...)
 
-		if msgSeq > conn.highestMsgSeq {
-			conn.highestMsgSeq = msgSeq
-		}
+			if msgSeq > conn.highestMsgSeq {
+				conn.highestMsgSeq = msgSeq
+			}
 
-		slog.Debug("msg_seq: chunk added",
-			"fd", conn.connID.Fd,
-			"msg_seq", msgSeq,
-			"direction", group.direction,
-			"chunk_key", chunkKey,
-			"chunk_bytes", absBytes,
-			"total_chunks", len(group.chunks),
-			"highest_msg_seq", conn.highestMsgSeq,
-			"pending_groups", len(conn.msgGroups))
+			slog.Debug("msg_seq: chunk added",
+				"fd", conn.connID.Fd,
+				"msg_seq", msgSeq,
+				"direction", group.direction,
+				"chunk_key", chunkKey,
+				"chunk_bytes", absBytes,
+				"total_chunks", len(group.chunks),
+				"highest_msg_seq", conn.highestMsgSeq,
+				"pending_groups", len(conn.msgGroups))
+		}
+	} else {
+		// Old flat buffer path
+		if bytesSent > 0 {
+			conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:absBytes]...)
+			conn.sentBytes += uint64(absBytes)
+		} else {
+			conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:absBytes]...)
+			conn.recvBytes += uint64(absBytes)
+		}
 	}
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
@@ -216,22 +218,6 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 			"remaining_groups", len(conn.msgGroups)-2)
 
 		pairs = append(pairs, MsgSeqPair{ReqGroup: g1, RespGroup: g2})
-
-		// Remove flushed chunk keys from old recvBuf/sentBuf to prevent reprocessing
-		for k := range g1.chunks {
-			if g1.direction == 1 { // kIngress
-				delete(conn.recvBuf, k)
-			} else {
-				delete(conn.sentBuf, k)
-			}
-		}
-		for k := range g2.chunks {
-			if g2.direction == 1 { // kIngress
-				delete(conn.recvBuf, k)
-			} else {
-				delete(conn.sentBuf, k)
-			}
-		}
 
 		delete(conn.msgGroups, seq)
 		delete(conn.msgGroups, seq+1)
