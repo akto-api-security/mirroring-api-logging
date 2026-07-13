@@ -342,6 +342,8 @@ func PopulateExistingConnections(
 				Ssl:              false,
 				ReadEventsCount:  0,
 				WriteEventsCount: 0,
+				MsgSeq:           0, // First data event will init to 1
+				PrevDirection:    0, // Irrelevant when msg_seq=0
 			}
 
 			err := PopulateConnInfoWithRotation(

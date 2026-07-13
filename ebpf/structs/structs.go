@@ -24,6 +24,7 @@ type SocketDataEventAttr struct {
 	Padding3         [3]byte // alignment padding before role
 	Role             uint32  // endpoint_role_t: 0=unknown, 1=client, 2=server
 	Direction        uint32  // traffic_direction_t: 0=egress, 1=ingress
+	MsgSeq           uint32  // msg_seq: increments on direction change
 }
 
 /*
@@ -85,4 +86,6 @@ type ConnInfoT struct {
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
 	Role             uint32 // endpoint_role_t: 0=unknown, 1=client, 2=server
+	MsgSeq           uint32 // msg_seq: persisted for conntrack prefill
+	PrevDirection    uint32 // prev_direction: persisted for conntrack prefill
 }

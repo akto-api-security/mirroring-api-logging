@@ -93,6 +93,13 @@ var (
 	trackerDataProcessInterval = 100
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
+
+	// When true, use msg_seq based incremental pair flushing instead of
+	// waiting for inactivity timer to flush all accumulated data.
+	UseMsgSeqFlush = true
+
+	// How often the flush routine checks for complete pairs
+	flushTickInterval = 500 * time.Millisecond
 )
 
 func init() {
@@ -103,6 +110,8 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+	utils.InitVar("MSG_SEQ_FLUSH_ENABLED", &UseMsgSeqFlush)
+	utils.InitVar("MSG_SEQ_FLUSH_TICK_INTERVAL", &flushTickInterval)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -142,6 +151,47 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
 			tryReadFromBD(laddrStr, raddrStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 		}
+	}
+}
+
+// ProcessSinglePair processes one request-response pair from msg_seq groups.
+func ProcessSinglePair(connID structs.ConnID, tracker *Tracker, g1Blob, g2Blob []byte) {
+	tracker.mutex.RLock()
+	laddrVal := tracker.laddr
+	lportVal := tracker.lport
+	tracker.mutex.RUnlock()
+
+	originalInt := uint32(connID.Raddr)
+	byteSlice := make([]byte, 4)
+	binary.LittleEndian.PutUint32(byteSlice, originalInt)
+	ip := net.IP(byteSlice)
+	raddrStr := ip.String() + ":" + fmt.Sprint(connID.Rport)
+
+	originalInt = uint32(laddrVal)
+	byteSlice = make([]byte, 4)
+	binary.LittleEndian.PutUint32(byteSlice, originalInt)
+	ip = net.IP(byteSlice)
+	laddrStr := ip.String() + ":" + fmt.Sprint(lportVal)
+
+	hostName := ""
+	if kafkaUtil.PodInformerInstance != nil {
+		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
+	}
+
+	// Detect which blob is the response (starts with "HTTP")
+	if len(g2Blob) >= len(httpBytes) && bytes.Equal(g2Blob[:len(httpBytes)], httpBytes) {
+		// g1=request, g2=response (server ingress path)
+		tryReadFromBD(raddrStr, laddrStr, g1Blob, g2Blob, true, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+	} else if len(g1Blob) >= len(httpBytes) && bytes.Equal(g1Blob[:len(httpBytes)], httpBytes) {
+		// g1=response, g2=request (client egress path)
+		if !disableEgress {
+			tryReadFromBD(laddrStr, raddrStr, g2Blob, g1Blob, true, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		}
+	} else {
+		slog.Warn("msg_seq: neither blob starts with HTTP",
+			"fd", connID.Fd,
+			"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
+			"g2_preview", string(g2Blob[:min(32, len(g2Blob))]))
 	}
 }
 
@@ -242,6 +292,13 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 		inactivityTimer := time.NewTimer(inactivityThreshold)
 		delayedDeleteChan := make(chan struct{}, 1)
 
+		// Spawn flush routine if msg_seq flush is enabled
+		var done chan struct{}
+		if UseMsgSeqFlush {
+			done = make(chan struct{})
+			go startFlushRoutine(connID, tracker, done)
+		}
+
 		for {
 			select {
 			case event := <-ch:
@@ -250,7 +307,8 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 					tracker.AddDataEvent(*e)
-					if tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
+
+					if !UseMsgSeqFlush && tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 						factory.StopProcessing(connID)
 						return
@@ -272,18 +330,94 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 
 			case <-delayedDeleteChan:
 				utils.LogProcessing("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-				factory.StopProcessing(connID)
+				if UseMsgSeqFlush {
+					close(done) // signal flush routine to do final flush and exit
+					factory.DeleteWorker(connID)
+				} else {
+					factory.StopProcessing(connID)
+				}
 				return
 
 			case <-inactivityTimer.C:
-				// Eat the go routine after inactive threshold, process the tracker and stop the worker
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-				factory.StopProcessing(connID)
+				if UseMsgSeqFlush {
+					slog.Info("msg_seq: inactivity flush",
+						"fd", connID.Fd,
+						"remaining_groups", len(tracker.msgGroups),
+						"lowest_pending", tracker.lowestPendingSeq,
+						"highest", tracker.highestMsgSeq)
+					close(done) // signal flush routine to do final flush and exit
+					factory.DeleteWorker(connID)
+				} else {
+					factory.StopProcessing(connID)
+				}
 				utils.LogProcessing("Stopping go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 				return
 			}
 		}
 	}(connectionID, tracker, ch)
+}
+
+// startFlushRoutine runs in its own goroutine, periodically flushing complete
+// msg_seq pairs. Exits when done channel is closed, doing a final flush before returning.
+func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan struct{}) {
+	ticker := time.NewTicker(flushTickInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			pairs := tracker.GetFlushablePairs()
+			for _, pair := range pairs {
+				g1Blob := convertToSingleByteArr(pair.ReqGroup.chunks)
+				g2Blob := convertToSingleByteArr(pair.RespGroup.chunks)
+
+				slog.Info("msg_seq: processing pair (tick)",
+					"fd", connID.Fd,
+					"g1_msg_seq", pair.ReqGroup.msgSeq,
+					"g2_msg_seq", pair.RespGroup.msgSeq,
+					"g1_bytes", len(g1Blob),
+					"g2_bytes", len(g2Blob))
+
+				ProcessSinglePair(connID, tracker, g1Blob, g2Blob)
+			}
+			if len(pairs) > 0 {
+				slog.Info("msg_seq: flushed pairs (tick)",
+					"fd", connID.Fd,
+					"pairs_flushed", len(pairs))
+			}
+
+		case <-done:
+			// Final flush of all remaining pairs before exit
+			slog.Info("msg_seq: flush routine exiting, final flush",
+				"fd", connID.Fd,
+				"remaining_groups", len(tracker.msgGroups))
+			flushAndProcessRemainingPairs(connID, tracker)
+			return
+		}
+	}
+}
+
+func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
+	pairs := tracker.FlushRemainingPairs()
+	for _, pair := range pairs {
+		g1Blob := convertToSingleByteArr(pair.ReqGroup.chunks)
+		g2Blob := convertToSingleByteArr(pair.RespGroup.chunks)
+
+		slog.Info("msg_seq: processing remaining pair",
+			"fd", connID.Fd,
+			"g1_msg_seq", pair.ReqGroup.msgSeq,
+			"g2_msg_seq", pair.RespGroup.msgSeq,
+			"g1_bytes", len(g1Blob),
+			"g2_bytes", len(g2Blob))
+
+		ProcessSinglePair(connID, tracker, g1Blob, g2Blob)
+	}
+	if len(pairs) > 0 {
+		slog.Info("msg_seq: flushed remaining pairs",
+			"fd", connID.Fd,
+			"pairs_flushed", len(pairs))
+	}
 }
 
 func (factory *Factory) StopProcessing(connID structs.ConnID) {
@@ -368,7 +502,7 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 		case ch <- event: // Try sending the event to the worker's channel
 			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
 		default: // Avoid blocking if the channel is full
-			utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
+			slog.Warn("Dropping event Channel full", "connectionId", connectionID)
 		}
 	} else {
 		utils.LogProcessing("No worker found for", "connectionId", connectionID)

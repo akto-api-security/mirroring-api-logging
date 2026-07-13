@@ -69,6 +69,8 @@ struct conn_info_t {
     u32 readEventsCount;
     u32 writeEventsCount;
     enum endpoint_role_t role;
+    u32 msg_seq;
+    enum traffic_direction_t prev_direction;
 };
 
 union sockaddr_t {
@@ -132,6 +134,7 @@ struct socket_data_event_t {
     bool ssl;
     enum endpoint_role_t role;
     enum traffic_direction_t direction;
+    u32 msg_seq;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -453,6 +456,16 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->role      = conn_info->role;
     socket_data_event->direction = direction;
 
+    // msg_seq: increments on direction change (HTTP message boundary)
+    if (conn_info->msg_seq == 0) {
+        conn_info->msg_seq = 1;
+        conn_info->prev_direction = direction;
+    } else if (direction != conn_info->prev_direction) {
+        conn_info->msg_seq++;
+        conn_info->prev_direction = direction;
+    }
+    socket_data_event->msg_seq = conn_info->msg_seq;
+
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
       u32 ip = conn_info->raddr;
@@ -461,7 +474,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
       u32 sip = conn_info->laddr;
       bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
       bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
-      bpf_trace_printk("data: role=%d direction=%d", conn_info->role, direction);
+      bpf_trace_printk("data: role=%d dir=%d msg_seq=%d", conn_info->role, direction, conn_info->msg_seq);
     }
 
     int bytes_sent = 0;
