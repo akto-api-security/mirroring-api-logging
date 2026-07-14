@@ -506,7 +506,7 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 		case ch <- event: // Try sending the event to the worker's channel
 			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
 		default: // Avoid blocking if the channel is full
-			slog.Warn("Dropping event Channel full", "connectionId", connectionID)
+			slog.Warn("Dropping event Channel full", "fd", connectionID.Fd, "ch_len", len(ch), "ch_cap", cap(ch))
 		}
 	} else {
 		utils.LogProcessing("No worker found for", "connectionId", connectionID)

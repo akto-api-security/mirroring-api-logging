@@ -75,7 +75,14 @@ func (conn *Tracker) IsComplete() bool {
 }
 
 func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
+	lockStart := time.Now()
 	conn.mutex.Lock()
+	lockWait := time.Since(lockStart)
+	if lockWait > 1*time.Millisecond {
+		slog.Warn("msg_seq: AddDataEvent mutex wait",
+			"fd", conn.connID.Fd,
+			"wait_ms", lockWait.Milliseconds())
+	}
 	defer conn.mutex.Unlock()
 
 	if event.Attr.Laddr != 0 {
@@ -181,8 +188,21 @@ func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
 // A pair (N, N+1) is complete when msg_seq N+2 exists (next direction change started).
 // Caller must NOT hold conn.mutex — this method acquires it.
 func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
+	lockStart := time.Now()
 	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
+	lockWait := time.Since(lockStart)
+	holdStart := time.Now()
+	defer func() {
+		holdTime := time.Since(holdStart)
+		if lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond {
+			slog.Warn("msg_seq: GetFlushablePairs mutex timing",
+				"fd", conn.connID.Fd,
+				"wait_ms", lockWait.Milliseconds(),
+				"hold_ms", holdTime.Milliseconds(),
+				"groups", len(conn.msgGroups))
+		}
+		conn.mutex.Unlock()
+	}()
 
 	if len(conn.msgGroups) < 3 {
 		return nil
@@ -243,8 +263,21 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 // An unpaired trailing group (odd number remaining) is logged and discarded.
 // Caller must NOT hold conn.mutex.
 func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
+	lockStart := time.Now()
 	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
+	lockWait := time.Since(lockStart)
+	holdStart := time.Now()
+	defer func() {
+		holdTime := time.Since(holdStart)
+		if lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond {
+			slog.Warn("msg_seq: FlushRemainingPairs mutex timing",
+				"fd", conn.connID.Fd,
+				"wait_ms", lockWait.Milliseconds(),
+				"hold_ms", holdTime.Milliseconds(),
+				"groups", len(conn.msgGroups))
+		}
+		conn.mutex.Unlock()
+	}()
 
 	if len(conn.msgGroups) == 0 {
 		return nil
