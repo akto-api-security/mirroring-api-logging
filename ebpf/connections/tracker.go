@@ -1,7 +1,9 @@
 package connections
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -9,6 +11,15 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
+
+func getChunkKeys(chunks map[int][]byte) string {
+	keys := make([]int, 0, len(chunks))
+	for k := range chunks {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	return fmt.Sprint(keys)
+}
 
 type msgSeqGroup struct {
 	msgSeq    uint32
@@ -117,6 +128,21 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		msgSeq := event.Attr.MsgSeq
 		if msgSeq > 0 {
 			group, exists := conn.msgGroups[msgSeq]
+			if !exists && msgSeq < conn.lowestPendingSeq {
+				var chunkKey int
+				if event.Attr.Direction == 0 {
+					chunkKey = int(event.Attr.WriteEventsCount)
+				} else {
+					chunkKey = int(event.Attr.ReadEventsCount)
+				}
+				slog.Warn("msg_seq: late chunk arrived after flush",
+					"fd", conn.connID.Fd,
+					"msg_seq", msgSeq,
+					"lowestPendingSeq", conn.lowestPendingSeq,
+					"chunk_key", chunkKey,
+					"chunk_bytes", absBytes,
+					"direction", event.Attr.Direction)
+			}
 			if !exists {
 				group = &msgSeqGroup{
 					msgSeq:    msgSeq,
@@ -236,6 +262,8 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 			"resp_msg_seq", g2.msgSeq,
 			"req_chunks", len(g1.chunks),
 			"resp_chunks", len(g2.chunks),
+			"req_chunk_keys", getChunkKeys(g1.chunks),
+			"resp_chunk_keys", getChunkKeys(g2.chunks),
 			"trigger_msg_seq", seq+2,
 			"remaining_groups", len(conn.msgGroups)-2)
 
