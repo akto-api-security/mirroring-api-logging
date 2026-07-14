@@ -138,15 +138,17 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 				conn.highestMsgSeq = msgSeq
 			}
 
-			slog.Debug("msg_seq: chunk added",
-				"fd", conn.connID.Fd,
-				"msg_seq", msgSeq,
-				"direction", group.direction,
-				"chunk_key", chunkKey,
-				"chunk_bytes", absBytes,
-				"total_chunks", len(group.chunks),
-				"highest_msg_seq", conn.highestMsgSeq,
-				"pending_groups", len(conn.msgGroups))
+			if metaUtils.IsProcessLogsEnabled() {
+				metaUtils.LogProcessing("msg_seq: chunk added",
+					"fd", conn.connID.Fd,
+					"msg_seq", msgSeq,
+					"direction", group.direction,
+					"chunk_key", chunkKey,
+					"chunk_bytes", absBytes,
+					"total_chunks", len(group.chunks),
+					"highest_msg_seq", conn.highestMsgSeq,
+					"pending_groups", len(conn.msgGroups))
+			}
 		}
 	} else {
 		// Old flat buffer path

@@ -37,7 +37,7 @@ var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
 
-var kafkaErrorThreshold = 500
+var kafkaErrorThreshold = 500000
 var kafkaReconnectIntervalMinutes = -1
 var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()

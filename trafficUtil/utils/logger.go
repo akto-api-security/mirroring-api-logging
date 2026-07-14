@@ -59,6 +59,10 @@ func LogIngest(format string, args ...any) {
 	}
 }
 
+func IsProcessLogsEnabled() bool {
+	return processLogs
+}
+
 func LogProcessing(format string, args ...any) {
 	if processLogs {
 		slog.Debug(format, args...)

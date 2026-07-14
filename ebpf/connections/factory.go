@@ -159,11 +159,7 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 }
 
 // ProcessSinglePair processes one request-response pair from msg_seq groups.
-func ProcessSinglePair(connID structs.ConnID, tracker *Tracker, g1Blob, g2Blob []byte) {
-	tracker.mutex.RLock()
-	laddrVal := tracker.laddr
-	lportVal := tracker.lport
-	tracker.mutex.RUnlock()
+func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, g1Blob, g2Blob []byte) {
 
 	originalInt := uint32(connID.Raddr)
 	byteSlice := make([]byte, 4)
@@ -295,6 +291,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 		utils.LogProcessing("Starting go routine", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 		inactivityTimer := time.NewTimer(inactivityThreshold)
 		delayedDeleteChan := make(chan struct{}, 1)
+		var lastSeenMsgSeq uint32
 
 		// Spawn flush routine if msg_seq flush is enabled
 		var done chan struct{}
@@ -316,6 +313,12 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 						factory.StopProcessing(connID)
 						return
+					}
+					if UseMsgSeqFlush {
+						if e.Attr.MsgSeq != lastSeenMsgSeq {
+							resetTimer(inactivityTimer, inactivityThreshold)
+							lastSeenMsgSeq = e.Attr.MsgSeq
+						}
 					} else {
 						resetTimer(inactivityTimer, inactivityThreshold)
 					}
@@ -383,7 +386,7 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 					"g1_bytes", len(g1Blob),
 					"g2_bytes", len(g2Blob))
 
-				ProcessSinglePair(connID, tracker, g1Blob, g2Blob)
+				ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
 			}
 			if len(pairs) > 0 {
 				slog.Info("msg_seq: flushed pairs (tick)",
@@ -415,7 +418,7 @@ func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
 			"g1_bytes", len(g1Blob),
 			"g2_bytes", len(g2Blob))
 
-		ProcessSinglePair(connID, tracker, g1Blob, g2Blob)
+		ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
 	}
 	if len(pairs) > 0 {
 		slog.Info("msg_seq: flushed remaining pairs",
