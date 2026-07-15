@@ -128,22 +128,18 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 		msgSeq := event.Attr.MsgSeq
 		if msgSeq > 0 {
 			group, exists := conn.msgGroups[msgSeq]
-			if !exists && msgSeq < conn.lowestPendingSeq {
-				var chunkKey int
-				if event.Attr.Direction == 0 {
-					chunkKey = int(event.Attr.WriteEventsCount)
-				} else {
-					chunkKey = int(event.Attr.ReadEventsCount)
-				}
-				slog.Warn("msg_seq: late chunk arrived after flush",
-					"fd", conn.connID.Fd,
-					"msg_seq", msgSeq,
-					"lowestPendingSeq", conn.lowestPendingSeq,
-					"chunk_key", chunkKey,
-					"chunk_bytes", absBytes,
-					"direction", event.Attr.Direction)
-			}
 			if !exists {
+				if msgSeq < conn.lowestPendingSeq {
+					slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
+						"fd", conn.connID.Fd,
+						"msg_seq", msgSeq,
+						"lowestPendingSeq", conn.lowestPendingSeq)
+				} else if msgSeq < conn.highestMsgSeq {
+					slog.Warn("msg_seq: out-of-order group arrival",
+						"fd", conn.connID.Fd,
+						"msg_seq", msgSeq,
+						"highestMsgSeq", conn.highestMsgSeq)
+				}
 				group = &msgSeqGroup{
 					msgSeq:    msgSeq,
 					direction: event.Attr.Direction,
@@ -236,43 +232,9 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 		return nil
 	}
 
-	seq := conn.lowestPendingSeq
-	if seq == 0 {
-		// Find the lowest msg_seq in the map
-		for k := range conn.msgGroups {
-			if seq == 0 || k < seq {
-				seq = k
-			}
-		}
-	}
-
-	var pairs []MsgSeqPair
-	for {
-		g1, ok1 := conn.msgGroups[seq]
-		g2, ok2 := conn.msgGroups[seq+1]
-		_, ok3 := conn.msgGroups[seq+2] // trigger: next pair started
-
-		if !ok1 || !ok2 || !ok3 {
-			break
-		}
-
-		slog.Info("msg_seq: flushing pair",
-			"fd", conn.connID.Fd,
-			"req_msg_seq", g1.msgSeq,
-			"resp_msg_seq", g2.msgSeq,
-			"req_chunks", len(g1.chunks),
-			"resp_chunks", len(g2.chunks),
-			"req_chunk_keys", getChunkKeys(g1.chunks),
-			"resp_chunk_keys", getChunkKeys(g2.chunks),
-			"trigger_msg_seq", seq+2,
-			"remaining_groups", len(conn.msgGroups)-2)
-
-		pairs = append(pairs, MsgSeqPair{ReqGroup: g1, RespGroup: g2})
-
-		delete(conn.msgGroups, seq)
-		delete(conn.msgGroups, seq+1)
-		seq += 2
-	}
+	pairs, seq := conn.drainPairs(conn.lowestPendingSeq, func(seq uint32) bool {
+		return seq+2 <= conn.highestMsgSeq
+	})
 
 	conn.lowestPendingSeq = seq
 
@@ -289,8 +251,6 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 
 // FlushRemainingPairs returns all remaining msg_seq groups as pairs.
 // Used on inactivity/close when no N+2 trigger is coming.
-// Groups are paired consecutively: (lowest, lowest+1), (lowest+2, lowest+3), ...
-// An unpaired trailing group (odd number remaining) is logged and discarded.
 // Caller must NOT hold conn.mutex.
 func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
 	lockStart := time.Now()
@@ -313,51 +273,71 @@ func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
 		return nil
 	}
 
-	seq := conn.lowestPendingSeq
+	pairs, seq := conn.drainPairs(conn.lowestPendingSeq, func(seq uint32) bool {
+		return len(conn.msgGroups) > 0
+	})
+
+	conn.lowestPendingSeq = seq
+	return pairs
+}
+
+// drainPairs walks msgGroups from lowestPendingSeq, pairing consecutive odd+even seqs.
+// Gaps are discarded as orphans. The seal func controls when to stop.
+// Caller must hold conn.mutex.
+func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) ([]MsgSeqPair, uint32) {
+	seq := startSeq
 	if seq == 0 {
 		for k := range conn.msgGroups {
-			if seq == 0 || k < seq {
+			if k%2 == 1 && (seq == 0 || k < seq) {
 				seq = k
 			}
 		}
 	}
 
 	var pairs []MsgSeqPair
-	for {
+	for sealed(seq) {
 		g1, ok1 := conn.msgGroups[seq]
 		g2, ok2 := conn.msgGroups[seq+1]
 
 		if !ok1 || !ok2 {
-			break
+			if ok1 {
+				slog.Warn("msg_seq: orphaned group (partner missing)",
+					"fd", conn.connID.Fd,
+					"msg_seq", seq,
+					"direction", g1.direction,
+					"chunks", len(g1.chunks))
+				delete(conn.msgGroups, seq)
+			}
+			if ok2 {
+				slog.Warn("msg_seq: orphaned group (partner missing)",
+					"fd", conn.connID.Fd,
+					"msg_seq", seq+1,
+					"direction", g2.direction,
+					"chunks", len(g2.chunks))
+				delete(conn.msgGroups, seq+1)
+			}
+			if seq%2 == 0 {
+				seq++
+			} else {
+				seq += 2
+			}
+			continue
 		}
 
-		slog.Info("msg_seq: flushing remaining pair",
+		slog.Info("msg_seq: flushing pair",
 			"fd", conn.connID.Fd,
-			"g1_msg_seq", g1.msgSeq,
-			"g2_msg_seq", g2.msgSeq,
-			"g1_chunks", len(g1.chunks),
-			"g2_chunks", len(g2.chunks))
+			"req_msg_seq", g1.msgSeq,
+			"resp_msg_seq", g2.msgSeq,
+			"req_chunks", len(g1.chunks),
+			"resp_chunks", len(g2.chunks),
+			"remaining_groups", len(conn.msgGroups)-2)
 
 		pairs = append(pairs, MsgSeqPair{ReqGroup: g1, RespGroup: g2})
-
 		delete(conn.msgGroups, seq)
 		delete(conn.msgGroups, seq+1)
 		seq += 2
 	}
-
-	// Log any orphaned trailing group
-	if len(conn.msgGroups) > 0 {
-		for k, g := range conn.msgGroups {
-			slog.Warn("msg_seq: orphaned group discarded",
-				"fd", conn.connID.Fd,
-				"msg_seq", k,
-				"direction", g.direction,
-				"chunks", len(g.chunks))
-		}
-	}
-
-	conn.lowestPendingSeq = seq
-	return pairs
+	return pairs, seq
 }
 
 func (conn *Tracker) GetSentBytes() uint64 {
