@@ -166,20 +166,21 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		connectionFactory.CreateIfNotExists(connId)
 
 		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
-
-		connectionFactory.SendEvent(connId, &event)
-		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-
 		metaUtils.LogIngest("Got data",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
+			"msg_seq", event.Attr.MsgSeq,
+			"rc", event.Attr.ReadEventsCount,
+			"wc", event.Attr.WriteEventsCount,
 			"raddr", connId.Raddr,
 			"rport", connId.Rport,
 			"data", dataStr,
-			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
 			"ssl", event.Attr.Ssl,
 			"bytesSent", bytesSent)
+
+		connectionFactory.SendEvent(connId, &event)
+		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
+
 	}
 }
