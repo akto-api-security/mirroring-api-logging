@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine
+FROM golang:1.25-alpine
 RUN apk add build-base
 RUN apk add libpcap-dev
 RUN apk add tcpdump
