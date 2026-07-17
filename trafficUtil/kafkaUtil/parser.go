@@ -610,9 +610,9 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
-	if KafkaDisabled {
-		return
-	}
+	// if KafkaDisabled {
+	// 	return
+	// }
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return

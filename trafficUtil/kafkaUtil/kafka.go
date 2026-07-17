@@ -447,6 +447,10 @@ func ProduceStr(ctx context.Context, message string, url, reqHost, method string
 	topic := "akto.api.logs"
 	// checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 
+	if KafkaDisabled{
+		return nil
+	}
+
 	msg := kafka.Message{
 		Topic:   topic,
 		Value:   []byte(message),
