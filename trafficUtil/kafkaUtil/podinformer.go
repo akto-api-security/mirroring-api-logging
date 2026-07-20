@@ -51,7 +51,7 @@ type PodInformer struct {
 	clientset        *kubernetes.Clientset
 	nodeName         string
 	podNameLabelsMap sync.Map // Maps pod names to their labels directly
-	pidHostNameMap   map[int32]PidInfo
+	pidHostNameMap   sync.Map // map[int32]PidInfo
 }
 
 func SetupPodInformer() (chan struct{}, error) {
@@ -120,31 +120,31 @@ func NewPodInformer() (*PodInformer, error) {
 		clientset:        clientset,
 		nodeName:         nodeName,
 		podNameLabelsMap: sync.Map{},
-		pidHostNameMap:   make(map[int32]PidInfo),
+		pidHostNameMap:   sync.Map{},
 	}, nil
 }
 
 func (w *PodInformer) GetPodNameByProcessId(pid int32) string {
-	if info, ok := w.pidHostNameMap[pid]; ok {
-		return info.HostName
+	if info, ok := w.pidHostNameMap.Load(pid); ok {
+		return info.(PidInfo).HostName
 	}
-
 	return ""
 }
 
 func (w *PodInformer) GetAllKubePids() []uint32 {
 	// TODO: should we ignore envoy pids ?
-	pids := make([]uint32, 0, len(w.pidHostNameMap))
-	for pid := range w.pidHostNameMap {
-		pids = append(pids, uint32(pid))
-	}
+	var pids []uint32
+	w.pidHostNameMap.Range(func(k, _ any) bool {
+		pids = append(pids, uint32(k.(int32)))
+		return true
+	})
 	slog.Debug("No of kube/docker pids", "found: ", len(pids))
 	return pids
 }
 
 func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
-	if info, ok := w.pidHostNameMap[pid]; ok {
-		return info.ProcessName
+	if info, ok := w.pidHostNameMap.Load(pid); ok {
+		return info.(PidInfo).ProcessName
 	}
 	slog.Debug("Process name not found for", "processId", pid)
 	return ""
@@ -166,10 +166,10 @@ func (w *PodInformer) BuildPidHostNameMap() {
 		if len(parts) == 3 {
 			pid, err := strconv.Atoi(parts[0])
 			if err == nil {
-				w.pidHostNameMap[int32(pid)] = PidInfo{
+				w.pidHostNameMap.Store(int32(pid), PidInfo{
 					ProcessName: parts[1],
 					HostName:    parts[2],
-				}
+				})
 			}
 		}
 	}
@@ -213,10 +213,14 @@ func (w *PodInformer) logPidHostNameMap() {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 
-	for pid, info := range w.pidHostNameMap {
-		fmt.Fprintf(&builder, "%d\t%s\t%s\n", pid, info.ProcessName, info.HostName)
-	}
-	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
+	count := 0
+	w.pidHostNameMap.Range(func(k, v any) bool {
+		info := v.(PidInfo)
+		fmt.Fprintf(&builder, "%d\t%s\t%s\n", k.(int32), info.ProcessName, info.HostName)
+		count++
+		return true
+	})
+	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", count)
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
 	// slog.Debug("PID to Hostname Map logged", "map", w.pidHostNameMap)
 }
