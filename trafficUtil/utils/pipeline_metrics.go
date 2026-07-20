@@ -13,7 +13,8 @@ type PipelineMetrics struct {
 	EventsReceived           atomic.Int64 // SocketDataEventCallback: successfully decoded events
 
 	// Drop points
-	EventsDroppedChannelFull atomic.Int64 // SendEvent: per-conn channel full
+	EventsDroppedKernelRingBuf atomic.Int64 // gobpf lostEventsChannel: kernel perf ring buffer overflow
+	EventsDroppedChannelFull   atomic.Int64 // SendEvent: per-conn channel full
 
 	// Group lifecycle (one group = one HTTP message direction)
 	GroupsCreated      atomic.Int64 // new msg_seq group first seen in AddDataEvent
@@ -42,6 +43,7 @@ func init() {
 // Reset zeroes all counters and records the reset time.
 func (m *PipelineMetrics) Reset() {
 	m.EventsReceived.Store(0)
+	m.EventsDroppedKernelRingBuf.Store(0)
 	m.EventsDroppedChannelFull.Store(0)
 	m.GroupsCreated.Store(0)
 	m.GroupsOrphaned.Store(0)
