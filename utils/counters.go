@@ -20,6 +20,7 @@ type TrafficCollectorCounter struct {
 	RequestsCountMapPerMinute MinutesToCountMap `json:"requestsCountMapPerMinute"`
 	BucketStartEpoch          int               `json:"bucketStartEpoch"`
 	BucketEndEpoch            int               `json:"bucketEndEpoch"`
+	Version  string `json:"version"`
 }
 
 func (i *IncomingCounter) IncomingCounterKey() string {
@@ -31,9 +32,9 @@ func GenerateIncomingCounter(vxlanID int, ip string) IncomingCounter {
 	return IncomingCounter{VxlanID: vxlanID, Ip: ip, BucketStartEpoch: d, BucketEndEpoch: u, PacketHoursToCountMap: make(HoursToCountMap)}
 }
 
-func GenerateCollectorCounter(collectorId string) TrafficCollectorCounter {
+func GenerateCollectorCounter(collectorId string, version string) TrafficCollectorCounter {
 	d, u := EpochDays()
-	return TrafficCollectorCounter{Id: collectorId, BucketStartEpoch: d, BucketEndEpoch: u, RequestsCountMapPerMinute: make(MinutesToCountMap)}
+	return TrafficCollectorCounter{Id: collectorId, BucketStartEpoch: d, BucketEndEpoch: u, RequestsCountMapPerMinute: make(MinutesToCountMap), Version: version}
 }
 
 func (t *TrafficCollectorCounter) Inc(value int) {
