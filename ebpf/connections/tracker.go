@@ -130,11 +130,13 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 			group, exists := conn.msgGroups[msgSeq]
 			if !exists {
 				if msgSeq < conn.lowestPendingSeq {
+					metaUtils.Pipeline.LateArrivals.Add(1)
 					slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
 						"fd", conn.connID.Fd,
 						"msg_seq", msgSeq,
 						"lowestPendingSeq", conn.lowestPendingSeq)
 				} else if msgSeq < conn.highestMsgSeq {
+					metaUtils.Pipeline.OutOfOrderArrivals.Add(1)
 					slog.Warn("msg_seq: out-of-order group arrival",
 						"fd", conn.connID.Fd,
 						"msg_seq", msgSeq,
@@ -146,6 +148,7 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 					chunks:    make(map[int][]byte),
 				}
 				conn.msgGroups[msgSeq] = group
+				metaUtils.Pipeline.GroupsCreated.Add(1)
 			}
 
 			var chunkKey int
@@ -301,6 +304,7 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 
 		if !ok1 || !ok2 {
 			if ok1 {
+				metaUtils.Pipeline.GroupsOrphaned.Add(1)
 				slog.Warn("msg_seq: orphaned group (partner missing)",
 					"fd", conn.connID.Fd,
 					"msg_seq", seq,
@@ -309,6 +313,7 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 				delete(conn.msgGroups, seq)
 			}
 			if ok2 {
+				metaUtils.Pipeline.GroupsOrphaned.Add(1)
 				slog.Warn("msg_seq: orphaned group (partner missing)",
 					"fd", conn.connID.Fd,
 					"msg_seq", seq+1,

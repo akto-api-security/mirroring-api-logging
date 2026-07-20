@@ -179,6 +179,7 @@ func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, 
 	}
 
 	// Detect which blob is the response (starts with "HTTP")
+	utils.Pipeline.PairsAttempted.Add(1)
 	if len(g2Blob) >= len(httpBytes) && bytes.Equal(g2Blob[:len(httpBytes)], httpBytes) {
 		// g1=request, g2=response (server ingress path)
 		tryReadFromBD(raddrStr, laddrStr, g1Blob, g2Blob, true, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
@@ -188,6 +189,7 @@ func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, 
 			tryReadFromBD(laddrStr, raddrStr, g2Blob, g1Blob, true, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 		}
 	} else {
+		utils.Pipeline.PairsParseFailure.Add(1)
 		slog.Warn("msg_seq: neither blob starts with HTTP",
 			"fd", connID.Fd,
 			"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
@@ -509,6 +511,7 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 		case ch <- event: // Try sending the event to the worker's channel
 			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
 		default: // Avoid blocking if the channel is full
+			utils.Pipeline.EventsDroppedChannelFull.Add(1)
 			slog.Warn("Dropping event Channel full", "fd", connectionID.Fd, "ch_len", len(ch), "ch_cap", cap(ch))
 		}
 	} else {

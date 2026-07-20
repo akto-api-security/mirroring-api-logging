@@ -179,6 +179,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"ssl", event.Attr.Ssl,
 			"bytesSent", bytesSent)
 
+		metaUtils.Pipeline.EventsReceived.Add(1)
 		connectionFactory.SendEvent(connId, &event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 

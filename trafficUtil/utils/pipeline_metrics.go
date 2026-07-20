@@ -1,0 +1,56 @@
+package utils
+
+import (
+	"sync/atomic"
+	"time"
+)
+
+// PipelineMetrics holds run-scoped atomic counters for the msg_seq pipeline.
+// All fields are safe for concurrent access.
+// Both connections and kafkaUtil packages increment these directly.
+type PipelineMetrics struct {
+	// Input
+	EventsReceived           atomic.Int64 // SocketDataEventCallback: successfully decoded events
+
+	// Drop points
+	EventsDroppedChannelFull atomic.Int64 // SendEvent: per-conn channel full
+
+	// Group lifecycle (one group = one HTTP message direction)
+	GroupsCreated      atomic.Int64 // new msg_seq group first seen in AddDataEvent
+	GroupsOrphaned     atomic.Int64 // partner missing at flush time (drainPairs)
+	OutOfOrderArrivals atomic.Int64 // msg_seq < highestMsgSeq at group creation
+	LateArrivals       atomic.Int64 // msg_seq < lowestPendingSeq (already flushed)
+
+	// Pair outcomes
+	PairsAttempted      atomic.Int64 // pairs passed to ProcessSinglePair
+	PairsParseSuccess   atomic.Int64 // ParseAndProduce produced at least one req-resp pair
+	PairsParseFailure   atomic.Int64 // parseHTTPTraffic returned nil (corrupt/truncated req or resp)
+	RequestBodyFailure  atomic.Int64 // req body io.ReadAll failed (pair still produced, empty body)
+	ResponseBodyFailure atomic.Int64 // resp body io.ReadAll failed (pair still produced, empty body)
+
+	// Reset tracking
+	ResetAt time.Time
+}
+
+// Pipeline is the global singleton. Imported by connections and kafkaUtil.
+var Pipeline PipelineMetrics
+
+func init() {
+	Pipeline.ResetAt = time.Now()
+}
+
+// Reset zeroes all counters and records the reset time.
+func (m *PipelineMetrics) Reset() {
+	m.EventsReceived.Store(0)
+	m.EventsDroppedChannelFull.Store(0)
+	m.GroupsCreated.Store(0)
+	m.GroupsOrphaned.Store(0)
+	m.OutOfOrderArrivals.Store(0)
+	m.LateArrivals.Store(0)
+	m.PairsAttempted.Store(0)
+	m.PairsParseSuccess.Store(0)
+	m.PairsParseFailure.Store(0)
+	m.RequestBodyFailure.Store(0)
+	m.ResponseBodyFailure.Store(0)
+	m.ResetAt = time.Now()
+}

@@ -515,6 +515,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 		if parseBody {
 			body, err = io.ReadAll(req.Body)
 			if err != nil {
+				utils.Pipeline.RequestBodyFailure.Add(1)
 				utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
 				body = []byte{}
 			}
@@ -561,6 +562,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 		if shouldParseRespBody {
 			body, err = io.ReadAll(resp.Body)
 			if err != nil {
+				utils.Pipeline.ResponseBodyFailure.Add(1)
 				utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 				body = []byte{}
 			}
@@ -625,8 +627,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
 	if parsed == nil {
+		utils.Pipeline.PairsParseFailure.Add(1)
 		return
 	}
+
 
 	requests := parsed.Requests
 	requestsContent := parsed.RequestBodies
@@ -734,6 +738,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			}
 		}
 
+		utils.Pipeline.PairsParseSuccess.Add(1)
 		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
 	}
 }
