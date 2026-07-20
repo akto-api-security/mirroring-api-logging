@@ -39,6 +39,13 @@ type SocketDataEvent struct {
 	Msg  [30720]byte
 }
 
+// SocketDataPayload is one socket_data perf sample: decoded attr plus an owned
+// payload slice (one copy from the perf ring). Chunks are merged at flush in the tracker.
+type SocketDataPayload struct {
+	Attr SocketDataEventAttr
+	Data []byte
+}
+
 type SocketOpenEvent struct {
 	ConnId ConnID
 	// source IP and port

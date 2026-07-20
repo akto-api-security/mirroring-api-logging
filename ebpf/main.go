@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -55,6 +56,71 @@ func replaceMaxConnectionMapSize() {
 	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
 	maxConnectionSizeMapSizeStr := strconv.Itoa(maxConnectionSizeMapSize)
 	source = strings.Replace(source, "TRAFFIC_MAX_CONNECTION_MAP_SIZE", maxConnectionSizeMapSizeStr, -1)
+}
+
+func replaceLocalTrafficFilter() {
+	filterLocal := "false"
+	trafficUtils.InitVar("FILTER_LOCAL_TRAFFIC", &filterLocal)
+	source = strings.Replace(source, "FILTER_LOCAL_TRAFFIC", filterLocal, -1)
+
+	// Default: 127.0.0.1 as little-endian u32.
+	// IP bytes [127,0,0,1] → LE u32 = 127 + 0<<8 + 0<<16 + 1<<24 = 16777343
+	localIpLE := 16777343
+	trafficUtils.InitVar("LOCAL_TRAFFIC_IP_LE", &localIpLE)
+	source = strings.Replace(source, "LOCAL_TRAFFIC_IP", strconv.Itoa(localIpLE), -1)
+}
+
+// replaceStrictRemotePortFilter gates socket_data on conn_info->port (remote / dest port in BPF).
+// When TRAFFIC_STRICT_REMOTE_PORT_FILTER is true, events for connections whose port != STRICT_REMOTE_PORT are dropped (default port 10275).
+func replaceStrictRemotePortFilter() {
+	filterOn := "false"
+	env := os.Getenv("TRAFFIC_STRICT_REMOTE_PORT_FILTER")
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		filterOn = "true"
+	}
+	source = strings.Replace(source, "FILTER_STRICT_REMOTE_PORT", filterOn, -1)
+
+	strictPort := 10275
+	trafficUtils.InitVar("TRAFFIC_STRICT_REMOTE_PORT", &strictPort)
+	if strictPort < 0 {
+		strictPort = 0
+	}
+	if strictPort > 65535 {
+		strictPort = 65535
+	}
+	source = strings.Replace(source, "STRICT_REMOTE_PORT", strconv.Itoa(strictPort), -1)
+}
+
+// replaceLogBPFSocketDataSubmits injects socket_data_submit_total map + increment only when
+// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS is true (same env as startBPFSubmitStatsReporter).
+func replaceLogBPFSocketDataSubmits() {
+	env := os.Getenv("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS")
+	mapDecl := ""
+	incBlock := ""
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		mapDecl = `/* Total socket_data perf_submit calls (increment only — stats read from userspace). */
+BPF_ARRAY(socket_data_submit_total, u64, 1);
+`
+		incBlock = `      u32 __sd_idx = 0;
+      u64 *__sd_tot = socket_data_submit_total.lookup(&__sd_idx);
+      if (__sd_tot != NULL) {
+        *__sd_tot += 1;
+      }
+`
+	}
+	source = strings.Replace(source, "BPF_REPLACE_SOCKET_DATA_SUBMIT_MAP", mapDecl, 1)
+	source = strings.Replace(source, "BPF_REPLACE_SOCKET_DATA_SUBMIT_INC", incBlock, 1)
+}
+
+// replaceDisablePerfSubmit sets token DISABLE_PERF_SUBMIT in module.cc to true/false.
+// When true (env TRAFFIC_DISABLE_PERF_SUBMIT), BPF skips all perf_submit calls (no events to userspace).
+func replaceDisablePerfSubmit() {
+	disablePerf := "false"
+	env := os.Getenv("TRAFFIC_DISABLE_PERF_SUBMIT")
+	if len(env) > 0 && strings.EqualFold(env, "true") {
+		disablePerf = "true"
+	}
+	source = strings.Replace(source, "DISABLE_PERF_SUBMIT", disablePerf, -1)
 }
 
 func replaceArchType() {
@@ -106,6 +172,10 @@ func run() {
 	replaceBpfLogsMacros()
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
+	replaceLocalTrafficFilter()
+	replaceStrictRemotePortFilter()
+	replaceDisablePerfSubmit()
+	replaceLogBPFSocketDataSubmits()
 	replaceArchType()
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
@@ -174,9 +244,13 @@ func run() {
 		panic(err)
 	}
 
+	startHostSystemCPULimitMonitor(bpfModule)
+
 	if err := bpfwrapper.AttachKprobes(bpfModule, hooks); err != nil {
 		fmt.Errorf("Error in attaching kprobes %v", err)
 	}
+
+	startBPFSubmitStatsReporter(bpfModule)
 
 	processFactory := process.NewFactory()
 
@@ -248,6 +322,43 @@ func run() {
 	}
 
 	slog.Info("signaled to terminate")
+}
+
+// startBPFSubmitStatsReporter reads BPF_ARRAY socket_data_submit_total every 10s when
+// TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS=true. Counting stays minimal in kernel (one add per submit);
+// windowed logging happens here so we do not bloat the unrolled process_syscall_data loop.
+func startBPFSubmitStatsReporter(bpfModule *bcc.Module) {
+	logBPFSubmits := false
+	trafficUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logBPFSubmits)
+	if !logBPFSubmits {
+		return
+	}
+
+	table := bcc.NewTable(bpfModule.TableId("socket_data_submit_total"), bpfModule)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		var prev uint64
+		primed := false
+		key := make([]byte, 4)
+		for range ticker.C {
+			val, err := table.Get(key)
+			if err != nil || len(val) < 8 {
+				continue
+			}
+			total := binary.LittleEndian.Uint64(val)
+			if !primed {
+				prev = total
+				primed = true
+				continue
+			}
+			delta := total - prev
+			prev = total
+			slog.Warn("BPF socket_data perf_submit stats",
+				"countInWindow", delta,
+				"cumulativeSubmits", total)
+		}
+	}()
 }
 
 func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {

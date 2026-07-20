@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var printCounter = 1000
+var printCounter = 2000
 
 const (
 	DirectionInbound  = 1
@@ -16,7 +16,7 @@ const (
 )
 
 /*
-Initial 1000 logs, marking as warn.
+Initial 2000 logs, marking as warn.
 Help in checking if the module started as expected.
 */
 func PrintLog(val string, args ...any) {
@@ -71,6 +71,14 @@ func InitVar(envVarName string, targetVar interface{}) {
 			if err == nil {
 				*v = temp
 				slog.Warn("Setting env value", "name", envVarName, "value", *v)
+			}
+		case *float64:
+			temp, err := strconv.ParseFloat(envVar, 64)
+			if err == nil {
+				*v = temp
+				slog.Warn("Setting env value", "name", envVarName, "value", *v)
+			} else {
+				slog.Warn("invalid float env, ignoring", "name", envVarName, "raw", envVar, "error", err)
 			}
 		default:
 			slog.Warn("Unsupported type for targetVar", "type", v)

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -22,23 +23,27 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			return
 		}
 
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
+		}
+
 		if !connectionFactory.CanBeFilled() {
 			metaUtils.LogIngest("Connections filled")
 			continue
 		}
 
-		var event structs.SocketOpenEvent
+		var ev structs.SocketOpenEvent
 		err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &ev)
 		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket open", "error", err)
 			continue
 		}
-		connId := event.ConnId
+		connId := ev.ConnId
 		metaUtils.LogIngest("Received socket open event",
 			"fd", connId.Fd,
 			"id", connId.Id,
@@ -46,7 +51,7 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"ip", connId.Ip,
 			"port", connId.Port)
 		connectionFactory.CreateIfNotExists(connId)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, ev)
 	}
 }
 
@@ -55,26 +60,31 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if data == nil {
 			return
 		}
-		var event structs.SocketCloseEvent
+
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
+		}
+
+		var ev structs.SocketCloseEvent
 		err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &ev)
 		}()
 		if err != nil {
 			slog.Error("Failed to decode received data on socket close", "error", err)
 			continue
 		}
 
-		connId := event.ConnId
+		connId := ev.ConnId
 		metaUtils.LogIngest("Received close on",
 			"fd", connId.Fd,
 			"id", connId.Id,
 			"timestamp", connId.Conn_start_ns,
 			"ip", connId.Ip,
 			"port", connId.Port)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, ev)
 	}
 }
 
@@ -92,13 +102,15 @@ var (
 		27017: true,
 		// redis
 		6379: true}
-	ignorePorts      = true
-	globalReader     = &bytes.Reader{}
-	globalReaderLock sync.Mutex
+	ignorePorts              = true
+	globalReader             = &bytes.Reader{}
+	globalReaderLock         sync.Mutex
+	logSocketDataSubmitStats bool
 )
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+	metaUtils.InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &logSocketDataSubmitStats)
 }
 
 func min(a, b int32) int32 {
@@ -108,10 +120,48 @@ func min(a, b int32) int32 {
 	return b
 }
 
+const socketDataInboundLogInterval = 10 * time.Second
+
+// SocketDataEventCallback runs one goroutine per perf map (see ProbeChannel.Start); these
+// fields are only touched from that goroutine — no lock on the hot path.
+var (
+	socketDataInboundCount   uint64
+	socketDataInboundLastLog time.Time // zero until first event arms the window
+)
+
+// noteSocketDataInboundBeforeSend counts socket_data perf records that are about to be
+// handed to the connection factory (after decode, port filter, and payload copy).
+func noteSocketDataInboundBeforeSend() {
+
+	if !logSocketDataSubmitStats {
+		return
+	}
+
+	socketDataInboundCount++
+	now := time.Now()
+	if socketDataInboundLastLog.IsZero() {
+		socketDataInboundLastLog = now
+		return
+	}
+	d := now.Sub(socketDataInboundLastLog)
+	if d < socketDataInboundLogInterval {
+		return
+	}
+	slog.Warn("socket_data events reaching eventCallback",
+		"countInWindow", socketDataInboundCount,
+		"window", d.String())
+	socketDataInboundCount = 0
+	socketDataInboundLastLog = now
+}
+
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
 	for data := range inputChan {
 		if data == nil {
 			return
+		}
+
+		if metaUtils.SystemCPUIngestPaused() {
+			continue
 		}
 
 		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
@@ -119,66 +169,65 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var event structs.SocketDataEvent
-
-		// binary.Read require the input data to be at the same size of the object.
-		// Since the Msg field might be mostly empty, binary.read fails.
-		// So we split the loading into the fixed size attribute parts, and copying the message separately.
-
-		// slog.Debug("data", "data", data)
-
+		var attr structs.SocketDataEventAttr
 		if err := func() error {
 			globalReaderLock.Lock()
 			defer globalReaderLock.Unlock()
 			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
+			return binary.Read(globalReader, bcc.GetHostByteOrder(), &attr)
 		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
 			continue
 		}
 
-		bytesSent := event.Attr.Bytes_sent
+		bytesSent := attr.Bytes_sent
+		n := int(utils.Abs(bytesSent))
 
-		// The 4 bytes are being lost in padding, thus, not taking them into consideration.
-		eventAttributesLogicalSize := 45
-
-		if len(data) > eventAttributesLogicalSize {
-			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
-		}
-
-		connId := event.Attr.ConnId
-
+		connId := attr.ConnId
 		_, ok := ignorePortsMap[connId.Port]
 		if ignorePorts && ok {
 			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount)
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount)
 			continue
 		}
 
-		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
-		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
+		// Perf layout: attr then raw msg; must match BPF struct layout (see SocketDataEventAttr).
+		const eventAttributesLogicalSize = 45
+		msgOff := eventAttributesLogicalSize
+		var payload []byte
+		if n > 0 {
+			if len(data) < msgOff+n {
+				slog.Error("socket data perf record too short", "len", len(data), "need", msgOff+n)
+				continue
+			}
+			payload = make([]byte, n)
+			copy(payload, data[msgOff:msgOff+n])
+		}
 
 		connectionFactory.CreateIfNotExists(connId)
 
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+		if metaUtils.IngestLogsEnabled() && n > 0 {
+			previewLen := min(32, int32(n))
+			metaUtils.LogIngest("Got data",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"ip", connId.Ip,
+				"port", connId.Port,
+				"data", string(payload[:previewLen]),
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount,
+				"ssl", attr.Ssl,
+				"bytesSent", bytesSent)
+		}
 
-		connectionFactory.SendEvent(connId, &event)
-		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-
-		metaUtils.LogIngest("Got data",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"ip", connId.Ip,
-			"port", connId.Port,
-			"data", dataStr,
-			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
-			"ssl", event.Attr.Ssl,
-			"bytesSent", bytesSent)
+		// This is a debug log, so only log if the log level is debug
+		//noteSocketDataInboundBeforeSend()
+		connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
+		connections.UpdateBufferSize(uint64(n))
 	}
 }

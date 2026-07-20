@@ -2,8 +2,9 @@ package bpfwrapper
 
 import (
 	"fmt"
+	"log/slog"
+
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
-	"log"
 
 	"github.com/iovisor/gobpf/bcc"
 
@@ -50,9 +51,9 @@ func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *c
 
 	go probeChannel.eventLoop(probeChannel.eventChannel, connectionFactory)
 	go func() {
-		log.Printf("⚠️ Lost events on channel, starting to listen for lost events on channel %s", probeChannel.name)
+		slog.Warn("listening for lost perf buffer events", "channel", probeChannel.name)
 		for lost := range probeChannel.lostEventsChannel {
-			log.Printf("⚠️ Lost %d events on channel %s", lost, probeChannel.name)
+			slog.Warn("lost events on perf buffer channel", "events_lost", lost, "channel", probeChannel.name)
 		}
 	}()
 

@@ -258,10 +258,16 @@ var (
 	goodRequests               = 0
 	badRequests                = 0
 	debugMode                  = false
+	dataPrintMode              = false
 	outputBandwidthLimitPerMin = -1
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
 	sampleMutex                = sync.RWMutex{}
+	parserMetricsMutex         = sync.Mutex{}
+	parserEventsInWindow       uint64
+	parserReceiveBytesWindow   uint64
+	parserSentBytesWindow      uint64
+	lastParserMetricsLog       time.Time
 	injectTagsMap              = map[string]string{}
 	methodsMap                 = map[string]bool{
 		"GET":     true,
@@ -290,6 +296,37 @@ var (
 var bloomFilter *bloomfilter.BloomFilter
 
 const ONE_MINUTE = 60
+const parserMetricsInterval = 10 * time.Second
+
+func noteParserEvent(receiveBytes int, sentBytes int) {
+	parserMetricsMutex.Lock()
+	defer parserMetricsMutex.Unlock()
+
+	parserEventsInWindow++
+	parserReceiveBytesWindow += uint64(receiveBytes)
+	parserSentBytesWindow += uint64(sentBytes)
+
+	now := time.Now()
+	if lastParserMetricsLog.IsZero() {
+		lastParserMetricsLog = now
+		return
+	}
+
+	if now.Sub(lastParserMetricsLog) < parserMetricsInterval {
+		return
+	}
+
+	slog.Warn("parser events received",
+		"countInWindow", parserEventsInWindow,
+		"window", now.Sub(lastParserMetricsLog).String(),
+		"receiveBytesInWindow", parserReceiveBytesWindow,
+		"sentBytesInWindow", parserSentBytesWindow,
+	)
+	parserEventsInWindow = 0
+	parserReceiveBytesWindow = 0
+	parserSentBytesWindow = 0
+	lastParserMetricsLog = now
+}
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
@@ -300,6 +337,7 @@ func init() {
 	utils.InitVar("BLOOM_FILTER_CAPACITY", &bloomFilterCapacity)
 	utils.InitVar("BLOOM_FILTER_FP_RATE", &bloomFilterFPRate)
 	utils.InitVar("TIME_BUCKET_DURATION_MINUTES", &timeBucketDuration)
+	utils.InitVar("DATA_PRINT_MODE", &dataPrintMode)
 
 	// convert MB to B
 	if outputBandwidthLimitPerMin != -1 {
@@ -609,17 +647,19 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
-	if KafkaDisabled {
-		return
-	}
+	noteParserEvent(len(receiveBuffer), len(sentBuffer))
 
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
 
-	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
 	if shouldPrint {
-		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+		slog.Warn("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
+	}
+
+	if KafkaDisabled {
+		return
 	}
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)

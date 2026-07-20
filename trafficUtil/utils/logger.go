@@ -17,6 +17,10 @@ var (
 	FileLoggingEnabled bool       = false
 )
 
+func LogLevel() slog.Level {
+	return level
+}
+
 func SetupLogger() {
 	slog.Warn("Setting up logger")
 	InitVar("INGEST_LOGS", &ingestLogs)
@@ -57,6 +61,11 @@ func LogIngest(format string, args ...any) {
 	if ingestLogs {
 		slog.Debug(format, args...)
 	}
+}
+
+// IngestLogsEnabled is true when ingest debug logs are enabled.
+func IngestLogsEnabled() bool {
+	return ingestLogs
 }
 
 func LogProcessing(format string, args ...any) {
