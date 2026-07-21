@@ -16,10 +16,12 @@ type metricsSnapshot struct {
 	EventsDroppedChannelFull   int64     `json:"events_dropped_channel_full"`
 	GroupsCreated            int64     `json:"groups_created"`
 	GroupsOrphaned           int64     `json:"groups_orphaned"`
+	GroupsStranded           int64     `json:"groups_stranded"`
 	OutOfOrderArrivals       int64     `json:"out_of_order_arrivals"`
 	LateArrivals             int64     `json:"late_arrivals"`
 	GapSkipsFired            int64     `json:"gap_skips_fired"`
 	GapSkipSeqsLost          int64     `json:"gap_skip_seqs_lost"`
+	ChunkAssemblyGaps        int64     `json:"chunk_assembly_gaps"`
 	PairsAttempted           int64     `json:"pairs_attempted"`
 	PairsParseSuccess        int64     `json:"pairs_parse_success"`
 	PairsParseFailure        int64     `json:"pairs_parse_failure"`
@@ -47,10 +49,12 @@ func snapshot() metricsSnapshot {
 		EventsDroppedChannelFull:   m.EventsDroppedChannelFull.Load(),
 		GroupsCreated:            groupsCreated,
 		GroupsOrphaned:           m.GroupsOrphaned.Load(),
+		GroupsStranded:           m.GroupsStranded.Load(),
 		OutOfOrderArrivals:       m.OutOfOrderArrivals.Load(),
 		LateArrivals:             m.LateArrivals.Load(),
 		GapSkipsFired:            m.GapSkipsFired.Load(),
 		GapSkipSeqsLost:          m.GapSkipSeqsLost.Load(),
+		ChunkAssemblyGaps:        m.ChunkAssemblyGaps.Load(),
 		PairsAttempted:           m.PairsAttempted.Load(),
 		PairsParseSuccess:        pairsSuccess,
 		PairsParseFailure:        m.PairsParseFailure.Load(),

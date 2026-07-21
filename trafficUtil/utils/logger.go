@@ -12,6 +12,7 @@ const LevelOff = slog.Level(99)
 var (
 	ingestLogs         bool = false
 	processLogs        bool = false
+	msgSeqLogs         bool = false
 	aktoLogLevel       string
 	level              slog.Level = slog.LevelWarn
 	FileLoggingEnabled bool       = false
@@ -21,6 +22,7 @@ func SetupLogger() {
 	slog.Warn("Setting up logger")
 	InitVar("INGEST_LOGS", &ingestLogs)
 	InitVar("PROCESS_LOGS", &processLogs)
+	InitVar("MSG_SEQ_LOGS", &msgSeqLogs)
 	InitVar("AKTO_LOG_LEVEL", &aktoLogLevel)
 	InitVar("AKTO_FILE_LOGGING_ENABLED", &FileLoggingEnabled)
 
@@ -61,6 +63,10 @@ func LogIngest(format string, args ...any) {
 
 func IsProcessLogsEnabled() bool {
 	return processLogs
+}
+
+func IsMsgSeqLogsEnabled() bool {
+	return msgSeqLogs
 }
 
 func LogProcessing(format string, args ...any) {

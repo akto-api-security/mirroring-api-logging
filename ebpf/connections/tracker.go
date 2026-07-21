@@ -89,7 +89,7 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	lockStart := time.Now()
 	conn.mutex.Lock()
 	lockWait := time.Since(lockStart)
-	if lockWait > 1*time.Millisecond {
+	if lockWait > 1*time.Millisecond && metaUtils.IsMsgSeqLogsEnabled() {
 		slog.Warn("msg_seq: AddDataEvent mutex wait",
 			"fd", conn.connID.Fd,
 			"wait_ms", lockWait.Milliseconds())
@@ -131,16 +131,20 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 			if !exists {
 				if msgSeq < conn.lowestPendingSeq {
 					metaUtils.Pipeline.LateArrivals.Add(1)
-					slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
-						"fd", conn.connID.Fd,
-						"msg_seq", msgSeq,
-						"lowestPendingSeq", conn.lowestPendingSeq)
+					if metaUtils.IsMsgSeqLogsEnabled() {
+						slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
+							"fd", conn.connID.Fd,
+							"msg_seq", msgSeq,
+							"lowestPendingSeq", conn.lowestPendingSeq)
+					}
 				} else if msgSeq < conn.highestMsgSeq {
 					metaUtils.Pipeline.OutOfOrderArrivals.Add(1)
-					slog.Warn("msg_seq: out-of-order group arrival",
-						"fd", conn.connID.Fd,
-						"msg_seq", msgSeq,
-						"highestMsgSeq", conn.highestMsgSeq)
+					if metaUtils.IsMsgSeqLogsEnabled() {
+						slog.Warn("msg_seq: out-of-order group arrival",
+							"fd", conn.connID.Fd,
+							"msg_seq", msgSeq,
+							"highestMsgSeq", conn.highestMsgSeq)
+					}
 				}
 				group = &msgSeqGroup{
 					msgSeq:    msgSeq,
@@ -163,8 +167,8 @@ func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 				conn.highestMsgSeq = msgSeq
 			}
 
-			if metaUtils.IsProcessLogsEnabled() {
-				metaUtils.LogProcessing("msg_seq: chunk added",
+			if metaUtils.IsMsgSeqLogsEnabled() {
+				slog.Debug("msg_seq: chunk added",
 					"fd", conn.connID.Fd,
 					"msg_seq", msgSeq,
 					"direction", group.direction,
@@ -221,7 +225,7 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 	holdStart := time.Now()
 	defer func() {
 		holdTime := time.Since(holdStart)
-		if lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond {
+		if (lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond) && metaUtils.IsMsgSeqLogsEnabled() {
 			slog.Warn("msg_seq: GetFlushablePairs mutex timing",
 				"fd", conn.connID.Fd,
 				"wait_ms", lockWait.Milliseconds(),
@@ -241,7 +245,7 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 
 	conn.lowestPendingSeq = seq
 
-	if len(pairs) == 0 {
+	if len(pairs) == 0 && metaUtils.IsMsgSeqLogsEnabled() {
 		slog.Debug("msg_seq: no flushable pairs",
 			"fd", conn.connID.Fd,
 			"lowest_pending", conn.lowestPendingSeq,
@@ -262,7 +266,7 @@ func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
 	holdStart := time.Now()
 	defer func() {
 		holdTime := time.Since(holdStart)
-		if lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond {
+		if (lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond) && metaUtils.IsMsgSeqLogsEnabled() {
 			slog.Warn("msg_seq: FlushRemainingPairs mutex timing",
 				"fd", conn.connID.Fd,
 				"wait_ms", lockWait.Milliseconds(),
@@ -277,10 +281,25 @@ func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
 	}
 
 	pairs, seq := conn.drainPairs(conn.lowestPendingSeq, func(seq uint32) bool {
-		return len(conn.msgGroups) > 0
+		return len(conn.msgGroups) > 0 && seq <= conn.highestMsgSeq
 	})
 
 	conn.lowestPendingSeq = seq
+
+	// Clean up any stranded entries that drainPairs couldn't reach
+	// (late arrivals below lowestPendingSeq that were written back into msgGroups).
+	for k, g := range conn.msgGroups {
+		metaUtils.Pipeline.GroupsStranded.Add(1)
+		if metaUtils.IsMsgSeqLogsEnabled() {
+			slog.Warn("msg_seq: stranded group discarded at final flush",
+				"fd", conn.connID.Fd,
+				"msg_seq", k,
+				"direction", g.direction,
+				"chunks", len(g.chunks))
+		}
+		delete(conn.msgGroups, k)
+	}
+
 	return pairs
 }
 
@@ -306,20 +325,24 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 			skippedSeq := seq
 			if ok1 {
 				metaUtils.Pipeline.GroupsOrphaned.Add(1)
-				slog.Warn("msg_seq: orphaned group (partner missing)",
-					"fd", conn.connID.Fd,
-					"msg_seq", seq,
-					"direction", g1.direction,
-					"chunks", len(g1.chunks))
+				if metaUtils.IsMsgSeqLogsEnabled() {
+					slog.Warn("msg_seq: orphaned group (partner missing)",
+						"fd", conn.connID.Fd,
+						"msg_seq", seq,
+						"direction", g1.direction,
+						"chunks", len(g1.chunks))
+				}
 				delete(conn.msgGroups, seq)
 			}
 			if ok2 {
 				metaUtils.Pipeline.GroupsOrphaned.Add(1)
-				slog.Warn("msg_seq: orphaned group (partner missing)",
-					"fd", conn.connID.Fd,
-					"msg_seq", seq+1,
-					"direction", g2.direction,
-					"chunks", len(g2.chunks))
+				if metaUtils.IsMsgSeqLogsEnabled() {
+					slog.Warn("msg_seq: orphaned group (partner missing)",
+						"fd", conn.connID.Fd,
+						"msg_seq", seq+1,
+						"direction", g2.direction,
+						"chunks", len(g2.chunks))
+				}
 				delete(conn.msgGroups, seq+1)
 			}
 			if seq%2 == 0 {
@@ -329,21 +352,25 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 			}
 			metaUtils.Pipeline.GapSkipsFired.Add(1)
 			metaUtils.Pipeline.GapSkipSeqsLost.Add(int64(seq - skippedSeq))
-			slog.Warn("msg_seq: gap-skip",
-				"fd", conn.connID.Fd,
-				"skipped_from", skippedSeq,
-				"lowestPendingSeq_after", seq,
-				"highestMsgSeq", conn.highestMsgSeq)
+			if metaUtils.IsMsgSeqLogsEnabled() {
+				slog.Warn("msg_seq: gap-skip",
+					"fd", conn.connID.Fd,
+					"skipped_from", skippedSeq,
+					"lowestPendingSeq_after", seq,
+					"highestMsgSeq", conn.highestMsgSeq)
+			}
 			continue
 		}
 
-		slog.Info("msg_seq: flushing pair",
-			"fd", conn.connID.Fd,
-			"req_msg_seq", g1.msgSeq,
-			"resp_msg_seq", g2.msgSeq,
-			"req_chunks", len(g1.chunks),
-			"resp_chunks", len(g2.chunks),
-			"remaining_groups", len(conn.msgGroups)-2)
+		if metaUtils.IsMsgSeqLogsEnabled() {
+			slog.Info("msg_seq: flushing pair",
+				"fd", conn.connID.Fd,
+				"req_msg_seq", g1.msgSeq,
+				"resp_msg_seq", g2.msgSeq,
+				"req_chunks", len(g1.chunks),
+				"resp_chunks", len(g2.chunks),
+				"remaining_groups", len(conn.msgGroups)-2)
+		}
 
 		pairs = append(pairs, MsgSeqPair{ReqGroup: g1, RespGroup: g2})
 		delete(conn.msgGroups, seq)

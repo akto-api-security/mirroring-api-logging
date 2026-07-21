@@ -35,6 +35,7 @@ Every HTTP request on a connection creates 2 groups: one ingress (request), one 
 |---|---|
 | `groups_created` | New msg_seq group first seen in `AddDataEvent`. Proxy for "HTTP message boundaries seen". |
 | `groups_orphaned` | Groups whose partner (request or response) was missing at flush time in `drainPairs`. Cause: partner's events were dropped, or connection closed mid-flight. |
+| `groups_stranded` | Groups discarded at final flush because they were below `lowestPendingSeq` (late arrivals written back into msgGroups). Cause: premature gap-skip due to cross-CPU delivery skew. |
 | `out_of_order_arrivals` | Group arrived with `msg_seq < highestMsgSeq` but `≥ lowestPendingSeq`. Cross-CPU delivery skew (multiple gobpf reader goroutines race into eventChannel). **Not data loss** — group is still reachable by drainPairs. |
 | `late_arrivals` | Group arrived with `msg_seq < lowestPendingSeq` (already passed by drainPairs). **Silent discard** — group is stranded, never flushed. |
 
@@ -53,6 +54,7 @@ become late arrivals.
 
 | Field | Description |
 |---|---|
+| `chunk_assembly_gaps` | `convertToSingleByteArr` detected a gap in rc/wc chunk keys and truncated the blob early. A dropped chunk causes this. The resulting truncated blob typically causes `pairs_parse_failure` downstream. Connects top-of-pipeline drops to parse failures. |
 | `pairs_attempted` | Pairs passed to `ProcessSinglePair`. Incremented before HTTP blob detection. |
 | `pairs_parse_success` | Pairs where `ParseAndProduce` successfully produced at least one request-response to Kafka. |
 | `pairs_parse_failure` | Pairs where `parseHTTPTraffic` returned nil — neither blob was a recognizable HTTP message (corrupt or truncated). |

@@ -19,12 +19,16 @@ type PipelineMetrics struct {
 	// Group lifecycle (one group = one HTTP message direction)
 	GroupsCreated      atomic.Int64 // new msg_seq group first seen in AddDataEvent
 	GroupsOrphaned     atomic.Int64 // partner missing at flush time (drainPairs)
+	GroupsStranded     atomic.Int64 // late arrivals below lowestPendingSeq, discarded at final flush
 	OutOfOrderArrivals atomic.Int64 // msg_seq < highestMsgSeq at group creation
 	LateArrivals       atomic.Int64 // msg_seq < lowestPendingSeq (already flushed)
 
 	// Gap-skip (drainPairs advancing lowestPendingSeq past a missing seq)
 	GapSkipsFired   atomic.Int64 // how many times a missing seq triggered a skip
 	GapSkipSeqsLost atomic.Int64 // total individual seqs skipped across all gap-skips
+
+	// Chunk assembly
+	ChunkAssemblyGaps atomic.Int64 // convertToSingleByteArr broke early due to missing chunk key (silent truncation)
 
 	// Pair outcomes
 	PairsAttempted      atomic.Int64 // pairs passed to ProcessSinglePair
@@ -51,10 +55,12 @@ func (m *PipelineMetrics) Reset() {
 	m.EventsDroppedChannelFull.Store(0)
 	m.GroupsCreated.Store(0)
 	m.GroupsOrphaned.Store(0)
+	m.GroupsStranded.Store(0)
 	m.OutOfOrderArrivals.Store(0)
 	m.LateArrivals.Store(0)
 	m.GapSkipsFired.Store(0)
 	m.GapSkipSeqsLost.Store(0)
+	m.ChunkAssemblyGaps.Store(0)
 	m.PairsAttempted.Store(0)
 	m.PairsParseSuccess.Store(0)
 	m.PairsParseFailure.Store(0)

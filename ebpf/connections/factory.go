@@ -71,6 +71,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 		} else {
 			if kPrev+1 != k {
 				slog.Warn("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
+				utils.Pipeline.ChunkAssemblyGaps.Add(1)
 				break
 			}
 			kPrev = k
@@ -190,10 +191,12 @@ func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, 
 		}
 	} else {
 		utils.Pipeline.PairsParseFailure.Add(1)
-		slog.Warn("msg_seq: neither blob starts with HTTP",
-			"fd", connID.Fd,
-			"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
-			"g2_preview", string(g2Blob[:min(32, len(g2Blob))]))
+		if utils.IsMsgSeqLogsEnabled() {
+			slog.Warn("msg_seq: neither blob starts with HTTP",
+				"fd", connID.Fd,
+				"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
+				"g2_preview", string(g2Blob[:min(32, len(g2Blob))]))
+		}
 	}
 }
 
@@ -350,11 +353,13 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case <-inactivityTimer.C:
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 				if UseMsgSeqFlush {
-					slog.Info("msg_seq: inactivity flush",
-						"fd", connID.Fd,
-						"remaining_groups", len(tracker.msgGroups),
-						"lowest_pending", tracker.lowestPendingSeq,
-						"highest", tracker.highestMsgSeq)
+					if utils.IsMsgSeqLogsEnabled() {
+						slog.Info("msg_seq: inactivity flush",
+							"fd", connID.Fd,
+							"remaining_groups", len(tracker.msgGroups),
+							"lowest_pending", tracker.lowestPendingSeq,
+							"highest", tracker.highestMsgSeq)
+					}
 					close(done) // signal flush routine to do final flush and exit
 					factory.DeleteWorker(connID)
 				} else {
@@ -381,16 +386,18 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 				g1Blob := convertToSingleByteArr(pair.ReqGroup.chunks)
 				g2Blob := convertToSingleByteArr(pair.RespGroup.chunks)
 
-				slog.Info("msg_seq: processing pair (tick)",
-					"fd", connID.Fd,
-					"g1_msg_seq", pair.ReqGroup.msgSeq,
-					"g2_msg_seq", pair.RespGroup.msgSeq,
-					"g1_bytes", len(g1Blob),
-					"g2_bytes", len(g2Blob))
+				if utils.IsMsgSeqLogsEnabled() {
+					slog.Info("msg_seq: processing pair (tick)",
+						"fd", connID.Fd,
+						"g1_msg_seq", pair.ReqGroup.msgSeq,
+						"g2_msg_seq", pair.RespGroup.msgSeq,
+						"g1_bytes", len(g1Blob),
+						"g2_bytes", len(g2Blob))
+				}
 
 				ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
 			}
-			if len(pairs) > 0 {
+			if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
 				slog.Info("msg_seq: flushed pairs (tick)",
 					"fd", connID.Fd,
 					"pairs_flushed", len(pairs))
@@ -398,9 +405,11 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 
 		case <-done:
 			// Final flush of all remaining pairs before exit
-			slog.Info("msg_seq: flush routine exiting, final flush",
-				"fd", connID.Fd,
-				"remaining_groups", len(tracker.msgGroups))
+			if utils.IsMsgSeqLogsEnabled() {
+				slog.Info("msg_seq: flush routine exiting, final flush",
+					"fd", connID.Fd,
+					"remaining_groups", len(tracker.msgGroups))
+			}
 			flushAndProcessRemainingPairs(connID, tracker)
 			return
 		}
@@ -413,16 +422,18 @@ func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
 		g1Blob := convertToSingleByteArr(pair.ReqGroup.chunks)
 		g2Blob := convertToSingleByteArr(pair.RespGroup.chunks)
 
-		slog.Info("msg_seq: processing remaining pair",
-			"fd", connID.Fd,
-			"g1_msg_seq", pair.ReqGroup.msgSeq,
-			"g2_msg_seq", pair.RespGroup.msgSeq,
-			"g1_bytes", len(g1Blob),
-			"g2_bytes", len(g2Blob))
+		if utils.IsMsgSeqLogsEnabled() {
+			slog.Info("msg_seq: processing remaining pair",
+				"fd", connID.Fd,
+				"g1_msg_seq", pair.ReqGroup.msgSeq,
+				"g2_msg_seq", pair.RespGroup.msgSeq,
+				"g1_bytes", len(g1Blob),
+				"g2_bytes", len(g2Blob))
+		}
 
 		ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
 	}
-	if len(pairs) > 0 {
+	if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
 		slog.Info("msg_seq: flushed remaining pairs",
 			"fd", connID.Fd,
 			"pairs_flushed", len(pairs))
