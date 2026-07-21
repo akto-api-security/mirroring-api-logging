@@ -303,6 +303,7 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 		g2, ok2 := conn.msgGroups[seq+1]
 
 		if !ok1 || !ok2 {
+			skippedSeq := seq
 			if ok1 {
 				metaUtils.Pipeline.GroupsOrphaned.Add(1)
 				slog.Warn("msg_seq: orphaned group (partner missing)",
@@ -326,6 +327,13 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 			} else {
 				seq += 2
 			}
+			metaUtils.Pipeline.GapSkipsFired.Add(1)
+			metaUtils.Pipeline.GapSkipSeqsLost.Add(int64(seq - skippedSeq))
+			slog.Warn("msg_seq: gap-skip",
+				"fd", conn.connID.Fd,
+				"skipped_from", skippedSeq,
+				"lowestPendingSeq_after", seq,
+				"highestMsgSeq", conn.highestMsgSeq)
 			continue
 		}
 

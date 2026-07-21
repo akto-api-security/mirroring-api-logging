@@ -18,6 +18,8 @@ type metricsSnapshot struct {
 	GroupsOrphaned           int64     `json:"groups_orphaned"`
 	OutOfOrderArrivals       int64     `json:"out_of_order_arrivals"`
 	LateArrivals             int64     `json:"late_arrivals"`
+	GapSkipsFired            int64     `json:"gap_skips_fired"`
+	GapSkipSeqsLost          int64     `json:"gap_skip_seqs_lost"`
 	PairsAttempted           int64     `json:"pairs_attempted"`
 	PairsParseSuccess        int64     `json:"pairs_parse_success"`
 	PairsParseFailure        int64     `json:"pairs_parse_failure"`
@@ -47,6 +49,8 @@ func snapshot() metricsSnapshot {
 		GroupsOrphaned:           m.GroupsOrphaned.Load(),
 		OutOfOrderArrivals:       m.OutOfOrderArrivals.Load(),
 		LateArrivals:             m.LateArrivals.Load(),
+		GapSkipsFired:            m.GapSkipsFired.Load(),
+		GapSkipSeqsLost:          m.GapSkipSeqsLost.Load(),
 		PairsAttempted:           m.PairsAttempted.Load(),
 		PairsParseSuccess:        pairsSuccess,
 		PairsParseFailure:        m.PairsParseFailure.Load(),

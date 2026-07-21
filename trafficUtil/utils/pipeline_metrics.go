@@ -22,6 +22,10 @@ type PipelineMetrics struct {
 	OutOfOrderArrivals atomic.Int64 // msg_seq < highestMsgSeq at group creation
 	LateArrivals       atomic.Int64 // msg_seq < lowestPendingSeq (already flushed)
 
+	// Gap-skip (drainPairs advancing lowestPendingSeq past a missing seq)
+	GapSkipsFired   atomic.Int64 // how many times a missing seq triggered a skip
+	GapSkipSeqsLost atomic.Int64 // total individual seqs skipped across all gap-skips
+
 	// Pair outcomes
 	PairsAttempted      atomic.Int64 // pairs passed to ProcessSinglePair
 	PairsParseSuccess   atomic.Int64 // ParseAndProduce produced at least one req-resp pair
@@ -49,6 +53,8 @@ func (m *PipelineMetrics) Reset() {
 	m.GroupsOrphaned.Store(0)
 	m.OutOfOrderArrivals.Store(0)
 	m.LateArrivals.Store(0)
+	m.GapSkipsFired.Store(0)
+	m.GapSkipSeqsLost.Store(0)
 	m.PairsAttempted.Store(0)
 	m.PairsParseSuccess.Store(0)
 	m.PairsParseFailure.Store(0)
