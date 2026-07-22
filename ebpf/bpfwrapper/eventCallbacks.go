@@ -81,6 +81,16 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 var (
 	// this also includes space lost in padding.
 	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
+	socketDataEventPool = sync.Pool{New: func() any { return new(structs.SocketDataEvent) }}
+)
+
+// ReleaseSocketDataEvent returns a SocketDataEvent to the pool.
+// Must be called by the worker goroutine after all fields of the event have been read.
+func ReleaseSocketDataEvent(e *structs.SocketDataEvent) {
+	socketDataEventPool.Put(e)
+}
+
+var (
 	ignorePortsMap      = map[uint16]bool{
 		// kafka
 		9092:  true,
@@ -119,7 +129,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var event structs.SocketDataEvent
+		event := socketDataEventPool.Get().(*structs.SocketDataEvent)
 
 		// binary.Read require the input data to be at the same size of the object.
 		// Since the Msg field might be mostly empty, binary.read fails.
@@ -134,6 +144,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
 		}(); err != nil {
 			slog.Error("Failed to decode received data", "error", err)
+			socketDataEventPool.Put(event)
 			continue
 		}
 
@@ -180,7 +191,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"bytesSent", bytesSent)
 
 		metaUtils.Pipeline.EventsReceived.Add(1)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 
 	}

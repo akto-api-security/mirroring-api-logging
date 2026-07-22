@@ -85,7 +85,7 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
+func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 	lockStart := time.Now()
 	conn.mutex.Lock()
 	lockWait := time.Since(lockStart)
