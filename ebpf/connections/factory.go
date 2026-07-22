@@ -312,10 +312,11 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				switch e := event.(type) {
 				case *structs.SocketDataEvent:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-					tracker.AddDataEvent(*e)
+					tracker.AddDataEvent(e)
 
 					if !UseMsgSeqFlush && tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
+						structs.ReleaseSocketDataEvent(e)
 						factory.StopProcessing(connID)
 						return
 					}
@@ -327,6 +328,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					} else {
 						resetTimer(inactivityTimer, inactivityThreshold)
 					}
+					structs.ReleaseSocketDataEvent(e)
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 					tracker.AddOpenEvent(*e)
