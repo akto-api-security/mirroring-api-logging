@@ -25,6 +25,7 @@ type metricsSnapshot struct {
 	PairsAttempted           int64     `json:"pairs_attempted"`
 	PairsParseSuccess        int64     `json:"pairs_parse_success"`
 	PairsParseFailure        int64     `json:"pairs_parse_failure"`
+	PairsMismatched          int64     `json:"pairs_mismatched"`
 	RequestBodyFailure       int64     `json:"request_body_failure"`
 	ResponseBodyFailure      int64     `json:"response_body_failure"`
 	CoveragePct              float64   `json:"coverage_pct"`
@@ -58,6 +59,7 @@ func snapshot() metricsSnapshot {
 		PairsAttempted:           m.PairsAttempted.Load(),
 		PairsParseSuccess:        pairsSuccess,
 		PairsParseFailure:        m.PairsParseFailure.Load(),
+		PairsMismatched:          m.PairsMismatched.Load(),
 		RequestBodyFailure:       m.RequestBodyFailure.Load(),
 		ResponseBodyFailure:      m.ResponseBodyFailure.Load(),
 		CoveragePct:              coveragePct,

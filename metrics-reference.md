@@ -58,6 +58,7 @@ become late arrivals.
 | `pairs_attempted` | Pairs passed to `ProcessSinglePair`. Incremented before HTTP blob detection. |
 | `pairs_parse_success` | Pairs where `ParseAndProduce` successfully produced at least one request-response to Kafka. |
 | `pairs_parse_failure` | Pairs where `parseHTTPTraffic` returned nil — neither blob was a recognizable HTTP message (corrupt or truncated). |
+| `pairs_mismatched` | Pairs where `X-Debug-Token` request header value was not found in the response body. Indicates a mangled or mismatched request-response pairing. Only fires when the header is present (echo-server / debug runs). |
 | `request_body_failure` | Pairs where `io.ReadAll` failed on the request body. Pair is still produced with empty body; not counted as parse failure. |
 | `response_body_failure` | Pairs where `io.ReadAll` failed on the response body. Same treatment as above. |
 
@@ -167,3 +168,4 @@ Each metric has a corresponding log line to pinpoint when it occurred:
 | `groups_orphaned` | `msg_seq: orphaned group (partner missing)` |
 | `pairs_parse_failure` | logged inside `ParseAndProduce` |
 | `pairs_parse_success` (inverse) | `msg_seq: flushing pair` (one per pair attempted) |
+| `pairs_mismatched` | no log line — check by correlating `X-Debug-Token` values in request/response blobs |

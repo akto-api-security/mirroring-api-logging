@@ -34,6 +34,7 @@ type PipelineMetrics struct {
 	PairsAttempted      atomic.Int64 // pairs passed to ProcessSinglePair
 	PairsParseSuccess   atomic.Int64 // ParseAndProduce produced at least one req-resp pair
 	PairsParseFailure   atomic.Int64 // parseHTTPTraffic returned nil (corrupt/truncated req or resp)
+	PairsMismatched     atomic.Int64 // X-Debug-Token in request not found in response body (echo mismatch)
 	RequestBodyFailure  atomic.Int64 // req body io.ReadAll failed (pair still produced, empty body)
 	ResponseBodyFailure atomic.Int64 // resp body io.ReadAll failed (pair still produced, empty body)
 
@@ -64,6 +65,7 @@ func (m *PipelineMetrics) Reset() {
 	m.PairsAttempted.Store(0)
 	m.PairsParseSuccess.Store(0)
 	m.PairsParseFailure.Store(0)
+	m.PairsMismatched.Store(0)
 	m.RequestBodyFailure.Store(0)
 	m.ResponseBodyFailure.Store(0)
 	m.ResetAt = time.Now()

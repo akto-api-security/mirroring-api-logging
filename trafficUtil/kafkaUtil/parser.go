@@ -738,6 +738,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			}
 		}
 
+		if token := headers.Request.StringMap["X-Debug-Token"]; token != "" {
+			if !strings.Contains(responsesContent[i], token) {
+				utils.Pipeline.PairsMismatched.Add(1)
+			}
+		}
 		utils.Pipeline.PairsParseSuccess.Add(1)
 		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
 	}
