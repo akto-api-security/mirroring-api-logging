@@ -20,116 +20,159 @@ process_syscall_data()
   │ msg_seq increments on direction change (read→write or write→read)
   │
   ▼
-perf_submit()  ──────────────►  perf reader goroutines (one per CPU, BPF_PERF_OUTPUT)
-                                  │ 8192 pages per CPU → ~32MB kernel-side buffer
-                                  │ multiple goroutines race into a single Go channel
+perf_event_output()  ──────────►  Three separate ProbeChannels, each with:
+                                    - its own BPF perf map (BPF_PERF_OUTPUT)
+                                    - its own per-CPU perf event mmap buffers
+                                      (8192 pages ~32MB per CPU, via perf_event_open)
+                                    - its own Go eventChannel (chan []byte)
+                                    - its own single callback goroutine
+                                  
+                                  socket_open_events  ──► SocketOpenEventCallback
+                                  socket_data_events  ──► SocketDataEventCallback
+                                  socket_close_events ──► SocketCloseEventCallback
+
+                                  Each per-CPU perf event buffer is drained by gobpf
+                                  reader goroutines into that channel. If a buffer fills
+                                  before being drained → events dropped → lostEventsChannel
+                                  fires → EventsDroppedKernelPerfBuf++
                                   │
                                   ▼
-                                eventChannel (chan []byte, buffer=EVENT_CHAN_BUFF_SIZE)
-                                  │ single global channel for ALL connections
-                                  │
-                                  ▼
-                          ┌─ SocketDataEventCallback (SINGLE goroutine) ─┐
-                          │                                               │
-                          │  1. binary.Read → parse SocketDataEvent       │
-                          │  2. CreateIfNotExists(connId)                  │
-                          │     └─ if new: create Tracker + per-conn ch   │
-                          │        + start worker goroutine               │
-                          │        + start flush goroutine                │
-                          │  3. SendEvent(connId, &event)                 │
-                          │     └─ ch <- event (non-blocking)             │
-                          │     └─ if channel full: DROP                  │
-                          └───────────────────────────────────────────────┘
-                                  │
-                                  ▼
-                          per-connection channel (chan interface{}, buffer=AKTO_PER_CONN_CH_BUFFER_SIZE)
-                                  │
-                                  ▼
-                          ┌─ Worker Goroutine (one per connection) ──────┐
-                          │                                              │
-                          │  select:                                     │
-                          │    case event <- ch:                         │
-                          │      SocketDataEvent → tracker.AddDataEvent  │
-                          │        └─ appends chunk to msgGroups[msg_seq]│
-                          │      SocketOpenEvent  → tracker.AddOpenEvent │
-                          │      SocketCloseEvent → close(done)          │
-                          │                                              │
-                          │    case <-inactivityTimer (7s):              │
-                          │      close(done) → cleanup                   │
-                          └──────────────────────────────────────────────┘
-                                  │
-                          (done channel signals flush routine to exit)
-                                  │
-                                  ▼
-                          ┌─ Flush Goroutine (one per connection) ────────────────────────┐
-                          │                                                                │
-                          │  ticker (every MSG_SEQ_FLUSH_TICK_INTERVAL, default 500ms):   │
-                          │    1. tracker.GetFlushablePairs()                              │
-                          │       └─ acquires tracker.mutex                               │
-                          │       └─ pair (N, N+1) is flushable when N+2 exists          │
-                          │       └─ advances lowestPendingSeq                            │
-                          │       └─ deletes flushed groups from msgGroups                │
-                          │       └─ releases tracker.mutex                               │
-                          │    2. for each pair:                                          │
-                          │       convertToSingleByteArr(chunks) → reqBlob, respBlob     │
-                          │       ProcessSinglePair → tryReadFromBD → ParseAndProduce    │
-                          │         └─ http.ReadRequest / http.ReadResponse               │
-                          │         └─ Kafka produce                                     │
-                          │                                                               │
-                          │  case <-done:                                                 │
-                          │    FlushRemainingPairs (no N+2 trigger needed)               │
-                          │    return                                                     │
+                          ┌─ SocketDataEventCallback (SINGLE goroutine) ──────────────────┐
+                          │                                                                 │
+                          │  1. CanBeFilled() + BufferCheck() — drop silently if over      │
+                          │     limits (maxActiveConnections, sampleBufferPerMin)           │
+                          │  2. binary.Read → parse event.Attr (fixed-size header, 68B)    │
+                          │  3. copy(event.Msg[:], data[68:68+absBytes])                   │
+                          │     perf event buffer bytes → event.Msg array on stack         │
+                          │  4. Filter: skip ports (kafka/zookeeper/mongo/redis)            │
+                          │  5. CreateIfNotExists(connId)                                  │
+                          │     └─ if new: Tracker + per-conn channel (buffer=10)          │
+                          │        + start Worker goroutine                                │
+                          │        + start Flush goroutine (if UseMsgSeqFlush)             │
+                          │  6. Pipeline.EventsReceived.Add(1)                             │
+                          │  7. SendEvent(connId, &event) — non-blocking send              │
+                          │     if channel full: DROP → EventsDroppedChannelFull++         │
+                          │  8. UpdateBufferSize(absBytes)                                 │
                           └───────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                          per-connection channel (chan interface{}, buffer=AKTO_PER_CONN_CH_BUFFER_SIZE=10)
+                                  │
+                                  ▼
+                          ┌─ Worker Goroutine (one per connection) ───────────────────────┐
+                          │                                                                │
+                          │  select:                                                       │
+                          │    case event := <-ch:                                         │
+                          │      SocketDataEvent → tracker.AddDataEvent(*e)               │
+                          │        └─ acquires tracker.mutex (Lock)                        │
+                          │        └─ append(group.chunks[chunkKey], event.Msg[:n]...)    │
+                          │        └─ updates highestMsgSeq if higher                     │
+                          │           (set AFTER msgGroups insert, in same lock hold —    │
+                          │            guarantees msgGroups[seq] exists when highestMsgSeq│
+                          │            reflects it)                                        │
+                          │        └─ LateArrivals++ or OutOfOrderArrivals++ if applicable│
+                          │        └─ releases tracker.mutex                               │
+                          │        └─ resets inactivityTimer only on new MsgSeq value     │
+                          │      SocketOpenEvent  → tracker.AddOpenEvent(*e)              │
+                          │      SocketCloseEvent → tracker.AddCloseEvent(*e)             │
+                          │                         schedules 100ms delayed close          │
+                          │                                                                │
+                          │    case <-delayedDeleteChan (100ms after SocketClose):        │
+                          │      close(done) → signals flush goroutine for final flush     │
+                          │      factory.DeleteWorker(connID)                              │
+                          │      return                                                    │
+                          │                                                                │
+                          │    case <-inactivityTimer (TRAFFIC_INACTIVITY_THRESHOLD=7s):  │
+                          │      close(done) → signals flush goroutine for final flush     │
+                          │      factory.DeleteWorker(connID)                              │
+                          │      return                                                    │
+                          └────────────────────────────────────────────────────────────────┘
+                                  │
+                          (worker closes done channel → signals flush goroutine)
+                                  │
+                                  ▼
+                          ┌─ Flush Goroutine (one per connection) ──────────────────────────────────────────┐
+                          │                                                                                   │
+                          │  ticker (every MSG_SEQ_FLUSH_TICK_INTERVAL=500ms):                               │
+                          │    tracker.GetFlushablePairs()                                                   │
+                          │      └─ acquires tracker.mutex                                                   │
+                          │      └─ skips if len(msgGroups) < 3                                             │
+                          │      └─ drainPairs(lowestPendingSeq, sealed: seq+2 <= highestMsgSeq)            │
+                          │           walk msgGroups from lowestPendingSeq:                                  │
+                          │             if g1(seq) + g2(seq+1) both present → pair, delete both             │
+                          │             if either missing → gap-skip:                                        │
+                          │               advance seq, orphan any present half (GroupsOrphaned++)            │
+                          │               GapSkipsFired++, GapSkipSeqsLost += skipped count                 │
+                          │           stop when seq+2 > highestMsgSeq                                       │
+                          │           (seq+2 not yet confirmed arrived — avoids premature orphaning          │
+                          │            of the last pair before its trigger event lands)                      │
+                          │      └─ advances lowestPendingSeq                                               │
+                          │      └─ releases tracker.mutex                                                   │
+                          │    for each flushed pair:                                                        │
+                          │      convertToSingleByteArr(pair.ReqGroup.chunks) → reqBlob                │
+                          │        sort chunk keys (rc order), append into combined []byte                   │
+                          │        stops early on key gap → ChunkAssemblyGaps++                              │
+                          │      convertToSingleByteArr(pair.RespGroup.chunks) → respBlob                   │
+                          │      ProcessSinglePair → tryReadFromBD → ParseAndProduce                        │
+                          │        → http.ReadRequest / http.ReadResponse                                    │
+                          │        → json.Marshal → Kafka produce                                            │
+                          │                                                                                   │
+                          │  case <-done:                                                                    │
+                          │    tracker.FlushRemainingPairs()                                                 │
+                          │      └─ drainPairs(lowestPendingSeq, sealed: seq <= highestMsgSeq)              │
+                          │           (relaxed seal — no N+2 trigger needed, connection is ending)           │
+                          │      └─ after drain: iterate remaining msgGroups entries                         │
+                          │           these are stranded late arrivals (below lowestPendingSeq)              │
+                          │           GroupsStranded++ for each, then delete                                 │
+                          │    process remaining pairs (same copy chain)                                     │
+                          │    return                                                                         │
+                          └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## How a 20KB HTTP Request Flows Through
+## How a 4KB HTTP Request Flows Through (keep-alive connection)
 
 ```
 Kernel: echo-server calls read(fd=8, buf, 4096)
-  → BPF intercepts via syscall__probe_ret_read
-  → process_syscall_data(is_send=false)
-  → direction = kIngress
-  → msg_seq was 0 → set to 1, prev_direction = kIngress
-  → chunk loop: 4096 bytes → perf_submit (rc=1, wc=0, msg_seq=1)
-
-Kernel: read(fd=8) again → 4096 bytes
-  → direction = kIngress, same as prev → msg_seq stays 1
-  → perf_submit (rc=2, wc=0, msg_seq=1)
-
-... more reads (all msg_seq=1) ...
+  → BPF intercepts, direction=kIngress
+  → prev direction was kEgress (last response) → direction changed → msg_seq becomes 3
+  → perf_event_output: rc=1, wc=N_prev, msg_seq=3, bytes=4096
 
 Kernel: echo-server calls write(fd=8, response, 4096)
-  → direction = kEgress, different from prev (kIngress) → msg_seq becomes 2
-  → perf_submit (rc=N, wc=1, msg_seq=2)
+  → direction=kEgress, changed from kIngress → msg_seq becomes 4
+  → perf_event_output: rc=M, wc=1, msg_seq=4, bytes=4096
 
-... more writes (all msg_seq=2) ...
+Go: SocketDataEventCallback
+  → copy(event.Msg, data[68:68+4096])
+  → SendEvent → per-conn channel
 
-Go: all events arrive on eventChannel, dispatched to fd=8's worker channel
-  → AddDataEvent: chunks grouped into msgGroups[1] (request) and msgGroups[2] (response)
+Go: Worker goroutine
+  → AddDataEvent: append chunk into msgGroups[3], msgGroups[4]
+  → highestMsgSeq = 4
 
-Kernel: next request arrives, read(fd=8)
-  → direction = kIngress, different from prev (kEgress) → msg_seq becomes 3
-  → perf_submit arrives in Go
+Go: next request arrives → msg_seq=5 event
+  → highestMsgSeq = 5
 
-Go: flush ticker fires, GetFlushablePairs:
-  → msgGroups[1] exists, msgGroups[2] exists, msgGroups[3] exists (trigger)
-  → pair (1, 2) is complete → flush
-  → convertToSingleByteArr(msgGroups[1].chunks) → request blob
-  → convertToSingleByteArr(msgGroups[2].chunks) → response blob
-  → ProcessSinglePair → ParseAndProduce → Kafka
+Go: flush ticker (500ms)
+  → GetFlushablePairs: seq=3, seq+2=5 <= highestMsgSeq=5 ✓
+  → g1=msgGroups[3], g2=msgGroups[4] both present → pair
+  → delete msgGroups[3], msgGroups[4], lowestPendingSeq=5
+  → convertToSingleByteArr(g1.chunks) → reqBlob
+  → convertToSingleByteArr(g2.chunks) → respBlob
+  → ParseAndProduce → json.Marshal → Kafka
 ```
 
 ## Goroutines per Connection
 
 ```
 Connection fd=8:
-  1. Worker goroutine     — reads ch, calls AddDataEvent (fast, map append)
-  2. Flush goroutine      — ticker, calls GetFlushablePairs + ProcessSinglePair (slow, HTTP parse + Kafka)
+  1. Worker goroutine  — reads ch, calls AddDataEvent (fast: mutex + map append)
+  2. Flush goroutine   — ticker 500ms, GetFlushablePairs + HTTP parse + Kafka (slow)
 
 Shared state: tracker.msgGroups (protected by tracker.mutex)
-  - Worker writes (AddDataEvent acquires Lock)
-  - Flush reads/deletes (GetFlushablePairs acquires Lock)
-  - Contention: flush holds lock while iterating/deleting → worker blocks
+  - Worker writes:  AddDataEvent acquires Lock → append chunk → Unlock
+  - Flush reads:    GetFlushablePairs acquires Lock → walk/delete → Unlock
+  - Contention:     flush holds lock for full map walk; worker blocks during that window
+                    if blocked long enough → per-conn channel fills (buffer=10) → DROP
 ```
 
 ## Key Data Structures
@@ -137,102 +180,121 @@ Shared state: tracker.msgGroups (protected by tracker.mutex)
 ```
 Tracker.msgGroups: map[uint32]*msgSeqGroup
   │
-  ├─ msgSeq=1 → msgSeqGroup{direction=kIngress, chunks: map[int][]byte}
+  ├─ msgSeq=3 → msgSeqGroup{direction=kIngress, chunks: map[int][]byte}
   │                                                      ├─ rc=1 → []byte
-  │                                                      ├─ rc=2 → []byte
-  │                                                      └─ ...
-  ├─ msgSeq=2 → msgSeqGroup{direction=kEgress, chunks: map[int][]byte}
-  │                                                     ├─ wc=1 → []byte
-  │                                                     └─ ...
-  └─ msgSeq=3 → msgSeqGroup{direction=kIngress, ...} (next request, triggers flush of 1,2)
+  │                                                      └─ rc=2 → []byte (if multi-chunk)
+  ├─ msgSeq=4 → msgSeqGroup{direction=kEgress, chunks: map[int][]byte}
+  │                                                     └─ wc=1 → []byte
+  └─ msgSeq=5 → msgSeqGroup{...}  ← existence of this triggers flush of (3,4)
 
 Tracker state:
-  lowestPendingSeq  — drainPairs starts walking from here; advances past flushed/skipped seqs
-  highestMsgSeq     — highest msg_seq seen; used as upper bound for GetFlushablePairs
+  lowestPendingSeq  — drainPairs walks from here; advances past flushed/skipped seqs
+  highestMsgSeq     — highest msg_seq seen; set AFTER msgGroups insert in same lock hold,
+                      so seq+2 <= highestMsgSeq guarantees msgGroups[seq+2] already exists
 ```
 
-## Drop Points (where data can be lost)
+## Drop Points
 
 ```
-1. Kernel perf ring buffer overflow
-   → Cause: perf reader goroutines drain too slowly; kernel buffer fills
+1. Kernel perf event buffer overflow
+   → Cause: per-CPU perf event mmap buffer fills before gobpf goroutine drains it
    → Metric: events_dropped_kernel_ring_buf
-   → Logged: "Lost N events on channel socket_data_events"
+   → Logged: "⚠️ Lost N events on channel socket_data_events"
+   → Cascade: missing events → sequence gaps → gap-skips → late arrivals
 
-2. Per-connection channel overflow
-   → Cause: worker goroutine blocked on tracker.mutex (flush routine holding it)
+2. Per-connection channel overflow (buffer=10)
+   → Cause: Worker blocked on tracker.mutex while Flush goroutine holds it
    → Metric: events_dropped_channel_full
    → Logged: "Dropping event Channel full"
-   → Effect: one dropped chunk corrupts that msg_seq group
+   → Effect: dropped chunk corrupts the msg_seq group for that direction
 
-3. Gap-skip (indirect loss)
-   → Cause: a sequence gap (from drop 1 or 2) forces lowestPendingSeq past missing seqs
+3. Gap-skip
+   → Cause: drop 1 or 2 left a hole; g1(seq) or g2(seq+1) missing in drainPairs
    → Metric: gap_skips_fired, gap_skip_seqs_lost
-   → Logged: "msg_seq: gap-skip"
-   → Effect: events that arrive after the skip but belong to an already-skipped seq
-     become late arrivals and are silently discarded
+   → Logged: "msg_seq: gap-skip" (behind MSG_SEQ_LOGS flag)
+   → Effect: events for skipped seqs arriving later become late arrivals
 
-4. Late arrivals (indirect loss)
-   → Cause: gap-skip advanced lowestPendingSeq past a seq whose events are delayed
-     (cross-CPU delivery skew from gobpf's per-CPU reader goroutines racing into eventChannel)
+4. Late arrivals
+   → Cause: gap-skip advanced lowestPendingSeq; delayed event arrives below it.
+             Also caused by cross-CPU delivery skew: per-CPU gobpf goroutines race
+             into eventChannel — msg_seq=N+1 may arrive in Go before msg_seq=N.
    → Metric: late_arrivals
-   → Logged: "msg_seq: late arrival below lowestPendingSeq"
+   → Logged: "msg_seq: late arrival below lowestPendingSeq" (behind MSG_SEQ_LOGS flag)
+   → Effect: group written into msgGroups below lowestPendingSeq; stranded at final flush
 
-5. Orphaned groups
-   → Cause: one side of a pair (request or response) was dropped; partner has no match
+5. Stranded groups
+   → Cause: late arrivals that landed below lowestPendingSeq; drainPairs never reaches them
+   → Cleaned up explicitly in FlushRemainingPairs after drainPairs finishes
+   → Metric: groups_stranded
+   → Logged: "msg_seq: stranded group discarded at final flush" (behind MSG_SEQ_LOGS flag)
+
+6. Orphaned groups
+   → Cause: partner permanently missing (actual drop, not reordering)
    → Metric: groups_orphaned
-   → Logged: "msg_seq: orphaned group (partner missing)"
+   → Logged: "msg_seq: orphaned group (partner missing)" (behind MSG_SEQ_LOGS flag)
+
+7. Chunk assembly gap
+   → Cause: middle chunk (rc/wc key) dropped; convertToSingleByteArr stops early
+   → Metric: chunk_assembly_gaps
+   → Effect: truncated blob → parse failure downstream
 ```
 
-## Cross-CPU Ordering: The Root Cause of Out-of-Order Arrivals
+## Cross-CPU Ordering: Root Cause of Out-of-Order and Late Arrivals
 
-gobpf's `InitPerfMapWithPageCnt` starts one reader goroutine per CPU core. Each CPU has its own
-perf event sub-buffer. All reader goroutines write into the same `eventChannel chan []byte`.
+BCC's `InitPerfMapWithPageCnt` calls `perf_event_open` per CPU and mmap's each CPU's perf
+event buffer (8192 pages each). One gobpf goroutine drains each CPU's buffer into that
+ProbeChannel's Go eventChannel.
 
-When the kernel submits events for a single connection across multiple CPUs (which happens when
-the process migrates CPUs between syscalls, or via IRQ affinity), the goroutines race:
+When a process migrates CPUs between syscalls (or via IRQ affinity changes), events for the
+same connection are submitted to different CPUs' buffers and drained by different goroutines:
 
 ```
-CPU0 reader: reads events for writes (msg_seq=2)
-CPU1 reader: reads events for reads  (msg_seq=1, but submitted later to CPU1's buffer)
+CPU0 goroutine: drains msg_seq=4 (write events) → eventChannel
+CPU1 goroutine: drains msg_seq=3 (read events)  → eventChannel (arrives later)
 
-Both race into eventChannel → msg_seq=2 events may arrive before msg_seq=1 events
+Result in Go: msg_seq=4 processed before msg_seq=3
+  → msg_seq=3 arrival: out_of_order_arrivals++ (3 < highestMsgSeq=4, >= lowestPendingSeq)
+  → drainPairs next tick: both present, no gap-skip, pair flushed → no data loss
 ```
-
-This is NOT data loss — the out-of-order group is still created in msgGroups and reachable
-by drainPairs. It only becomes data loss if a gap-skip fires before all chunks arrive.
 
 **Key distinction:**
-- `out_of_order_arrivals`: group arrives late but within [lowestPendingSeq, highestMsgSeq] → safe, reachable
-- `late_arrivals`: group arrives after lowestPendingSeq already passed it → silently discarded
+- `out_of_order_arrivals`: arrived late but within [lowestPendingSeq, highestMsgSeq] → **not data loss**
+- `late_arrivals`: arrived after lowestPendingSeq already advanced past it → **data loss**
+
+The boundary: whether a gap-skip fired before the delayed event arrived.
+If delayed event arrives between two drainPairs ticks → out-of-order (safe).
+If gap-skip fires first (500ms tick saw partner missing) → late arrival (lost).
+
+## Known Problems
+
+### 1. Premature gap-skip (open problem)
+drainPairs fires gap-skip on a missing seq that is actually in-transit (cross-CPU skew, not a
+real drop). The partner then arrives as a late arrival and is discarded. Metrics to calibrate
+fix: `highestMsgSeq - msgSeq` at out-of-order arrival gives the seq-distance distribution.
+
+Fix candidates: seq-distance threshold, miss-count (ticks of patience), map-size cap.
+
+### 2. Mutex contention under high load
+`GetFlushablePairs` holds `tracker.mutex` for the full msgGroups walk. Worker blocks on same
+lock. Under high throughput, per-conn channel (buffer=10) fills → drops.
+
+### 3. Chunk assembly truncation
+`convertToSingleByteArr` stops on first rc/wc key gap. Dropped middle chunk → truncated blob
+→ `pairs_parse_failure`.
+
+### 4. Last-pair delay
+Final request-response pair of a burst has no N+2 trigger. Waits for inactivity timer (7s)
+before `FlushRemainingPairs` is called. Expected behavior, not a bug.
 
 ## Configuration
 
 | Env var | Default | Purpose |
 |---|---|---|
-| MSG_SEQ_FLUSH_ENABLED | false | Enable msg_seq based incremental pair flushing |
-| MSG_SEQ_FLUSH_TICK_INTERVAL | 500ms | How often flush routine checks for complete pairs |
-| AKTO_PER_CONN_CH_BUFFER_SIZE | 10 | Per-connection channel buffer size |
-| EVENT_CHAN_BUFF_SIZE | 100000 | Global perf event channel buffer |
-| TRAFFIC_INACTIVITY_THRESHOLD | 7s | Worker killed after this much silence |
-
-## Known Problems
-
-### 1. Mutex contention under load
-`GetFlushablePairs` holds `tracker.mutex` while iterating and deleting msgGroups.
-`AddDataEvent` blocks waiting for the same lock. Under sustained high throughput, this can
-cause the per-connection channel to fill while the worker is blocked, leading to drops.
-
-### 2. Gap-skip cascade
-One kernel-side or channel drop creates a sequence gap. The gap causes a gap-skip, which
-advances `lowestPendingSeq`. Cross-CPU delayed events for the skipped seqs then become
-late arrivals. A single drop can thus cause multiple downstream discards.
-
-### 3. No chunk-level gap detection
-`convertToSingleByteArr` assembles chunks in rc/wc order and stops on the first gap in keys.
-If a middle chunk is dropped (e.g., wc=2 of a 3-write response), the assembled blob is
-truncated silently. The HTTP parser then sees a partial message.
-
-### 4. Last-pair delay
-The final request-response pair of a burst has no N+2 trigger. It waits for the inactivity
-timer (default 7s) before being flushed. This is expected behavior, not a bug.
+| `MSG_SEQ_FLUSH_ENABLED` | false | Enable msg_seq based incremental pair flushing |
+| `MSG_SEQ_FLUSH_TICK_INTERVAL` | 500ms | How often flush goroutine checks for complete pairs |
+| `AKTO_PER_CONN_CH_BUFFER_SIZE` | 10 | Per-connection channel buffer (events) |
+| `EVENT_CHAN_BUFF_SIZE` | 100000 | Per-ProbeChannel Go event channel buffer size |
+| `TRAFFIC_INACTIVITY_THRESHOLD` | 7s | Worker + flush goroutines exit after this silence |
+| `TRAFFIC_MAX_ACTIVE_CONN` | 4096 | Max tracked connections; new conns dropped if exceeded |
+| `TRAFFIC_IGNORE_DEFAULT_PORTS` | true | Ignore kafka/zookeeper/mongo/redis ports |
+| `MSG_SEQ_LOGS` | false | Gate all msg_seq pipeline log lines (slog.Warn/Info) |
