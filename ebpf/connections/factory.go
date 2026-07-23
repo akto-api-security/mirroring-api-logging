@@ -513,19 +513,24 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 	ch, exists := factory.getChannel(connectionID)
 
 	if exists {
-		utils.LogProcessing("Received event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
+		if utils.IsProcessLogsEnabled(){
+			utils.LogProcessing("Received event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
+		}
 		defer func() {
 			if r := recover(); r != nil {
 				// Recover from a panic, caused by sending to a closed channel
-				utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
+				if utils.IsProcessLogsEnabled(){
+					utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
+				}
 			}
 		}()
 		select {
 		case ch <- event: // Try sending the event to the worker's channel
-			utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
+			if utils.IsProcessLogsEnabled() {
+				utils.LogProcessing("Sent event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
+			}
 		default: // Avoid blocking if the channel is full
 			utils.Pipeline.EventsDroppedChannelFull.Add(1)
-			slog.Warn("Dropping event Channel full", "fd", connectionID.Fd, "ch_len", len(ch), "ch_cap", cap(ch))
 		}
 	} else {
 		utils.LogProcessing("No worker found for", "connectionId", connectionID)
