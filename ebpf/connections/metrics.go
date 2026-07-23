@@ -12,6 +12,8 @@ type metricsSnapshot struct {
 	ResetAt                  time.Time `json:"reset_at"`
 	DurationSec              float64   `json:"duration_sec"`
 	EventsReceived             int64     `json:"events_received"`
+	InputChanLen               int64     `json:"input_chan_len"`
+	InputChanCap               int64     `json:"input_chan_cap"`
 	EventsDroppedKernelRingBuf int64     `json:"events_dropped_kernel_ring_buf"`
 	EventsDroppedChannelFull   int64     `json:"events_dropped_channel_full"`
 	GroupsCreated            int64     `json:"groups_created"`
@@ -46,6 +48,8 @@ func snapshot() metricsSnapshot {
 		ResetAt:                  m.ResetAt,
 		DurationSec:              time.Since(m.ResetAt).Seconds(),
 		EventsReceived:             m.EventsReceived.Load(),
+		InputChanLen:               m.InputChanLen.Load(),
+		InputChanCap:               m.InputChanCap.Load(),
 		EventsDroppedKernelRingBuf: m.EventsDroppedKernelRingBuf.Load(),
 		EventsDroppedChannelFull:   m.EventsDroppedChannelFull.Load(),
 		GroupsCreated:            groupsCreated,

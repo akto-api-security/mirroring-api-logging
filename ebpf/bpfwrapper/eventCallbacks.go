@@ -109,6 +109,8 @@ func min(a, b int32) int32 {
 }
 
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
+	metaUtils.Pipeline.InputChanCap.Store(int64(cap(inputChan)))
+	var eventCount int64
 	for data := range inputChan {
 		if data == nil {
 			return
@@ -181,6 +183,10 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			"bytesSent", bytesSent)
 
 		metaUtils.Pipeline.EventsReceived.Add(1)
+		eventCount++
+		if eventCount%1000 == 0 {
+			metaUtils.Pipeline.InputChanLen.Store(int64(len(inputChan)))
+		}
 		connectionFactory.SendEvent(connId, event)
 		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
 

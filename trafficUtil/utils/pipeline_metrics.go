@@ -11,6 +11,8 @@ import (
 type PipelineMetrics struct {
 	// Input
 	EventsReceived           atomic.Int64 // SocketDataEventCallback: successfully decoded events
+	InputChanLen             atomic.Int64 // sampled len(inputChan) every 1000 events
+	InputChanCap             atomic.Int64 // cap(inputChan) — set once at startup
 
 	// Drop points
 	EventsDroppedKernelRingBuf atomic.Int64 // gobpf lostEventsChannel: kernel perf ring buffer overflow
@@ -52,6 +54,7 @@ func init() {
 // Reset zeroes all counters and records the reset time.
 func (m *PipelineMetrics) Reset() {
 	m.EventsReceived.Store(0)
+	m.InputChanLen.Store(0)
 	m.EventsDroppedKernelRingBuf.Store(0)
 	m.EventsDroppedChannelFull.Store(0)
 	m.GroupsCreated.Store(0)
