@@ -123,22 +123,17 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		event := structs.GetSocketDataEvent()
 
-		// binary.Read require the input data to be at the same size of the object.
-		// Since the Msg field might be mostly empty, binary.read fails.
-		// So we split the loading into the fixed size attribute parts, and copying the message separately.
-
-		// slog.Debug("data", "data", data)
-
-		if err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data[:eventAttributesSize])
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event.Attr)
-		}(); err != nil {
-			slog.Error("Failed to decode received data", "error", err)
+		// The kernel always submits at least the fixed attribute region
+		// (sizeof(struct)-MAX_MSG_SIZE == eventAttributesSize == 72 bytes on
+		// both sides, host byte order), so we decode Attr with a direct memory
+		// cast instead of binary.Read: no lock, no reflection, just a copy. The
+		// Msg payload (which may be mostly empty) is copied separately below.
+		if len(data) < eventAttributesSize {
+			slog.Error("Received data smaller than event attributes", "len", len(data), "want", eventAttributesSize)
 			structs.ReleaseSocketDataEvent(event)
 			continue
 		}
+		event.Attr = *(*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
 
 		bytesSent := event.Attr.Bytes_sent
 
@@ -168,19 +163,21 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 
 		connectionFactory.CreateIfNotExists(connId)
 
-		dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
-		metaUtils.LogIngest("Got data",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"msg_seq", event.Attr.MsgSeq,
-			"rc", event.Attr.ReadEventsCount,
-			"wc", event.Attr.WriteEventsCount,
-			"raddr", connId.Raddr,
-			"rport", connId.Rport,
-			"data", dataStr,
-			"ssl", event.Attr.Ssl,
-			"bytesSent", bytesSent)
+		if metaUtils.IsIngestLogsEnabled() {
+			dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+			metaUtils.LogIngest("Got data",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"msg_seq", event.Attr.MsgSeq,
+				"rc", event.Attr.ReadEventsCount,
+				"wc", event.Attr.WriteEventsCount,
+				"raddr", connId.Raddr,
+				"rport", connId.Rport,
+				"data", dataStr,
+				"ssl", event.Attr.Ssl,
+				"bytesSent", bytesSent)
+		}
 
 		metaUtils.Pipeline.EventsReceived.Add(1)
 		eventCount++

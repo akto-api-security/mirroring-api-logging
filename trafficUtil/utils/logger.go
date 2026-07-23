@@ -61,6 +61,10 @@ func LogIngest(format string, args ...any) {
 	}
 }
 
+func IsIngestLogsEnabled() bool {
+	return processLogs
+}
+
 func IsProcessLogsEnabled() bool {
 	return processLogs
 }
