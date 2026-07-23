@@ -60,6 +60,10 @@ type Tracker struct {
 	msgGroups        map[uint32]*msgSeqGroup
 	highestMsgSeq    uint32
 	lowestPendingSeq uint32
+	// seenMsgSeqs tracks every msg_seq ever buffered on this connection so
+	// GroupsCreated counts each unique msg_seq exactly once, even when a group
+	// is deleted (paired/orphaned/stranded) and later re-created by a late chunk.
+	seenMsgSeqs map[uint32]struct{}
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -69,8 +73,9 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		sentBuf:   make(map[int][]byte),
 		mutex:     sync.RWMutex{},
 		ssl:       false,
-		foundHTTP: false,
-		msgGroups: make(map[uint32]*msgSeqGroup),
+		foundHTTP:   false,
+		msgGroups:   make(map[uint32]*msgSeqGroup),
+		seenMsgSeqs: make(map[uint32]struct{}),
 	}
 }
 
@@ -131,6 +136,7 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 			if !exists {
 				if msgSeq < conn.lowestPendingSeq {
 					metaUtils.Pipeline.LateArrivals.Add(1)
+					metaUtils.Pipeline.LateArrivalDist.Observe(conn.highestMsgSeq - msgSeq)
 					if metaUtils.IsMsgSeqLogsEnabled() {
 						slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
 							"fd", conn.connID.Fd,
@@ -139,6 +145,7 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 					}
 				} else if msgSeq < conn.highestMsgSeq {
 					metaUtils.Pipeline.OutOfOrderArrivals.Add(1)
+					metaUtils.Pipeline.OutOfOrderDist.Observe(conn.highestMsgSeq - msgSeq)
 					if metaUtils.IsMsgSeqLogsEnabled() {
 						slog.Warn("msg_seq: out-of-order group arrival",
 							"fd", conn.connID.Fd,
@@ -152,7 +159,13 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 					chunks:    make(map[int][]byte),
 				}
 				conn.msgGroups[msgSeq] = group
-				metaUtils.Pipeline.GroupsCreated.Add(1)
+				// Count each unique msg_seq once, even if this group was
+				// previously flushed/orphaned/stranded and is now re-created
+				// by a late-arriving chunk.
+				if _, seen := conn.seenMsgSeqs[msgSeq]; !seen {
+					conn.seenMsgSeqs[msgSeq] = struct{}{}
+					metaUtils.Pipeline.GroupsCreated.Add(1)
+				}
 			}
 
 			var chunkKey int

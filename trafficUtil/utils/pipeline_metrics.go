@@ -5,6 +5,72 @@ import (
 	"time"
 )
 
+// ReorderHist buckets a seq reorder distance (highestMsgSeq - msgSeq) observed
+// at the moment an out-of-position seq arrives. Used to size the flush hold
+// threshold: pick threshold at the p99 of the recoverable cluster.
+// Buckets: 1, 2-4, 5-8, 9-16, 17-32, 33-64, >64.
+type ReorderHist struct {
+	B1     atomic.Int64
+	B2_4   atomic.Int64
+	B5_8   atomic.Int64
+	B9_16  atomic.Int64
+	B17_32 atomic.Int64
+	B33_64 atomic.Int64
+	B65    atomic.Int64
+}
+
+func (h *ReorderHist) Observe(dist uint32) {
+	switch {
+	case dist <= 1:
+		h.B1.Add(1)
+	case dist <= 4:
+		h.B2_4.Add(1)
+	case dist <= 8:
+		h.B5_8.Add(1)
+	case dist <= 16:
+		h.B9_16.Add(1)
+	case dist <= 32:
+		h.B17_32.Add(1)
+	case dist <= 64:
+		h.B33_64.Add(1)
+	default:
+		h.B65.Add(1)
+	}
+}
+
+func (h *ReorderHist) Reset() {
+	h.B1.Store(0)
+	h.B2_4.Store(0)
+	h.B5_8.Store(0)
+	h.B9_16.Store(0)
+	h.B17_32.Store(0)
+	h.B33_64.Store(0)
+	h.B65.Store(0)
+}
+
+// ReorderHistSnapshot is the plain (non-atomic) form for JSON emission.
+type ReorderHistSnapshot struct {
+	B1     int64 `json:"d1"`
+	B2_4   int64 `json:"d2_4"`
+	B5_8   int64 `json:"d5_8"`
+	B9_16  int64 `json:"d9_16"`
+	B17_32 int64 `json:"d17_32"`
+	B33_64 int64 `json:"d33_64"`
+	B65    int64 `json:"d65_plus"`
+}
+
+func (h *ReorderHist) Snapshot() ReorderHistSnapshot {
+	return ReorderHistSnapshot{
+		B1:     h.B1.Load(),
+		B2_4:   h.B2_4.Load(),
+		B5_8:   h.B5_8.Load(),
+		B9_16:  h.B9_16.Load(),
+		B17_32: h.B17_32.Load(),
+		B33_64: h.B33_64.Load(),
+		B65:    h.B65.Load(),
+	}
+}
+
 // PipelineMetrics holds run-scoped atomic counters for the msg_seq pipeline.
 // All fields are safe for concurrent access.
 // Both connections and kafkaUtil packages increment these directly.
@@ -24,6 +90,11 @@ type PipelineMetrics struct {
 	GroupsStranded     atomic.Int64 // late arrivals below lowestPendingSeq, discarded at final flush
 	OutOfOrderArrivals atomic.Int64 // msg_seq < highestMsgSeq at group creation
 	LateArrivals       atomic.Int64 // msg_seq < lowestPendingSeq (already flushed)
+
+	// Reorder distance (highestMsgSeq - msgSeq) at out-of-position arrival.
+	// Sizes the flush hold threshold.
+	OutOfOrderDist  ReorderHist // above lps (currently recovered)
+	LateArrivalDist ReorderHist // below lps (currently lost) — key sizing input
 
 	// Gap-skip (drainPairs advancing lowestPendingSeq past a missing seq)
 	GapSkipsFired   atomic.Int64 // how many times a missing seq triggered a skip
@@ -62,6 +133,8 @@ func (m *PipelineMetrics) Reset() {
 	m.GroupsStranded.Store(0)
 	m.OutOfOrderArrivals.Store(0)
 	m.LateArrivals.Store(0)
+	m.OutOfOrderDist.Reset()
+	m.LateArrivalDist.Reset()
 	m.GapSkipsFired.Store(0)
 	m.GapSkipSeqsLost.Store(0)
 	m.ChunkAssemblyGaps.Store(0)

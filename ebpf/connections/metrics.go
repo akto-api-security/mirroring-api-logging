@@ -21,6 +21,8 @@ type metricsSnapshot struct {
 	GroupsStranded           int64     `json:"groups_stranded"`
 	OutOfOrderArrivals       int64     `json:"out_of_order_arrivals"`
 	LateArrivals             int64     `json:"late_arrivals"`
+	OutOfOrderDist           metaUtils.ReorderHistSnapshot `json:"out_of_order_dist"`
+	LateArrivalDist          metaUtils.ReorderHistSnapshot `json:"late_arrival_dist"`
 	GapSkipsFired            int64     `json:"gap_skips_fired"`
 	GapSkipSeqsLost          int64     `json:"gap_skip_seqs_lost"`
 	ChunkAssemblyGaps        int64     `json:"chunk_assembly_gaps"`
@@ -57,6 +59,8 @@ func snapshot() metricsSnapshot {
 		GroupsStranded:           m.GroupsStranded.Load(),
 		OutOfOrderArrivals:       m.OutOfOrderArrivals.Load(),
 		LateArrivals:             m.LateArrivals.Load(),
+		OutOfOrderDist:           m.OutOfOrderDist.Snapshot(),
+		LateArrivalDist:          m.LateArrivalDist.Snapshot(),
 		GapSkipsFired:            m.GapSkipsFired.Load(),
 		GapSkipSeqsLost:          m.GapSkipSeqsLost.Load(),
 		ChunkAssemblyGaps:        m.ChunkAssemblyGaps.Load(),
