@@ -116,7 +116,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			return
 		}
 
-		if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
+		if !(connectionFactory.CanBeFilled()) {
 			metaUtils.LogIngest("Connections filled")
 			continue
 		}
@@ -185,7 +185,5 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			metaUtils.Pipeline.InputChanLen.Store(int64(len(inputChan)))
 		}
 		connectionFactory.SendEvent(connId, event)
-		connections.UpdateBufferSize(uint64(utils.Abs(bytesSent)))
-
 	}
 }
