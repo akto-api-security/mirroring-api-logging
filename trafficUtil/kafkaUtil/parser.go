@@ -625,6 +625,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
 
+	return
+
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
 	if parsed == nil {
 		utils.Pipeline.PairsParseFailure.Add(1)
