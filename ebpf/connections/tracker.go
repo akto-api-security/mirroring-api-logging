@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
@@ -90,26 +91,28 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
-	lockStart := time.Now()
+// AddDataEvent buffers one raw data-event record. dataPtr points at the raw
+// kernel slice (attr region + payload); the attr is read via an in-place unsafe
+// cast and the payload is stored BY REFERENCE (a sub-slice of the raw record),
+// so no payload bytes are copied here. The raw slice is a unique per-event
+// allocation that nothing recycles, so retained sub-slices can never be
+// clobbered. Returns the record's msg_seq for the worker's inactivity timer.
+func (conn *Tracker) AddDataEvent(dataPtr *[]byte) uint32 {
+	data := *dataPtr
+	attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
+
 	conn.mutex.Lock()
-	lockWait := time.Since(lockStart)
-	if lockWait > 1*time.Millisecond && metaUtils.IsMsgSeqLogsEnabled() {
-		slog.Warn("msg_seq: AddDataEvent mutex wait",
-			"fd", conn.connID.Fd,
-			"wait_ms", lockWait.Milliseconds())
-	}
 	defer conn.mutex.Unlock()
 
-	if event.Attr.Laddr != 0 {
-		conn.laddr = event.Attr.Laddr
-		conn.lport = event.Attr.Lport
+	if attr.Laddr != 0 {
+		conn.laddr = attr.Laddr
+		conn.lport = attr.Lport
 	}
-	if event.Attr.Role != 0 && conn.role == 0 {
-		conn.role = event.Attr.Role
+	if attr.Role != 0 && conn.role == 0 {
+		conn.role = attr.Role
 	}
 
-	if !conn.ssl && event.Attr.Ssl {
+	if !conn.ssl && attr.Ssl {
 		for k := range conn.sentBuf {
 			conn.sentBuf[k] = []byte{}
 		}
@@ -118,19 +121,26 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 		}
 		conn.sentBytes = 0
 		conn.recvBytes = 0
-		conn.ssl = event.Attr.Ssl
+		conn.ssl = attr.Ssl
 	}
 
-	if conn.ssl != event.Attr.Ssl {
-		return
+	if conn.ssl != attr.Ssl {
+		return attr.MsgSeq
 	}
 
-	bytesSent := event.Attr.Bytes_sent
+	bytesSent := attr.Bytes_sent
 	absBytes := utils.Abs(bytesSent)
+
+	// Payload is data[MsgOffset : MsgOffset+absBytes], stored by reference.
+	// Guard against a truncated record so the slice bound can't panic.
+	if structs.MsgOffset+int(absBytes) > len(data) {
+		return attr.MsgSeq
+	}
+	payload := data[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
 
 	if UseMsgSeqFlush {
 		// msg_seq based buffering for incremental pair flushing
-		msgSeq := event.Attr.MsgSeq
+		msgSeq := attr.MsgSeq
 		if msgSeq > 0 {
 			group, exists := conn.msgGroups[msgSeq]
 			if !exists {
@@ -155,7 +165,7 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 				}
 				group = &msgSeqGroup{
 					msgSeq:    msgSeq,
-					direction: event.Attr.Direction,
+					direction: attr.Direction,
 					chunks:    make(map[int][]byte),
 				}
 				conn.msgGroups[msgSeq] = group
@@ -170,11 +180,13 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 
 			var chunkKey int
 			if group.direction == 0 { // kEgress
-				chunkKey = int(event.Attr.WriteEventsCount)
+				chunkKey = int(attr.WriteEventsCount)
 			} else { // kIngress
-				chunkKey = int(event.Attr.ReadEventsCount)
+				chunkKey = int(attr.ReadEventsCount)
 			}
-			group.chunks[chunkKey] = append(group.chunks[chunkKey], event.Msg[:absBytes]...)
+			// chunkKey (rc/wc) is monotonic and unique per event, so each key is
+			// written exactly once — store the payload slice directly, no copy.
+			group.chunks[chunkKey] = payload
 
 			if msgSeq > conn.highestMsgSeq {
 				conn.highestMsgSeq = msgSeq
@@ -193,17 +205,19 @@ func (conn *Tracker) AddDataEvent(event *structs.SocketDataEvent) {
 			}
 		}
 	} else {
-		// Old flat buffer path
+		// Old flat buffer path. rc/wc is unique per event, so assign the payload
+		// slice directly rather than appending (which would copy the bytes).
 		if bytesSent > 0 {
-			conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:absBytes]...)
+			conn.sentBuf[int(attr.WriteEventsCount)] = payload
 			conn.sentBytes += uint64(absBytes)
 		} else {
-			conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:absBytes]...)
+			conn.recvBuf[int(attr.ReadEventsCount)] = payload
 			conn.recvBytes += uint64(absBytes)
 		}
 	}
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	return attr.MsgSeq
 }
 
 func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {

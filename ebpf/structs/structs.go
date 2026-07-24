@@ -27,6 +27,13 @@ type SocketDataEventAttr struct {
 	MsgSeq           uint32  // msg_seq: increments on direction change
 }
 
+// MsgOffset is the byte offset at which the payload (msg[]) begins inside a
+// submitted socket_data_event record. unsafe.Sizeof(SocketDataEventAttr) is 72,
+// but the kernel drops 3 trailing padding bytes when computing the wire offset,
+// so the payload starts at byte 68 rather than 72. Kept next to the attr struct
+// so the two stay in sync if the layout ever changes.
+const MsgOffset = 68
+
 /*
 u64 id;
 u32 fd;

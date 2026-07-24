@@ -310,25 +310,25 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			case event := <-ch:
 				// Handle event based on its type
 				switch e := event.(type) {
-				case *structs.SocketDataEvent:
+				case *[]byte:
 					utils.LogProcessing("Received data event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-					tracker.AddDataEvent(e)
+					// AddDataEvent retains payload sub-slices of *e by reference;
+					// the raw slice stays alive via the tracker, nothing to release.
+					msgSeq := tracker.AddDataEvent(e)
 
 					if !UseMsgSeqFlush && tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-						structs.ReleaseSocketDataEvent(e)
 						factory.StopProcessing(connID)
 						return
 					}
 					if UseMsgSeqFlush {
-						if e.Attr.MsgSeq != lastSeenMsgSeq {
+						if msgSeq != lastSeenMsgSeq {
 							resetTimer(inactivityTimer, inactivityThreshold)
-							lastSeenMsgSeq = e.Attr.MsgSeq
+							lastSeenMsgSeq = msgSeq
 						}
 					} else {
 						resetTimer(inactivityTimer, inactivityThreshold)
 					}
-					structs.ReleaseSocketDataEvent(e)
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 					tracker.AddOpenEvent(*e)
@@ -506,6 +506,34 @@ func (factory *Factory) getTracker(connectionID structs.ConnID) (*Tracker, bool)
 	defer factory.mutex.RUnlock()
 	tracker, exists := factory.connections[connectionID]
 	return tracker, exists
+}
+
+// SendDataEvent sends a raw data-event slice to the appropriate worker via the
+// channel. It carries *[]byte (a pointer to the raw kernel record) rather than a
+// decoded struct: the payload is never copied on the ingest path, and the worker
+// retains sub-slices of it by reference. Mirrors SendEvent's non-blocking send
+// and closed-channel recovery.
+func (factory *Factory) SendDataEvent(connectionID structs.ConnID, data *[]byte) {
+	ch, exists := factory.getChannel(connectionID)
+
+	if !exists {
+		utils.LogProcessing("No worker found for", "connectionId", connectionID)
+		return
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			// Recover from a panic, caused by sending to a closed channel
+			if utils.IsProcessLogsEnabled() {
+				utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
+			}
+		}
+	}()
+	select {
+	case ch <- data: // Try sending the event to the worker's channel
+	default: // Avoid blocking if the channel is full
+		utils.Pipeline.EventsDroppedChannelFull.Add(1)
+	}
 }
 
 // SendEvent sends any type of event (open, data, close) to the appropriate worker via the channel.

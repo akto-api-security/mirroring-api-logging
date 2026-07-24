@@ -121,31 +121,20 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		event := structs.GetSocketDataEvent()
-
 		// The kernel always submits at least the fixed attribute region
 		// (sizeof(struct)-MAX_MSG_SIZE == eventAttributesSize == 72 bytes on
-		// both sides, host byte order), so we decode Attr with a direct memory
-		// cast instead of binary.Read: no lock, no reflection, just a copy. The
-		// Msg payload (which may be mostly empty) is copied separately below.
+		// both sides, host byte order), so we read Attr with a direct memory
+		// cast instead of binary.Read: no lock, no reflection, no copy. The Msg
+		// payload is NOT copied here — the raw data[] slice is handed to the
+		// worker as-is and the payload is retained by reference downstream.
 		if len(data) < eventAttributesSize {
 			slog.Error("Received data smaller than event attributes", "len", len(data), "want", eventAttributesSize)
-			structs.ReleaseSocketDataEvent(event)
 			continue
 		}
-		event.Attr = *(*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
+		attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
 
-		bytesSent := event.Attr.Bytes_sent
-
-		// The 3 bytes are being lost in padding, thus, not taking them into consideration.
-		// msg_seq (u32=4 bytes) added after direction shifts msg[] offset by 4
-		eventAttributesLogicalSize := 68
-
-		if len(data) > eventAttributesLogicalSize {
-			copy(event.Msg[:], data[eventAttributesLogicalSize:eventAttributesLogicalSize+int(utils.Abs(bytesSent))])
-		}
-
-		connId := event.Attr.ConnId
+		bytesSent := attr.Bytes_sent
+		connId := attr.ConnId
 
 		_, ok := ignorePortsMap[connId.Rport]
 		if ignorePorts && ok {
@@ -153,29 +142,33 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount)
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount)
 			continue
 		}
-
-		event.Attr.ReadEventsCount = event.Attr.ReadEventsCount
-		event.Attr.WriteEventsCount = event.Attr.WriteEventsCount
 
 		connectionFactory.CreateIfNotExists(connId)
 
 		if metaUtils.IsIngestLogsEnabled() {
-			dataStr := string(event.Msg[:min(32, utils.Abs(bytesSent))])
+			var dataStr string
+			if n := int(utils.Abs(bytesSent)); structs.MsgOffset < len(data) {
+				end := structs.MsgOffset + int(min(32, int32(n)))
+				if end > len(data) {
+					end = len(data)
+				}
+				dataStr = string(data[structs.MsgOffset:end])
+			}
 			metaUtils.LogIngest("Got data",
 				"fd", connId.Fd,
 				"id", connId.Id,
 				"timestamp", connId.Conn_start_ns,
-				"msg_seq", event.Attr.MsgSeq,
-				"rc", event.Attr.ReadEventsCount,
-				"wc", event.Attr.WriteEventsCount,
+				"msg_seq", attr.MsgSeq,
+				"rc", attr.ReadEventsCount,
+				"wc", attr.WriteEventsCount,
 				"raddr", connId.Raddr,
 				"rport", connId.Rport,
 				"data", dataStr,
-				"ssl", event.Attr.Ssl,
+				"ssl", attr.Ssl,
 				"bytesSent", bytesSent)
 		}
 
@@ -184,6 +177,6 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connectio
 		if eventCount%1000 == 0 {
 			metaUtils.Pipeline.InputChanLen.Store(int64(len(inputChan)))
 		}
-		connectionFactory.SendEvent(connId, event)
+		connectionFactory.SendDataEvent(connId, &data)
 	}
 }
