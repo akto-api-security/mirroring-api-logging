@@ -620,7 +620,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		return
 	}
 
-	shouldPrint := debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")
+	shouldPrint := debugMode
 	if shouldPrint {
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}

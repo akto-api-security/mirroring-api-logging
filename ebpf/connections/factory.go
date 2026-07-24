@@ -397,7 +397,7 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 						"g2_bytes", len(g2Blob))
 				}
 
-				// ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
+				ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
 			}
 			if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
 				slog.Info("msg_seq: flushed pairs (tick)",
