@@ -143,6 +143,11 @@ func (w *PodInformer) GetAllKubePids() []uint32 {
 }
 
 func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
+	// nil-receiver safe: PodInformerInstance is nil when no informer is running
+	// (e.g. unit tests, or environments without pod resolution).
+	if w == nil {
+		return ""
+	}
 	if info, ok := w.pidHostNameMap.Load(pid); ok {
 		return info.(PidInfo).ProcessName
 	}

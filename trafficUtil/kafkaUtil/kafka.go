@@ -47,6 +47,11 @@ var globalTransport *kafka.Transport
 var transportOnce sync.Once
 var KafkaDisabled = false
 
+// SkipPairProcessing, when true, returns from ParseAndProduce just before
+// parseHTTPTraffic — no HTTP parse, no marshal, no produce. Used to isolate the
+// parse CPU cost (benchmarks / the "disable-pair-process" experiments).
+var SkipPairProcessing = false
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -61,6 +66,7 @@ func init() {
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
 	utils.InitVar("KAFKA_DISABLED", &KafkaDisabled)
+	utils.InitVar("SKIP_PAIR_PROCESSING", &SkipPairProcessing)
 }
 
 func InitKafka() {

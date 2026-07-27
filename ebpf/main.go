@@ -177,10 +177,10 @@ func run() {
 	}
 
 	hooks := make([]bpfwrapper.Kprobe, 0)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", connections.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", connections.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
@@ -191,7 +191,7 @@ func run() {
 
 		}
 	}
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", connections.SocketCloseEventCallback))
 	hooks = append(hooks, bpfwrapper.Level4hooks...)
 
 	if err := bpfwrapper.LaunchPerfBufferConsumers(bpfModule, connectionFactory, callbacks); err != nil {

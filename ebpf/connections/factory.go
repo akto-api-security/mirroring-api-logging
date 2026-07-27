@@ -103,7 +103,7 @@ var (
 	flushTickInterval = 500 * time.Millisecond
 
 	// Per-connection channel buffer size
-	perConnChBufferSize = 10
+	PerConnChBufferSize = 10
 )
 
 func init() {
@@ -116,7 +116,7 @@ func init() {
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
 	utils.InitVar("MSG_SEQ_FLUSH_ENABLED", &UseMsgSeqFlush)
 	utils.InitVar("MSG_SEQ_FLUSH_TICK_INTERVAL", &flushTickInterval)
-	utils.InitVar("AKTO_PER_CONN_CH_BUFFER_SIZE", &perConnChBufferSize)
+	utils.InitVar("AKTO_PER_CONN_CH_BUFFER_SIZE", &PerConnChBufferSize)
 }
 
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
@@ -264,7 +264,7 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 		now := uint64(time.Now().UnixNano())
 		tracker.openTimestamp = now
 		factory.connections[connectionID] = tracker
-		ch := make(chan interface{}, perConnChBufferSize)
+		ch := make(chan interface{}, PerConnChBufferSize)
 		factory.processor[connectionID] = ch
 		factory.StartWorker(connectionID, tracker, ch)
 	}

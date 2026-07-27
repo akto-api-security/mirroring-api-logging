@@ -612,10 +612,6 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
-	// if KafkaDisabled {
-	// 	return
-	// }
-
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
 	}
@@ -625,7 +621,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		slog.Debug("ParseAndProduce", "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))
 	}
 
-	return
+	// SkipPairProcessing isolates the parse cost: everything up to here (blob
+	// assembly, pair plumbing) runs, but the HTTP parse/marshal/produce below is skipped.
+	if SkipPairProcessing {
+		return
+	}
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint)
 	if parsed == nil {
