@@ -220,26 +220,31 @@ func (conn *Tracker) AddDataEvent(dataPtr *[]byte) uint32 {
 	return attr.MsgSeq
 }
 
-func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
-	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
-
+// AddOpenEvent takes *SocketOpenEvent by pointer to avoid a 48-byte struct copy
+// at the call boundary (this fires once per connection, hot under connection
+// churn). Manual Unlock (no defer) and a gated log keep the critical section lean.
+func (conn *Tracker) AddOpenEvent(event *structs.SocketOpenEvent) {
 	now := uint64(time.Now().UnixNano())
-	if conn.openTimestamp != 0 {
+	conn.mutex.Lock()
+	if conn.openTimestamp != 0 && metaUtils.IsIngestLogsEnabled() {
 		metaUtils.LogIngest("Changing conn open timestamp", "current", conn.openTimestamp, "new", now)
 	}
 	conn.openTimestamp = now
 	conn.lastAccessTimestamp = now
 	conn.laddr = event.Laddr
 	conn.lport = event.Lport
+	conn.mutex.Unlock()
 }
 
-func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
+// AddCloseEvent ignores the event payload entirely (only timestamps matter), so
+// it takes a pointer to skip the 40-byte copy. time.Now() is read once and reused
+// for both fields, and the read happens before the lock to shrink the hold time.
+func (conn *Tracker) AddCloseEvent(_ *structs.SocketCloseEvent) {
+	now := uint64(time.Now().UnixNano())
 	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
-
-	conn.closeTimestamp = uint64(time.Now().UnixNano())
-	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+	conn.closeTimestamp = now
+	conn.lastAccessTimestamp = now
+	conn.mutex.Unlock()
 }
 
 // GetFlushablePairs returns complete request-response pairs that are safe to flush.

@@ -331,11 +331,11 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					}
 				case *structs.SocketOpenEvent:
 					utils.LogProcessing("Received open event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-					tracker.AddOpenEvent(*e)
+					tracker.AddOpenEvent(e)
 					resetTimer(inactivityTimer, inactivityThreshold)
 				case *structs.SocketCloseEvent:
 					utils.LogProcessing("Received close event", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-					tracker.AddCloseEvent(*e)
+					tracker.AddCloseEvent(e)
 
 					time.AfterFunc(100*time.Millisecond, func() {
 						delayedDeleteChan <- struct{}{}

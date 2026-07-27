@@ -1,10 +1,7 @@
 package bpfwrapper
 
 import (
-	"bytes"
-	"encoding/binary"
 	"log/slog"
-	"sync"
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -12,8 +9,37 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/iovisor/gobpf/bcc"
 )
+
+var (
+	// this also includes space lost in padding.
+	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
+	openEventSize       = int(unsafe.Sizeof(structs.SocketOpenEvent{}))
+	closeEventSize      = int(unsafe.Sizeof(structs.SocketCloseEvent{}))
+	ignorePortsMap      = map[uint16]bool{
+		// kafka
+		9092:  true,
+		19092: true,
+		29092: true,
+		// zookeeper
+		2181: true,
+		// mongo
+		27017: true,
+		// redis
+		6379: true}
+	ignorePorts = true
+)
+
+func init() {
+	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+}
+
+func min(a, b int32) int32 {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
 
@@ -27,26 +53,25 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *connectio
 			continue
 		}
 
-		var event structs.SocketOpenEvent
-		err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
-		}()
-		if err != nil {
-			slog.Error("Failed to decode received data on socket open", "error", err)
+		if len(data) < openEventSize {
+			slog.Error("Received data smaller than socket open event", "len", len(data), "want", openEventSize)
 			continue
 		}
+		// Pointer cast into data[] — no reflection, no lock, and crucially NO
+		// struct copy. event aliases the raw record; the pointer keeps data[]
+		// alive until the worker reads it.
+		event := (*structs.SocketOpenEvent)(unsafe.Pointer(&data[0]))
 		connId := event.ConnId
-		metaUtils.LogIngest("Received socket open event",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"raddr", connId.Raddr,
-			"rport", connId.Rport)
+		if metaUtils.IsIngestLogsEnabled() {
+			metaUtils.LogIngest("Received socket open event",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"raddr", connId.Raddr,
+				"rport", connId.Rport)
+		}
 		connectionFactory.CreateIfNotExists(connId)
-		connectionFactory.SendEvent(connId, &event)
+		connectionFactory.SendEvent(connId, event)
 	}
 }
 
@@ -55,57 +80,22 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *connecti
 		if data == nil {
 			return
 		}
-		var event structs.SocketCloseEvent
-		err := func() error {
-			globalReaderLock.Lock()
-			defer globalReaderLock.Unlock()
-			globalReader.Reset(data)
-			return binary.Read(globalReader, bcc.GetHostByteOrder(), &event)
-		}()
-		if err != nil {
-			slog.Error("Failed to decode received data on socket close", "error", err)
+		if len(data) < closeEventSize {
+			slog.Error("Received data smaller than socket close event", "len", len(data), "want", closeEventSize)
 			continue
 		}
-
+		event := (*structs.SocketCloseEvent)(unsafe.Pointer(&data[0]))
 		connId := event.ConnId
-		metaUtils.LogIngest("Received close on",
-			"fd", connId.Fd,
-			"id", connId.Id,
-			"timestamp", connId.Conn_start_ns,
-			"raddr", connId.Raddr,
-			"rport", connId.Rport)
-		connectionFactory.SendEvent(connId, &event)
+		if metaUtils.IsIngestLogsEnabled() {
+			metaUtils.LogIngest("Received close on",
+				"fd", connId.Fd,
+				"id", connId.Id,
+				"timestamp", connId.Conn_start_ns,
+				"raddr", connId.Raddr,
+				"rport", connId.Rport)
+		}
+		connectionFactory.SendEvent(connId, event)
 	}
-}
-
-var (
-	// this also includes space lost in padding.
-	eventAttributesSize = int(unsafe.Sizeof(structs.SocketDataEventAttr{}))
-	ignorePortsMap      = map[uint16]bool{
-		// kafka
-		9092:  true,
-		19092: true,
-		29092: true,
-		// zookeeper
-		2181: true,
-		// mongo
-		27017: true,
-		// redis
-		6379: true}
-	ignorePorts      = true
-	globalReader     = &bytes.Reader{}
-	globalReaderLock sync.Mutex
-)
-
-func init() {
-	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
-}
-
-func min(a, b int32) int32 {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *connections.Factory) {
