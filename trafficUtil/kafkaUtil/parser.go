@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -259,6 +260,7 @@ var (
 	goodRequests               = 0
 	badRequests                = 0
 	debugMode                  = false
+	useFastParser              = false // USE_FAST_PARSER: zero-copy parse + Encode + ProduceStr
 	outputBandwidthLimitPerMin = -1
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
@@ -294,6 +296,7 @@ const ONE_MINUTE = 60
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
+	utils.InitVar("USE_FAST_PARSER", &useFastParser)
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
 	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
 	utils.InitVar("AKTO_MEM_SAMPLING_ENABLED", &memSamplingEnabled)
@@ -611,6 +614,62 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	}
 }
 
+// builderPool hands each goroutine its own zero-copy Builder (NOT concurrency-safe).
+var builderPool = sync.Pool{New: func() any { return utils.NewBuilder() }}
+
+// fastPrinted counts fast-path payloads; the first 10 are logged for eyeballing.
+var fastPrinted atomic.Int64
+
+// fastParseAndProduce is the zero-copy path (USE_FAST_PARSER=true): one message
+// per buffer, parse -> Encode -> ProduceStr. No filters, gzip, threat, or cloud
+// path — minimal by design; only parse success/failure metrics are kept.
+func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
+	b := builderPool.Get().(*utils.Builder)
+	defer builderPool.Put(b)
+
+	p := b.Parser()
+	req, err := p.ParseRequest(receiveBuffer)
+	if err != nil {
+		utils.Pipeline.PairsParseFailure.Add(1)
+		return
+	}
+	resp, err := p.ParseResponse(sentBuffer)
+	if err != nil {
+		utils.Pipeline.PairsParseFailure.Add(1)
+		return
+	}
+
+	meta := &utils.Meta{
+		SourceIP:      ctx.SourceIP,
+		DestIP:        ctx.DestIP,
+		TimeUnix:      time.Now().Unix(),
+		AktoAccountID: fmt.Sprint(1000000),
+		VxlanID:       ctx.VxlanID,
+		IsPending:     ctx.IsPending,
+		Source:        ctx.TrafficSource,
+		Direction:     ctx.Direction,
+		ProcessID:     ctx.ProcessID,
+		SocketID:      ctx.SocketFD,
+		DaemonsetID:   ctx.DaemonsetIdentifier,
+		ProcessName:   PodInformerInstance.GetProcessNameByProcessId(int32(ctx.ProcessID)),
+		EnableGraph:   utils.EnableGraph,
+	}
+
+	out := b.Encode(req, resp, meta) // aliases b.scratch; string(out) below copies it
+
+	if n := fastPrinted.Add(1); n <= 10 {
+		slog.Info("USE_FAST_PARSER sample", "n", n, "payload", string(out))
+	}
+
+	go ProduceStr(context.Background(), string(out), string(req.Path), string(req.Host()), string(req.Method))
+
+	// PairsMismatched: X-Debug-Token from the request should echo in the response body.
+	if token := req.Header("X-Debug-Token"); len(token) > 0 && !bytes.Contains(resp.Body, token) {
+		utils.Pipeline.PairsMismatched.Add(1)
+	}
+	utils.Pipeline.PairsParseSuccess.Add(1)
+}
+
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
 	if checkAndUpdateBandwidthProcessed(0) {
 		return
@@ -624,6 +683,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	// SkipPairProcessing isolates the parse cost: everything up to here (blob
 	// assembly, pair plumbing) runs, but the HTTP parse/marshal/produce below is skipped.
 	if SkipPairProcessing {
+		return
+	}
+
+	if useFastParser {
+		fastParseAndProduce(receiveBuffer, sentBuffer, ctx)
 		return
 	}
 
