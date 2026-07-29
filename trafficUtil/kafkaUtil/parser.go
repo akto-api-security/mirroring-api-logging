@@ -20,6 +20,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/fastparser"
 	bloomfilter "github.com/bits-and-blooms/bloom/v3"
 )
 
@@ -260,7 +261,8 @@ var (
 	goodRequests               = 0
 	badRequests                = 0
 	debugMode                  = false
-	useFastParser              = false // USE_FAST_PARSER: zero-copy parse + Encode + ProduceStr
+	useFastParser              = true  // USE_FAST_PARSER: zero-copy parse + Encode + ProduceStr
+	fastEncoderKind            = "flatbuffer" // FAST_ENCODER: wire format on the fast path ("json" | "flatbuffers")
 	outputBandwidthLimitPerMin = -1
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
@@ -297,6 +299,11 @@ const ONE_MINUTE = 60
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
 	utils.InitVar("USE_FAST_PARSER", &useFastParser)
+	utils.InitVar("FAST_ENCODER", &fastEncoderKind)
+	if !fastparser.ValidEncoder(fastEncoderKind) {
+		slog.Warn("unknown FAST_ENCODER, falling back", "value", fastEncoderKind, "fallback", "json")
+		fastEncoderKind = "json"
+	}
 	utils.InitVar("OUTPUT_BANDWIDTH_LIMIT", &outputBandwidthLimitPerMin)
 	utils.InitVar("EVENT_CHAN_BUFF_SIZE", &EventChanBuffSize)
 	utils.InitVar("AKTO_MEM_SAMPLING_ENABLED", &memSamplingEnabled)
@@ -614,8 +621,11 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool) *ParsedTra
 	}
 }
 
-// builderPool hands each goroutine its own zero-copy Builder (NOT concurrency-safe).
-var builderPool = sync.Pool{New: func() any { return utils.NewBuilder() }}
+// parserPool + encoderPool hand each goroutine its own zero-copy parser and its
+// own encoder (both NOT concurrency-safe). The encoder kind is chosen once by
+// FAST_ENCODER (resolved in init) and captured when the pool first allocates.
+var parserPool = sync.Pool{New: func() any { return fastparser.NewFastParser() }}
+var encoderPool = sync.Pool{New: func() any { return fastparser.NewEncoder(fastEncoderKind) }}
 
 // fastPrinted counts fast-path payloads; the first 10 are logged for eyeballing.
 var fastPrinted atomic.Int64
@@ -624,10 +634,11 @@ var fastPrinted atomic.Int64
 // per buffer, parse -> Encode -> ProduceStr. No filters, gzip, threat, or cloud
 // path — minimal by design; only parse success/failure metrics are kept.
 func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
-	b := builderPool.Get().(*utils.Builder)
-	defer builderPool.Put(b)
+	p := parserPool.Get().(*fastparser.Parser)
+	defer parserPool.Put(p)
+	enc := encoderPool.Get().(fastparser.Encoder)
+	defer encoderPool.Put(enc)
 
-	p := b.Parser()
 	req, err := p.ParseRequest(receiveBuffer)
 	if err != nil {
 		utils.Pipeline.PairsParseFailure.Add(1)
@@ -639,7 +650,7 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 		return
 	}
 
-	meta := &utils.Meta{
+	meta := &fastparser.Meta{
 		SourceIP:      ctx.SourceIP,
 		DestIP:        ctx.DestIP,
 		TimeUnix:      time.Now().Unix(),
@@ -655,7 +666,7 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 		EnableGraph:   utils.EnableGraph,
 	}
 
-	out := b.Encode(req, resp, meta) // aliases b.scratch; string(out) below copies it
+	out := enc.Encode(req, resp, meta) // aliases the encoder's reused buffer; string(out) below copies it
 
 	if n := fastPrinted.Add(1); n <= 10 {
 		slog.Info("USE_FAST_PARSER sample", "n", n, "payload", string(out))

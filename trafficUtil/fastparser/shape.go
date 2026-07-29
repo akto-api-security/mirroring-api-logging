@@ -14,7 +14,7 @@
 //
 // The returned bytes alias the Builder's internal buffer; copy (e.g. string(out))
 // before the next Encode on the same Builder.
-package utils 
+package fastparser 
 
 import (
 	"strconv"
