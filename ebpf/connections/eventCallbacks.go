@@ -98,8 +98,8 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *Factory)
 func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) {
 	metaUtils.Pipeline.InputChanCap.Store(int64(cap(inputChan)))
 	var eventCount int64
-	for data := range inputChan {
-		if data == nil {
+	for kernelBytes := range inputChan {
+		if kernelBytes == nil {
 			return
 		}
 
@@ -112,13 +112,13 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 		// (sizeof(struct)-MAX_MSG_SIZE == eventAttributesSize == 72 bytes on
 		// both sides, host byte order), so we read Attr with a direct memory
 		// cast instead of binary.Read: no lock, no reflection, no copy. The Msg
-		// payload is NOT copied here — the raw data[] slice is handed to the
+		// payload is NOT copied here — the raw kernelBytes slice is handed to the
 		// worker as-is and the payload is retained by reference downstream.
-		if len(data) < eventAttributesSize {
-			slog.Error("Received data smaller than event attributes", "len", len(data), "want", eventAttributesSize)
+		if len(kernelBytes) < eventAttributesSize {
+			slog.Error("Received data smaller than event attributes", "len", len(kernelBytes), "want", eventAttributesSize)
 			continue
 		}
-		attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
+		attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&kernelBytes[0]))
 
 		bytesSent := attr.Bytes_sent
 		connId := attr.ConnId
@@ -138,12 +138,12 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 
 		if metaUtils.IsIngestLogsEnabled() {
 			var dataStr string
-			if n := int(utils.Abs(bytesSent)); structs.MsgOffset < len(data) {
+			if n := int(utils.Abs(bytesSent)); structs.MsgOffset < len(kernelBytes) {
 				end := structs.MsgOffset + int(min(32, int32(n)))
-				if end > len(data) {
-					end = len(data)
+				if end > len(kernelBytes) {
+					end = len(kernelBytes)
 				}
-				dataStr = string(data[structs.MsgOffset:end])
+				dataStr = string(kernelBytes[structs.MsgOffset:end])
 			}
 			metaUtils.LogIngest("Got data",
 				"fd", connId.Fd,
@@ -164,6 +164,6 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 		if eventCount%1000 == 0 {
 			metaUtils.Pipeline.InputChanLen.Store(int64(len(inputChan)))
 		}
-		connectionFactory.SendDataEvent(connId, &data)
+		connectionFactory.SendDataEvent(connId, &kernelBytes)
 	}
 }

@@ -61,10 +61,11 @@ type Tracker struct {
 	msgGroups        map[uint32]*msgSeqGroup
 	highestMsgSeq    uint32
 	lowestPendingSeq uint32
-	// seenMsgSeqs tracks every msg_seq ever buffered on this connection so
-	// GroupsCreated counts each unique msg_seq exactly once, even when a group
-	// is deleted (paired/orphaned/stranded) and later re-created by a late chunk.
-	seenMsgSeqs map[uint32]struct{}
+	// seenMsgSeqs makes GroupsCreated count each unique msg_seq exactly once,
+	// even when a group is deleted (paired/orphaned/stranded) and later re-created
+	// by a late chunk. A fixed-size ring bitset (constant ~8KB, no growth) instead
+	// of an unbounded map — see utils.SeqRingBitset. Zero value is ready to use.
+	seenMsgSeqs utils.SeqRingBitset
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -74,9 +75,9 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		sentBuf:   make(map[int][]byte),
 		mutex:     sync.RWMutex{},
 		ssl:       false,
-		foundHTTP:   false,
-		msgGroups:   make(map[uint32]*msgSeqGroup),
-		seenMsgSeqs: make(map[uint32]struct{}),
+		foundHTTP: false,
+		msgGroups: make(map[uint32]*msgSeqGroup),
+		// seenMsgSeqs: zero value of utils.SeqRingBitset is ready to use.
 	}
 }
 
@@ -91,15 +92,28 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-// AddDataEvent buffers one raw data-event record. dataPtr points at the raw
-// kernel slice (attr region + payload); the attr is read via an in-place unsafe
-// cast and the payload is stored BY REFERENCE (a sub-slice of the raw record),
-// so no payload bytes are copied here. The raw slice is a unique per-event
-// allocation that nothing recycles, so retained sub-slices can never be
-// clobbered. Returns the record's msg_seq for the worker's inactivity timer.
-func (conn *Tracker) AddDataEvent(dataPtr *[]byte) uint32 {
-	data := *dataPtr
-	attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&data[0]))
+/*
+AddDataEvent buffers one raw data event — zero-copy.
+
+kernelBytesPtr points at the []byte the perf reader obtained from C.GoBytes for
+this event. attr and payload are VIEWS into those bytes; nothing is copied here:
+
+	kernelBytes ([]byte header) ─▶ C.GoBytes backing (one heap alloc per event)
+	                               ┌────────────┬───────────────────────────────┐
+	                               │ attr 0..67 │ payload  MsgOffset .. +n       │
+	                               └─────┬──────┴──────────────┬────────────────┘
+	                                     │                      │
+	         attr := (*Attr)(&kernelBytes[0])   payload := kernelBytes[MsgOffset : MsgOffset+n]
+	         (72B typed view, no copy)          (slice header, no copy)
+
+The retained payload keeps its backing alive. That backing is a unique per-event
+allocation that nothing recycles, so stored sub-slices can never be clobbered.
+Returns the record's msg_seq for the worker's inactivity timer.
+*/
+func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
+	// []byte view over the C.GoBytes buffer for this event; no copy.
+	var kernelBytes []byte = *kernelBytesPtr
+	attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&kernelBytes[0]))
 
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
@@ -131,78 +145,79 @@ func (conn *Tracker) AddDataEvent(dataPtr *[]byte) uint32 {
 	bytesSent := attr.Bytes_sent
 	absBytes := utils.Abs(bytesSent)
 
-	// Payload is data[MsgOffset : MsgOffset+absBytes], stored by reference.
+	// Payload is kernelBytes[MsgOffset : MsgOffset+absBytes], stored by reference.
 	// Guard against a truncated record so the slice bound can't panic.
-	if structs.MsgOffset+int(absBytes) > len(data) {
+	if structs.MsgOffset+int(absBytes) > len(kernelBytes) {
 		return attr.MsgSeq
 	}
-	payload := data[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
+	payload := kernelBytes[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
 
 	if UseMsgSeqFlush {
 		// msg_seq based buffering for incremental pair flushing
 		msgSeq := attr.MsgSeq
-		if msgSeq > 0 {
-			group, exists := conn.msgGroups[msgSeq]
-			if !exists {
-				if msgSeq < conn.lowestPendingSeq {
-					metaUtils.Pipeline.LateArrivals.Add(1)
-					metaUtils.Pipeline.LateArrivalDist.Observe(conn.highestMsgSeq - msgSeq)
-					if metaUtils.IsMsgSeqLogsEnabled() {
-						slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
-							"fd", conn.connID.Fd,
-							"msg_seq", msgSeq,
-							"lowestPendingSeq", conn.lowestPendingSeq)
-					}
-				} else if msgSeq < conn.highestMsgSeq {
-					metaUtils.Pipeline.OutOfOrderArrivals.Add(1)
-					metaUtils.Pipeline.OutOfOrderDist.Observe(conn.highestMsgSeq - msgSeq)
-					if metaUtils.IsMsgSeqLogsEnabled() {
-						slog.Warn("msg_seq: out-of-order group arrival",
-							"fd", conn.connID.Fd,
-							"msg_seq", msgSeq,
-							"highestMsgSeq", conn.highestMsgSeq)
-					}
+		// msg_seq is always >= 1 (kernel seeds it to 1); guard defensively.
+		if msgSeq == 0 {
+			return attr.MsgSeq
+		}
+		group, exists := conn.msgGroups[msgSeq]
+		if !exists {
+			if msgSeq < conn.lowestPendingSeq {
+				metaUtils.Pipeline.LateArrivals.Add(1)
+				metaUtils.Pipeline.LateArrivalDist.Observe(conn.highestMsgSeq - msgSeq)
+				if metaUtils.IsMsgSeqLogsEnabled() {
+					slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
+						"fd", conn.connID.Fd,
+						"msg_seq", msgSeq,
+						"lowestPendingSeq", conn.lowestPendingSeq)
 				}
-				group = &msgSeqGroup{
-					msgSeq:    msgSeq,
-					direction: attr.Direction,
-					chunks:    make(map[int][]byte),
-				}
-				conn.msgGroups[msgSeq] = group
-				// Count each unique msg_seq once, even if this group was
-				// previously flushed/orphaned/stranded and is now re-created
-				// by a late-arriving chunk.
-				if _, seen := conn.seenMsgSeqs[msgSeq]; !seen {
-					conn.seenMsgSeqs[msgSeq] = struct{}{}
-					metaUtils.Pipeline.GroupsCreated.Add(1)
+			} else if msgSeq < conn.highestMsgSeq {
+				metaUtils.Pipeline.OutOfOrderArrivals.Add(1)
+				metaUtils.Pipeline.OutOfOrderDist.Observe(conn.highestMsgSeq - msgSeq)
+				if metaUtils.IsMsgSeqLogsEnabled() {
+					slog.Warn("msg_seq: out-of-order group arrival",
+						"fd", conn.connID.Fd,
+						"msg_seq", msgSeq,
+						"highestMsgSeq", conn.highestMsgSeq)
 				}
 			}
-
-			var chunkKey int
-			if group.direction == 0 { // kEgress
-				chunkKey = int(attr.WriteEventsCount)
-			} else { // kIngress
-				chunkKey = int(attr.ReadEventsCount)
+			group = &msgSeqGroup{
+				msgSeq:    msgSeq,
+				direction: attr.Direction,
+				chunks:    make(map[int][]byte),
 			}
-			// chunkKey (rc/wc) is monotonic and unique per event, so each key is
-			// written exactly once — store the payload slice directly, no copy.
-			group.chunks[chunkKey] = payload
-
-			if msgSeq > conn.highestMsgSeq {
-				conn.highestMsgSeq = msgSeq
+			conn.msgGroups[msgSeq] = group
+			// Count each unique msg_seq once, even if this group was
+			// previously flushed/orphaned/stranded and is now re-created
+			// by a late-arriving chunk.
+			if conn.seenMsgSeqs.MarkNew(msgSeq) {
+				metaUtils.Pipeline.GroupsCreated.Add(1)
 			}
+		}
 
-			if metaUtils.IsMsgSeqLogsEnabled() {
-				slog.Debug("msg_seq: chunk added",
-					"fd", conn.connID.Fd,
-					"msg_seq", msgSeq,
-					"direction", group.direction,
-					"chunk_key", chunkKey,
-					"chunk_bytes", absBytes,
-					"total_chunks", len(group.chunks),
-					"highest_msg_seq", conn.highestMsgSeq,
-					"pending_groups", len(conn.msgGroups))
-			}
+		var chunkKey int
+		if group.direction == 0 { // kEgress
+			chunkKey = int(attr.WriteEventsCount)
+		} else { // kIngress
+			chunkKey = int(attr.ReadEventsCount)
+		}
+		// chunkKey (rc/wc) is monotonic and unique per event, so each key is
+		// written exactly once — store the payload slice directly, no copy.
+		group.chunks[chunkKey] = payload
+
+		if msgSeq > conn.highestMsgSeq {
+			conn.highestMsgSeq = msgSeq
+		}
+
+		if metaUtils.IsMsgSeqLogsEnabled() {
+			slog.Debug("msg_seq: chunk added",
+				"fd", conn.connID.Fd,
+				"msg_seq", msgSeq,
+				"direction", group.direction,
+				"chunk_key", chunkKey,
+				"chunk_bytes", absBytes,
+				"total_chunks", len(group.chunks),
+				"highest_msg_seq", conn.highestMsgSeq,
+				"pending_groups", len(conn.msgGroups))
 		}
 	} else {
 		// Old flat buffer path. rc/wc is unique per event, so assign the payload

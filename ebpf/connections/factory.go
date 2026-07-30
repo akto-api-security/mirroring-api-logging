@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -59,7 +60,7 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	for _, k := range keys {
 		if kPrev == -1 {
 			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the 
+			// For requests arriving after a time gap on the same underlying connection the
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
@@ -119,6 +120,20 @@ func init() {
 	utils.InitVar("AKTO_PER_CONN_CH_BUFFER_SIZE", &PerConnChBufferSize)
 }
 
+func formatAddr(addr uint32, port uint16) string {
+	b := make([]byte, 0, 21) // "255.255.255.255:65535"
+	b = strconv.AppendUint(b, uint64(addr&0xff), 10)
+	b = append(b, '.')
+	b = strconv.AppendUint(b, uint64(addr>>8&0xff), 10)
+	b = append(b, '.')
+	b = strconv.AppendUint(b, uint64(addr>>16&0xff), 10)
+	b = append(b, '.')
+	b = strconv.AppendUint(b, uint64(addr>>24&0xff), 10)
+	b = append(b, ':')
+	b = strconv.AppendUint(b, uint64(port), 10)
+	return string(b)
+}
+
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
@@ -162,18 +177,8 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 // ProcessSinglePair processes one request-response pair from msg_seq groups.
 func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, g1Blob, g2Blob []byte) {
 
-	originalInt := uint32(connID.Raddr)
-	byteSlice := make([]byte, 4)
-	binary.LittleEndian.PutUint32(byteSlice, originalInt)
-	ip := net.IP(byteSlice)
-	raddrStr := ip.String() + ":" + fmt.Sprint(connID.Rport)
-
-	originalInt = uint32(laddrVal)
-	byteSlice = make([]byte, 4)
-	binary.LittleEndian.PutUint32(byteSlice, originalInt)
-	ip = net.IP(byteSlice)
-	laddrStr := ip.String() + ":" + fmt.Sprint(lportVal)
-
+	raddrStr := formatAddr(connID.Raddr, connID.Rport)
+	laddrStr := formatAddr(laddrVal, lportVal)
 	hostName := ""
 	if kafkaUtil.PodInformerInstance != nil {
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
@@ -513,7 +518,7 @@ func (factory *Factory) getTracker(connectionID structs.ConnID) (*Tracker, bool)
 // decoded struct: the payload is never copied on the ingest path, and the worker
 // retains sub-slices of it by reference. Mirrors SendEvent's non-blocking send
 // and closed-channel recovery.
-func (factory *Factory) SendDataEvent(connectionID structs.ConnID, data *[]byte) {
+func (factory *Factory) SendDataEvent(connectionID structs.ConnID, kernelBytesPtr *[]byte) {
 	ch, exists := factory.getChannel(connectionID)
 
 	if !exists {
@@ -530,7 +535,7 @@ func (factory *Factory) SendDataEvent(connectionID structs.ConnID, data *[]byte)
 		}
 	}()
 	select {
-	case ch <- data: // Try sending the event to the worker's channel
+	case ch <- kernelBytesPtr: // Try sending the event to the worker's channel
 	default: // Avoid blocking if the channel is full
 		utils.Pipeline.EventsDroppedChannelFull.Add(1)
 	}
@@ -541,13 +546,13 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 	ch, exists := factory.getChannel(connectionID)
 
 	if exists {
-		if utils.IsProcessLogsEnabled(){
+		if utils.IsProcessLogsEnabled() {
 			utils.LogProcessing("Received event", "fd", connectionID.Fd, "id", connectionID.Id, "timestamp", connectionID.Conn_start_ns, "ip", connectionID.Raddr, "port", connectionID.Rport)
 		}
 		defer func() {
 			if r := recover(); r != nil {
 				// Recover from a panic, caused by sending to a closed channel
-				if utils.IsProcessLogsEnabled(){
+				if utils.IsProcessLogsEnabled() {
 					utils.LogProcessing("Attempted to send on a closed channel for connectionId", "connectionId", connectionID)
 				}
 			}
