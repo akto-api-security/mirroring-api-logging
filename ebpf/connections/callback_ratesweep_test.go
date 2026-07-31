@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -19,13 +20,15 @@ import (
 )
 
 // Rate-sweep knobs, settable on the command line (after `-args`), e.g.:
-//   go test -run TestRateSweep ./connections/ -args -testname=myrun -rps=300K -parse=on -gomaxprocs=4
+//
+//	go test -run TestRateSweep ./connections/ -args -testname=myrun -rps=300K -parse=on -gomaxprocs=4
 var (
 	rsParseFlag = flag.String("parse", "both", "rate-sweep arm(s): on | off | both")
 	rsGmpFlag   = flag.Int("gomaxprocs", 4, "GOMAXPROCS for the rate sweep")
 	rsTestName  = flag.String("testname", "ratesweep", "output subdir under pprof/ for this run's profiles")
 	rsRps       = flag.String("rps", "", "single offered rate e.g. 100K|200K|300K|500K (empty => default sweep)")
 	rsWindowFlg = flag.Duration("window", 5*time.Second, "sustained-load duration per cell, e.g. 30s")
+	rsEncoder   = flag.String("encoder", "both", "fast-path wire encoder: json | flatbuffers | both")
 )
 
 // rsParseRate turns "300K"/"2M"/"50000" into an int events/sec.
@@ -151,6 +154,20 @@ func rsComma(n int64) string {
 	return neg + b.String()
 }
 
+// rsRateLabel formats a rate for use as a directory name, e.g. 50000 -> "50k",
+// 1000000 -> "1m", 123456 -> "123456" (falls back to the raw number if it
+// doesn't divide evenly into K/M).
+func rsRateLabel(rate int) string {
+	switch {
+	case rate != 0 && rate%1_000_000 == 0:
+		return fmt.Sprintf("%dm", rate/1_000_000)
+	case rate != 0 && rate%1_000 == 0:
+		return fmt.Sprintf("%dk", rate/1_000)
+	default:
+		return fmt.Sprintf("%d", rate)
+	}
+}
+
 type rsConn struct {
 	id     uint64
 	fd     uint32
@@ -161,7 +178,9 @@ type rsConn struct {
 // cd /Users/mann/workspace/mirroring-api-logging-2/ebpf
 // Flags go AFTER `-args` (else `go test` mis-parses the package path and builds the bcc root pkg).
 // Single rate + pprof capture (cpu whole-duration, periodic heap, goroutine, allocs) under pprof/<testname>/<arm>/<rate>/:
-//   AKTO_MEM_THRESH_RESTART=12000 AKTO_SYS_MEM_HARD_LIMIT=14000 go test -run TestRateSweep -v -count=1 -timeout 400s ./connections/ -args -testname=myrun -rps=300K -parse=on -gomaxprocs=4 2>&1 | grep -vE "level=(WARN|INFO)|logger.go|Setting up|Logger setup|File logging" | tail -12
+//
+//	AKTO_MEM_THRESH_RESTART=12000 AKTO_SYS_MEM_HARD_LIMIT=14000 go test -run TestRateSweep -v -count=1 -timeout 400s ./connections/ -args -testname=myrun -rps=300K -parse=on -gomaxprocs=4 2>&1 | grep -vE "level=(WARN|INFO)|logger.go|Setting up|Logger setup|File logging" | tail -12
+//
 // Omit -rps to run the full 50K..500K sweep (no pprof needed, but still captured per cell).
 func TestRateSweep(t *testing.T) {
 	if testing.Short() {
@@ -195,6 +214,20 @@ func TestRateSweep(t *testing.T) {
 	// disable threat too, else it dials a nil Kafka writer and panics.
 	kafka.KafkaDisabled = true      // ProduceStr no-ops; parse still runs
 	metaUtils.ThreatEnabled = false // threat Produce path is unguarded → would panic on nil writer
+
+	// -encoder selects which fast-path wire encoder(s) to sweep. parse-off never
+	// reaches the encoder (SkipPairProcessing returns before fastParseAndProduce),
+	// so this only affects the parse-on arm.
+	var encoders []string
+	switch strings.ToLower(*rsEncoder) {
+	case "both":
+		encoders = []string{"json", "flatbuffers"}
+	case "json", "flatbuffers":
+		encoders = []string{strings.ToLower(*rsEncoder)}
+	default:
+		t.Fatalf("invalid -encoder=%q (want json|flatbuffers|both)", *rsEncoder)
+	}
+
 	UseMsgSeqFlush = true
 	inactivityThreshold = 1 * time.Second
 	PerConnChBufferSize = 200 // per-conn channel depth under test
@@ -213,169 +246,203 @@ func TestRateSweep(t *testing.T) {
 		rates = []int{rsParseRate(t, *rsRps)}
 	}
 
-	t.Logf("payload=%s  reqBytes=%d respBytes=%d  events/pair=%d  GOMAXPROCS=%d  chanCap=%d",
-		rsFixture, len(reqBytes), len(respBytes), evPerReq, runtime.GOMAXPROCS(0), rsChanCap)
-	t.Logf("%-9s %8s %10s %11s %12s %10s %10s %10s %9s",
+	t.Logf("payload=%s  reqBytes=%d respBytes=%d  events/pair=%d  GOMAXPROCS=%d  chanCap=%d  encoders=%v",
+		rsFixture, len(reqBytes), len(respBytes), evPerReq, runtime.GOMAXPROCS(0), rsChanCap, encoders)
+	t.Logf("%-16s %8s %10s %11s %12s %10s %10s %10s %9s",
 		"arm", "rate/s", "offered/s", "kernelDrop%", "perConnDrop%", "evChanLen", "consumed/s", "pairs_ok/s", "cov%")
 
 	for _, skip := range arms {
 		kafka.SkipPairProcessing = skip
-		armName := "parse-on "
+		arm := "parse-on"
 		if skip {
-			armName = "parse-off"
+			arm = "parse-off"
 		}
-		for _, rate := range rates {
-			metaUtils.Pipeline.Reset()
-			factory := NewFactory()
 
-			// eventChan models the Go event channel the kernel/gobpf delivers into
-			// (prod: inputChan, cap=EVENT_CHAN_BUFF_SIZE). A failed non-blocking send
-			// here == the kernel perf buffer overflowing == a kernel drop.
-			eventChan := make(chan []byte, rsChanCap)
-			go SocketDataEventCallback(eventChan, factory)
+		// parse-off never reaches the encoder, so sweep it once (no encoder
+		// dimension). parse-on runs the FULL rate sweep for one encoder, then the
+		// full rate sweep again for the next — encoder is the outer loop so
+		// json's whole sweep completes before flatbuffers starts, keeping every
+		// other arg identical for a clean before/after comparison.
+		cellEncoders := encoders
+		if skip {
+			cellEncoders = []string{""}
+		}
 
-			conns := make([]*rsConn, rsConns)
-			for i := range conns {
-				conns[i] = &rsConn{id: uint64(i + 1), fd: uint32(i + 1), isReq: true}
+		for _, encoder := range cellEncoders {
+			if !skip {
+				// Must be set before the first fastParseAndProduce: encoderPool is
+				// a sync.Pool that builds lazily on first Get, reading the encoder
+				// kind at that moment. Set once per encoder, before its rate sweep.
+				if !kafka.SetFastEncoder(encoder) {
+					t.Fatalf("invalid encoder %q", encoder)
+				}
 			}
+			for _, rate := range rates {
+				metaUtils.Pipeline.Reset()
+				factory := NewFactory()
 
-			// ---- pprof capture for this cell (CPU whole-duration + periodic heap) ----
-			arm := "parse-on"
-			if skip {
-				arm = "parse-off"
-			}
-			profDir := fmt.Sprintf("pprof/%s/%s/%d", *rsTestName, arm, rate)
-			if err := os.MkdirAll(profDir, 0o755); err != nil {
-				t.Fatalf("mkdir %s: %v", profDir, err)
-			}
-			cpuF, err := os.Create(profDir + "/cpu.prof")
-			if err != nil {
-				t.Fatalf("create cpu.prof: %v", err)
-			}
-			if err := pprof.StartCPUProfile(cpuF); err != nil {
-				t.Fatalf("start cpu profile: %v", err)
-			}
-			heapDone := make(chan struct{})
-			go func() {
-				tick := time.NewTicker(2 * time.Second)
-				defer tick.Stop()
-				for n := 0; ; {
+				// eventChan models the Go event channel the kernel/gobpf delivers into
+				// (prod: inputChan, cap=EVENT_CHAN_BUFF_SIZE). A failed non-blocking send
+				// here == the kernel perf buffer overflowing == a kernel drop.
+				eventChan := make(chan []byte, rsChanCap)
+				go SocketDataEventCallback(eventChan, factory)
+
+				conns := make([]*rsConn, rsConns)
+				for i := range conns {
+					conns[i] = &rsConn{id: uint64(i + 1), fd: uint32(i + 1), isReq: true}
+				}
+
+				// ---- pprof capture for this cell (CPU whole-duration + periodic heap) ----
+				// Layout: pprof/<testname>/<arm>[/<encoder>]/<rate label>/
+				//   e.g. myrun/parse-on/json/50k, myrun/parse-on/flatbuffers/50k, myrun/parse-off/50k
+				profDir := fmt.Sprintf("pprof/%s/%s", *rsTestName, arm)
+				if !skip {
+					profDir = profDir + "/" + encoder
+				}
+				profDir = profDir + "/" + rsRateLabel(rate)
+				armName := arm
+				if !skip {
+					armName = arm + "/" + encoder
+				}
+				if err := os.MkdirAll(profDir, 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", profDir, err)
+				}
+				cpuF, err := os.Create(profDir + "/cpu.prof")
+				if err != nil {
+					t.Fatalf("create cpu.prof: %v", err)
+				}
+				if err := pprof.StartCPUProfile(cpuF); err != nil {
+					t.Fatalf("start cpu profile: %v", err)
+				}
+				heapDone := make(chan struct{})
+				go func() {
+					tick := time.NewTicker(2 * time.Second)
+					defer tick.Stop()
+					for n := 0; ; {
+						select {
+						case <-heapDone:
+							return
+						case <-tick.C:
+							_ = rsWriteProfile("heap", fmt.Sprintf("%s/heap-%d.prof", profDir, n))
+							n++
+						}
+					}
+				}()
+
+				// offered     = events the "kernel" tried to deliver
+				// kernelDrops = offered events that didn't fit in eventChan (kernel-drop analog)
+				var offered, kernelDrops int64
+				send := func(b []byte) {
 					select {
-					case <-heapDone:
-						return
-					case <-tick.C:
-						_ = rsWriteProfile("heap", fmt.Sprintf("%s/heap-%d.prof", profDir, n))
-						n++
+					case eventChan <- b:
+					default:
+						atomic.AddInt64(&kernelDrops, 1)
 					}
+					atomic.AddInt64(&offered, 1)
 				}
-			}()
 
-			// offered     = events the "kernel" tried to deliver
-			// kernelDrops = offered events that didn't fit in eventChan (kernel-drop analog)
-			var offered, kernelDrops int64
-			send := func(b []byte) {
-				select {
-				case eventChan <- b:
-				default:
-					atomic.AddInt64(&kernelDrops, 1)
+				start := time.Now()
+				ci := 0
+				var pairsSent int64 // req+resp pairs fully emitted (counted on the resp half)
+				for time.Since(start) < *rsWindowFlg {
+					should := int64(float64(rate) * time.Since(start).Seconds())
+					for atomic.LoadInt64(&offered) < should {
+						cs := conns[ci%rsConns]
+						ci++
+						cs.msgSeq++
+						if cs.isReq {
+							rsEmit(send, cs.id, cs.fd, cs.msgSeq, 1, reqBytes)
+						} else {
+							rsEmit(send, cs.id, cs.fd, cs.msgSeq, 0, respBytes)
+							pairsSent++
+						}
+						cs.isReq = !cs.isReq
+					}
+					time.Sleep(50 * time.Microsecond)
 				}
-				atomic.AddInt64(&offered, 1)
-			}
+				elapsed := time.Since(start).Seconds()
 
-			start := time.Now()
-			ci := 0
-			var pairsSent int64 // req+resp pairs fully emitted (counted on the resp half)
-			for time.Since(start) < *rsWindowFlg {
-				should := int64(float64(rate) * time.Since(start).Seconds())
-				for atomic.LoadInt64(&offered) < should {
-					cs := conns[ci%rsConns]
-					ci++
-					cs.msgSeq++
-					if cs.isReq {
-						rsEmit(send, cs.id, cs.fd, cs.msgSeq, 1, reqBytes)
+				// Window-end metrics (sustained-load rate + saturation). Grab evChanLen
+				// now — it reads ~0 after the drain below.
+				consumed := metaUtils.Pipeline.EventsReceived.Load()
+				eventChanLen := metaUtils.Pipeline.InputChanLen.Load()
+
+				// Drain to quiescence for eventual coverage. The callback stays ALIVE so
+				// it feeds the backlog (eventChan + per-conn channels) through; per-conn
+				// workers final-flush ~inactivityThreshold after they go idle, releasing
+				// the last unsealed pairs. Poll pairsOk until it plateaus (unchanged for
+				// ~1.5s, clearing the 500ms flush tick and the 1s inactivity flush).
+				// Hard cap ~15s so a bug can't hang the test.
+				var lastPairs int64 = -1
+				stable := 0
+				for i := 0; i < 150; i++ {
+					time.Sleep(100 * time.Millisecond)
+					p := metaUtils.Pipeline.PairsParseSuccess.Load()
+					if p == lastPairs {
+						stable++
+						if stable >= 15 {
+							break
+						}
 					} else {
-						rsEmit(send, cs.id, cs.fd, cs.msgSeq, 0, respBytes)
-						pairsSent++
+						stable = 0
+						lastPairs = p
 					}
-					cs.isReq = !cs.isReq
 				}
-				time.Sleep(50 * time.Microsecond)
-			}
-			elapsed := time.Since(start).Seconds()
 
-			// Window-end metrics (sustained-load rate + saturation). Grab evChanLen
-			// now — it reads ~0 after the drain below.
-			consumed := metaUtils.Pipeline.EventsReceived.Load()
-			eventChanLen := metaUtils.Pipeline.InputChanLen.Load()
+				// ---- stop pprof capture (covers window + drain) and dump the rest ----
+				close(heapDone)
+				pprof.StopCPUProfile()
+				cpuF.Close()
+				if err := rsWriteProfile("goroutine", profDir+"/goroutine.prof"); err != nil {
+					t.Fatalf("write goroutine profile: %v", err)
+				}
+				if err := rsWriteProfile("allocs", profDir+"/allocs.prof"); err != nil {
+					t.Fatalf("write allocs profile: %v", err)
+				}
+				if err := rsWriteProfile("mutex", profDir+"/mutex.prof"); err != nil {
+					t.Fatalf("write mutex profile: %v", err)
+				}
+				_ = rsWriteProfile("heap", profDir+"/heap-final.prof")
 
-			// Drain to quiescence for eventual coverage. The callback stays ALIVE so
-			// it feeds the backlog (eventChan + per-conn channels) through; per-conn
-			// workers final-flush ~inactivityThreshold after they go idle, releasing
-			// the last unsealed pairs. Poll pairsOk until it plateaus (unchanged for
-			// ~1.5s, clearing the 500ms flush tick and the 1s inactivity flush).
-			// Hard cap ~15s so a bug can't hang the test.
-			var lastPairs int64 = -1
-			stable := 0
-			for i := 0; i < 150; i++ {
-				time.Sleep(100 * time.Millisecond)
-				p := metaUtils.Pipeline.PairsParseSuccess.Load()
-				if p == lastPairs {
-					stable++
-					if stable >= 15 {
-						break
+				// Eventual-outcome metrics (of everything offered, where did it end up).
+				//   perConnDrops = per-conn channel overflow (worker/flush/parse too slow)
+				pairsOk := metaUtils.Pipeline.PairsParseSuccess.Load()
+				perConnDrops := metaUtils.Pipeline.EventsDroppedChannelFull.Load()
+				eventChan <- nil // now safe to stop the callback
+
+				offeredN := atomic.LoadInt64(&offered)
+				kernelDropN := atomic.LoadInt64(&kernelDrops)
+				pct := func(n, d int64) float64 {
+					if d == 0 {
+						return 0
 					}
-				} else {
-					stable = 0
-					lastPairs = p
+					return 100 * float64(n) / float64(d)
 				}
-			}
-
-			// ---- stop pprof capture (covers window + drain) and dump the rest ----
-			close(heapDone)
-			pprof.StopCPUProfile()
-			cpuF.Close()
-			if err := rsWriteProfile("goroutine", profDir+"/goroutine.prof"); err != nil {
-				t.Fatalf("write goroutine profile: %v", err)
-			}
-			if err := rsWriteProfile("allocs", profDir+"/allocs.prof"); err != nil {
-				t.Fatalf("write allocs profile: %v", err)
-			}
-			if err := rsWriteProfile("mutex", profDir+"/mutex.prof"); err != nil {
-				t.Fatalf("write mutex profile: %v", err)
-			}
-			_ = rsWriteProfile("heap", profDir+"/heap-final.prof")
-
-			// Eventual-outcome metrics (of everything offered, where did it end up).
-			//   perConnDrops = per-conn channel overflow (worker/flush/parse too slow)
-			pairsOk := metaUtils.Pipeline.PairsParseSuccess.Load()
-			perConnDrops := metaUtils.Pipeline.EventsDroppedChannelFull.Load()
-			eventChan <- nil // now safe to stop the callback
-
-			offeredN := atomic.LoadInt64(&offered)
-			kernelDropN := atomic.LoadInt64(&kernelDrops)
-			pct := func(n, d int64) float64 {
-				if d == 0 {
-					return 0
+				// eventual coverage: pairs delivered (after drain) vs pairs offered
+				offeredPairs := float64(offeredN) / float64(evPerReq)
+				cov := 0.0
+				if offeredPairs > 0 {
+					cov = 100 * float64(pairsOk) / offeredPairs
 				}
-				return 100 * float64(n) / float64(d)
-			}
-			// eventual coverage: pairs delivered (after drain) vs pairs offered
-			offeredPairs := float64(offeredN) / float64(evPerReq)
-			cov := 0.0
-			if offeredPairs > 0 {
-				cov = 100 * float64(pairsOk) / offeredPairs
-			}
 
-			t.Logf("%-9s %8d %10.0f %10.1f%% %11.1f%% %12d %10.0f %10.0f %8.1f%%",
-				armName, rate, float64(offeredN)/elapsed,
-				pct(kernelDropN, offeredN), pct(perConnDrops, offeredN), eventChanLen,
-				float64(consumed)/elapsed, float64(pairsOk)/elapsed, cov)
-			t.Logf("summary[%s@%s]: totalReq=%s duration=%.1fs req/s=%s conns=%d avgReq/conn=%s",
-				armName, rsComma(int64(rate)), rsComma(pairsSent), elapsed,
-				rsComma(int64(float64(pairsSent)/elapsed)), rsConns,
-				rsComma(int64(float64(pairsSent)/float64(rsConns))))
+				t.Logf("%-16s %8d %10.0f %10.1f%% %11.1f%% %12d %10.0f %10.0f %8.1f%%",
+					armName, rate, float64(offeredN)/elapsed,
+					pct(kernelDropN, offeredN), pct(perConnDrops, offeredN), eventChanLen,
+					float64(consumed)/elapsed, float64(pairsOk)/elapsed, cov)
+				t.Logf("summary[%s@%s]: totalReq=%s duration=%.1fs req/s=%s conns=%d avgReq/conn=%s",
+					armName, rsComma(int64(rate)), rsComma(pairsSent), elapsed,
+					rsComma(int64(float64(pairsSent)/elapsed)), rsConns,
+					rsComma(int64(float64(pairsSent)/float64(rsConns))))
 
-			time.Sleep(3200 * time.Millisecond) // let workers exit (inactivity=1s) before next cell
+				// Persist the full pipeline metrics snapshot for this cell alongside its profiles.
+				if b, err := json.MarshalIndent(snapshot(), "", "  "); err != nil {
+					t.Errorf("marshal metrics snapshot: %v", err)
+				} else if err := os.WriteFile(profDir+"/metrics.json", b, 0o644); err != nil {
+					t.Errorf("write metrics.json: %v", err)
+				}
+
+				time.Sleep(3200 * time.Millisecond) // let workers exit (inactivity=1s) before next cell
+			}
 		}
 	}
 }

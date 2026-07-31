@@ -1,9 +1,7 @@
 package connections
 
 import (
-	"fmt"
 	"log/slog"
-	"sort"
 	"sync"
 	"time"
 	"unsafe"
@@ -13,19 +11,24 @@ import (
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-func getChunkKeys(chunks map[int][]byte) string {
-	keys := make([]int, 0, len(chunks))
-	for k := range chunks {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	return fmt.Sprint(keys)
+// fragment is one chunk of a message's payload: seq is rc (ingress) or wc
+// (egress) — monotonic and unique per event, but chunks are NOT guaranteed to
+// ARRIVE in seq order (per-CPU perf buffers), so fragments are appended in
+// arrival order and sorted by seq at flush (see fragmentsToBytes). data is a
+// zero-copy view into the retained kernel event bytes.
+type fragment struct {
+	seq  int
+	data []byte
 }
 
 type msgSeqGroup struct {
 	msgSeq    uint32
-	direction uint32         // kEgress=0, kIngress=1
-	chunks    map[int][]byte // key: rc (if ingress) or wc (if egress)
+	direction uint32 // kEgress=0, kIngress=1
+	// fragments holds this message's chunks in ARRIVAL order (not seq order).
+	// A plain growable slice instead of map[int][]byte: keys (seq) are unique
+	// and monotonic, so no map/hash/bucket machinery is needed — see
+	// fragmentsToBytes for the sort-by-seq + gap check done at flush time.
+	fragments []fragment
 }
 
 type MsgSeqPair struct {
@@ -183,7 +186,6 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 			group = &msgSeqGroup{
 				msgSeq:    msgSeq,
 				direction: attr.Direction,
-				chunks:    make(map[int][]byte),
 			}
 			conn.msgGroups[msgSeq] = group
 			// Count each unique msg_seq once, even if this group was
@@ -200,9 +202,9 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		} else { // kIngress
 			chunkKey = int(attr.ReadEventsCount)
 		}
-		// chunkKey (rc/wc) is monotonic and unique per event, so each key is
-		// written exactly once — store the payload slice directly, no copy.
-		group.chunks[chunkKey] = payload
+		// chunkKey (rc/wc) is monotonic and unique per event; append is O(1)
+		// amortized and stores the payload slice by reference, no copy.
+		group.fragments = append(group.fragments, fragment{seq: chunkKey, data: payload})
 
 		if msgSeq > conn.highestMsgSeq {
 			conn.highestMsgSeq = msgSeq
@@ -215,7 +217,7 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 				"direction", group.direction,
 				"chunk_key", chunkKey,
 				"chunk_bytes", absBytes,
-				"total_chunks", len(group.chunks),
+				"total_chunks", len(group.fragments),
 				"highest_msg_seq", conn.highestMsgSeq,
 				"pending_groups", len(conn.msgGroups))
 		}
@@ -342,7 +344,7 @@ func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
 				"fd", conn.connID.Fd,
 				"msg_seq", k,
 				"direction", g.direction,
-				"chunks", len(g.chunks))
+				"chunks", len(g.fragments))
 		}
 		delete(conn.msgGroups, k)
 	}
@@ -377,7 +379,7 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 						"fd", conn.connID.Fd,
 						"msg_seq", seq,
 						"direction", g1.direction,
-						"chunks", len(g1.chunks))
+						"chunks", len(g1.fragments))
 				}
 				delete(conn.msgGroups, seq)
 			}
@@ -388,7 +390,7 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 						"fd", conn.connID.Fd,
 						"msg_seq", seq+1,
 						"direction", g2.direction,
-						"chunks", len(g2.chunks))
+						"chunks", len(g2.fragments))
 				}
 				delete(conn.msgGroups, seq+1)
 			}
@@ -414,8 +416,8 @@ func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) (
 				"fd", conn.connID.Fd,
 				"req_msg_seq", g1.msgSeq,
 				"resp_msg_seq", g2.msgSeq,
-				"req_chunks", len(g1.chunks),
-				"resp_chunks", len(g2.chunks),
+				"req_chunks", len(g1.fragments),
+				"resp_chunks", len(g2.fragments),
 				"remaining_groups", len(conn.msgGroups)-2)
 		}
 

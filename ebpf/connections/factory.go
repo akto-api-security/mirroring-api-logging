@@ -83,6 +83,46 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 	return combined
 }
 
+// fragmentsToBytes joins a msgSeqGroup's fragments into one contiguous buffer,
+// in seq order. fragments arrive in whatever order the per-CPU perf buffers
+// deliver them (not necessarily seq order), so they're sorted here before
+// joining — same contiguity/gap semantics as convertToSingleByteArr, just over
+// a []fragment (unique, monotonic seq) instead of a map.
+func fragmentsToBytes(fragments []fragment) []byte {
+	if len(fragments) == 0 {
+		return make([]byte, 0)
+	}
+
+	sort.Slice(fragments, func(i, j int) bool { return fragments[i].seq < fragments[j].seq })
+
+	var combined []byte
+	kPrev := -1
+	for _, f := range fragments {
+		if kPrev == -1 {
+			// C sets read, write event count=0 only on new connection open
+			// For requests arriving after a time gap on the same underlying connection the
+			// read,write count will not be 1, they will simply continue from the last request
+			// This can only be replicated when there is a time gap/inactivityThreshold between requests
+			// on the same underlying connection
+			if !sequenceCheckSkip && f.seq != 1 {
+				slog.Warn("Bad start sequence", "key", f.seq, "value", string(f.data))
+				break
+			}
+			kPrev = f.seq
+		} else {
+			if kPrev+1 != f.seq {
+				slog.Warn("Missing sequence", "prev", kPrev, "current", f.seq, "value", string(f.data))
+				utils.Pipeline.ChunkAssemblyGaps.Add(1)
+				break
+			}
+			kPrev = f.seq
+		}
+		combined = append(combined, f.data...)
+	}
+
+	return combined
+}
+
 var (
 	disableEgress        = false
 	maxActiveConnections = 4096
@@ -390,8 +430,8 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 		case <-ticker.C:
 			pairs := tracker.GetFlushablePairs()
 			for _, pair := range pairs {
-				g1Blob := convertToSingleByteArr(pair.ReqGroup.chunks)
-				g2Blob := convertToSingleByteArr(pair.RespGroup.chunks)
+				g1Blob := fragmentsToBytes(pair.ReqGroup.fragments)
+				g2Blob := fragmentsToBytes(pair.RespGroup.fragments)
 
 				if utils.IsMsgSeqLogsEnabled() {
 					slog.Info("msg_seq: processing pair (tick)",
@@ -426,8 +466,8 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
 	pairs := tracker.FlushRemainingPairs()
 	for _, pair := range pairs {
-		g1Blob := convertToSingleByteArr(pair.ReqGroup.chunks)
-		g2Blob := convertToSingleByteArr(pair.RespGroup.chunks)
+		g1Blob := fragmentsToBytes(pair.ReqGroup.fragments)
+		g2Blob := fragmentsToBytes(pair.RespGroup.fragments)
 
 		if utils.IsMsgSeqLogsEnabled() {
 			slog.Info("msg_seq: processing remaining pair",
@@ -479,8 +519,8 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
 		lastMemCheck = time.Now().UnixMilli()
 		mem := utils.LogMemoryStats()
-		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
-		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
+		// utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		// utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})

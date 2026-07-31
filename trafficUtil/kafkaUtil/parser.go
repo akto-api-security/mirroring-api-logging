@@ -262,7 +262,7 @@ var (
 	badRequests                = 0
 	debugMode                  = false
 	useFastParser              = true  // USE_FAST_PARSER: zero-copy parse + Encode + ProduceStr
-	fastEncoderKind            = "flatbuffer" // FAST_ENCODER: wire format on the fast path ("json" | "flatbuffers")
+	fastEncoderKind            = "json" // FAST_ENCODER: wire format on the fast path ("json" | "flatbuffers")
 	outputBandwidthLimitPerMin = -1
 	currentBandwidthProcessed  = 0
 	lastSampleUpdate           = time.Now().Unix()
@@ -295,6 +295,19 @@ var (
 var bloomFilter *bloomfilter.BloomFilter
 
 const ONE_MINUTE = 60
+
+// SetFastEncoder overrides the fast-path wire encoder ("json" | "flatbuffers")
+// at runtime, e.g. from a test harness. Must be called before the first
+// fastParseAndProduce (encoderPool is lazy: it builds on first Get, reading
+// fastEncoderKind at that moment). Returns false and leaves the kind unchanged
+// if kind is not a valid encoder.
+func SetFastEncoder(kind string) bool {
+	if !fastparser.ValidEncoder(kind) {
+		return false
+	}
+	fastEncoderKind = kind
+	return true
+}
 
 func init() {
 	utils.InitVar("DEBUG_MODE", &debugMode)
