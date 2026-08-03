@@ -6,5 +6,4 @@ temp
 data-*
 **.bin
 *.prof
-*.md
 **pprof/
