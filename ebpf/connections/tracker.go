@@ -11,30 +11,9 @@ import (
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
-// fragment is one chunk of a message's payload: seq is rc (ingress) or wc
-// (egress) — monotonic and unique per event, but chunks are NOT guaranteed to
-// ARRIVE in seq order (per-CPU perf buffers), so fragments are appended in
-// arrival order and sorted by seq at flush (see fragmentsToBytes). data is a
-// zero-copy view into the retained kernel event bytes.
-type fragment struct {
-	seq  int
-	data []byte
-}
-
-type msgSeqGroup struct {
-	msgSeq    uint32
-	direction uint32 // kEgress=0, kIngress=1
-	// fragments holds this message's chunks in ARRIVAL order (not seq order).
-	// A plain growable slice instead of map[int][]byte: keys (seq) are unique
-	// and monotonic, so no map/hash/bucket machinery is needed — see
-	// fragmentsToBytes for the sort-by-seq + gap check done at flush time.
-	fragments []fragment
-}
-
-type MsgSeqPair struct {
-	ReqGroup  *msgSeqGroup
-	RespGroup *msgSeqGroup
-}
+// fragment, msgSeqGroup, and MsgSeqPair are declared in flushPairedRequests.go
+// (the sequencing algorithm below — drainPairs et al — still lives here on
+// Tracker and operates on those types; only their declarations moved).
 
 type Tracker struct {
 	connID structs.ConnID
@@ -268,21 +247,8 @@ func (conn *Tracker) AddCloseEvent(_ *structs.SocketCloseEvent) {
 // A pair (N, N+1) is complete when msg_seq N+2 exists (next direction change started).
 // Caller must NOT hold conn.mutex — this method acquires it.
 func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
-	lockStart := time.Now()
 	conn.mutex.Lock()
-	lockWait := time.Since(lockStart)
-	holdStart := time.Now()
-	defer func() {
-		holdTime := time.Since(holdStart)
-		if (lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond) && metaUtils.IsMsgSeqLogsEnabled() {
-			slog.Warn("msg_seq: GetFlushablePairs mutex timing",
-				"fd", conn.connID.Fd,
-				"wait_ms", lockWait.Milliseconds(),
-				"hold_ms", holdTime.Milliseconds(),
-				"groups", len(conn.msgGroups))
-		}
-		conn.mutex.Unlock()
-	}()
+	defer conn.mutex.Unlock()
 
 	if len(conn.msgGroups) < 3 {
 		return nil
@@ -309,21 +275,8 @@ func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
 // Used on inactivity/close when no N+2 trigger is coming.
 // Caller must NOT hold conn.mutex.
 func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
-	lockStart := time.Now()
 	conn.mutex.Lock()
-	lockWait := time.Since(lockStart)
-	holdStart := time.Now()
-	defer func() {
-		holdTime := time.Since(holdStart)
-		if (lockWait > 1*time.Millisecond || holdTime > 1*time.Millisecond) && metaUtils.IsMsgSeqLogsEnabled() {
-			slog.Warn("msg_seq: FlushRemainingPairs mutex timing",
-				"fd", conn.connID.Fd,
-				"wait_ms", lockWait.Milliseconds(),
-				"hold_ms", holdTime.Milliseconds(),
-				"groups", len(conn.msgGroups))
-		}
-		conn.mutex.Unlock()
-	}()
+	defer conn.mutex.Unlock()
 
 	if len(conn.msgGroups) == 0 {
 		return nil

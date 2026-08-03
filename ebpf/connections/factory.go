@@ -1,30 +1,13 @@
 package connections
 
 import (
-	"bytes"
-	"encoding/binary"
-	"fmt"
 	"log/slog"
-	"net"
-	"slices"
-	"sort"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"github.com/google/uuid"
 )
-
-var httpBytes = []byte("HTTP")
-
-var sequenceCheckSkip = false
-
-func init() {
-	utils.InitVar("AKTO_SKIP_SEQUENCE_CHECK", &sequenceCheckSkip)
-}
 
 // Factory is a routine-safe container that holds a trackers with unique ID, and able to create new tracker.
 type Factory struct {
@@ -42,221 +25,41 @@ func NewFactory() *Factory {
 	}
 }
 
-func convertToSingleByteArr(bufMap map[int][]byte) []byte {
-
-	if len(bufMap) == 0 {
-		return make([]byte, 0)
-	}
-
-	var keys []int
-	for k := range bufMap {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-
-	// Append []byte values into a single slice
-	var combined []byte
-
-	kPrev := -1
-	for _, k := range keys {
-		if kPrev == -1 {
-			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the
-			// read,write count will not be 1, they will simply continue from the last request
-			// This can only be replicated when there is a time gap/inactivityThreshold between requests
-			// on the same underlying connection
-			if !sequenceCheckSkip && k != 1 {
-				slog.Warn("Bad start sequence", "key", k, "value", string(bufMap[k]))
-				break
-			}
-			kPrev = k
-		} else {
-			if kPrev+1 != k {
-				slog.Warn("Missing sequence", "prev", kPrev, "current", k, "value", string(bufMap[k]), "prevValue", string(bufMap[kPrev]))
-				utils.Pipeline.ChunkAssemblyGaps.Add(1)
-				break
-			}
-			kPrev = k
-		}
-		combined = append(combined, bufMap[k]...)
-	}
-
-	return combined
-}
-
-// fragmentsToBytes joins a msgSeqGroup's fragments into one contiguous buffer,
-// in seq order. fragments arrive in whatever order the per-CPU perf buffers
-// deliver them (not necessarily seq order), so they're sorted here before
-// joining — same contiguity/gap semantics as convertToSingleByteArr, just over
-// a []fragment (unique, monotonic seq) instead of a map.
-//
-// slices.SortFunc (generics, Go 1.21+) instead of sort.Slice/sort.Sort:
-// sort.Slice's reflect.Swapper and sort.Sort's interface conversion both box
-// the slice header onto the heap (~1+ alloc/call, at ANY length). SortFunc is
-// monomorphized for `fragment` at compile time — no boxing, zero allocations,
-// still O(n log n) — needed since worst case is a ~1MB message split into many
-// small writes (hundreds of fragments), not just the 1-per-message case a
-// single small fixture produces.
-func fragmentsToBytes(fragments []fragment) []byte {
-	if len(fragments) == 0 {
-		return make([]byte, 0)
-	}
-
-	slices.SortFunc(fragments, func(a, b fragment) int { return a.seq - b.seq })
-
-	total := 0
-	for _, f := range fragments {
-		total += len(f.data)
-	}
-	combined := make([]byte, 0, total) // one allocation, sized exactly — no regrow/recopy passes
-
-	kPrev := -1
-	for _, f := range fragments {
-		if kPrev == -1 {
-			// C sets read, write event count=0 only on new connection open
-			// For requests arriving after a time gap on the same underlying connection the
-			// read,write count will not be 1, they will simply continue from the last request
-			// This can only be replicated when there is a time gap/inactivityThreshold between requests
-			// on the same underlying connection
-			if !sequenceCheckSkip && f.seq != 1 {
-				slog.Warn("Bad start sequence", "key", f.seq, "value", string(f.data))
-				break
-			}
-			kPrev = f.seq
-		} else {
-			if kPrev+1 != f.seq {
-				slog.Warn("Missing sequence", "prev", kPrev, "current", f.seq, "value", string(f.data))
-				utils.Pipeline.ChunkAssemblyGaps.Add(1)
-				break
-			}
-			kPrev = f.seq
-		}
-		combined = append(combined, f.data...)
-	}
-
-	return combined
-}
-
 var (
-	disableEgress        = false
-	maxActiveConnections = 4096
-	inactivityThreshold  = 7 * time.Second
-	// Value in MB
-	bufferMemThreshold = 400
-
-	// unique id of daemonset
-	uniqueDaemonsetId          = uuid.New().String()
-	trackerDataProcessInterval = 100
-
+	// --- Factory/worker-loop config (this file's own consumers only) ---
+	maxActiveConnections          = 4096
+	inactivityThreshold           = 7 * time.Second
+	bufferMemThreshold            = 400 // MB
+	trackerDataProcessInterval    = 100
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
+	PerConnChBufferSize           = 10 // per-connection channel buffer size
 
+	// in milliseconds — DeleteWorker's periodic mem-check/eviction
+	memCheckInterval    = 500
+	requestProcessCount = 0
+	lastMemCheck        = time.Now().UnixMilli()
+
+	// UseMsgSeqFlush is the one genuinely CROSS-CUTTING flag in this package:
+	// read by tracker.go's AddDataEvent (which per-event bookkeeping mode to
+	// use) AND by this file's StartWorker (whether to spawn the flush-routine
+	// goroutine, which threshold/timer policy applies). Kept centrally and
+	// deliberately visible here rather than folded into either consumer.
+	//
 	// When true, use msg_seq based incremental pair flushing instead of
 	// waiting for inactivity timer to flush all accumulated data.
 	UseMsgSeqFlush = true
-
-	// How often the flush routine checks for complete pairs
-	flushTickInterval = 500 * time.Millisecond
-
-	// Per-connection channel buffer size
-	PerConnChBufferSize = 10
 )
 
 func init() {
-	utils.InitVar("TRAFFIC_DISABLE_EGRESS", &disableEgress)
 	utils.InitVar("TRAFFIC_MAX_ACTIVE_CONN", &maxActiveConnections)
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
-	utils.InitVar("MSG_SEQ_FLUSH_ENABLED", &UseMsgSeqFlush)
-	utils.InitVar("MSG_SEQ_FLUSH_TICK_INTERVAL", &flushTickInterval)
 	utils.InitVar("AKTO_PER_CONN_CH_BUFFER_SIZE", &PerConnChBufferSize)
-}
-
-func formatAddr(addr uint32, port uint16) string {
-	b := make([]byte, 0, 21) // "255.255.255.255:65535"
-	b = strconv.AppendUint(b, uint64(addr&0xff), 10)
-	b = append(b, '.')
-	b = strconv.AppendUint(b, uint64(addr>>8&0xff), 10)
-	b = append(b, '.')
-	b = strconv.AppendUint(b, uint64(addr>>16&0xff), 10)
-	b = append(b, '.')
-	b = strconv.AppendUint(b, uint64(addr>>24&0xff), 10)
-	b = append(b, ':')
-	b = strconv.AppendUint(b, uint64(port), 10)
-	return string(b)
-}
-
-func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
-	tracker.mutex.Lock()
-	defer tracker.mutex.Unlock()
-
-	if len(tracker.sentBuf) == 0 || len(tracker.recvBuf) == 0 {
-		return
-	}
-	receiveBuffer := convertToSingleByteArr(tracker.recvBuf)
-	sentBuffer := convertToSingleByteArr(tracker.sentBuf)
-
-	originalInt := uint32(connID.Raddr)
-	// Convert integer to little-endian byte slice
-	byteSlice := make([]byte, 4)
-	binary.LittleEndian.PutUint32(byteSlice, originalInt)
-	// Convert the byte slice to an IP address
-	ip := net.IP(byteSlice)
-	raddrStr := ip.String() + ":" + fmt.Sprint(connID.Rport)
-
-	originalInt = uint32(tracker.laddr)
-	byteSlice = make([]byte, 4)
-	binary.LittleEndian.PutUint32(byteSlice, originalInt)
-	ip = net.IP(byteSlice)
-	laddrStr := ip.String() + ":" + fmt.Sprint(tracker.lport)
-
-	hostName := ""
-	if kafkaUtil.PodInformerInstance != nil {
-		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
-	}
-
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
-		tryReadFromBD(raddrStr, laddrStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-	}
-	if !disableEgress {
-		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(laddrStr, raddrStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-		}
-	}
-}
-
-// ProcessSinglePair processes one request-response pair from msg_seq groups.
-func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, g1Blob, g2Blob []byte) {
-
-	raddrStr := formatAddr(connID.Raddr, connID.Rport)
-	laddrStr := formatAddr(laddrVal, lportVal)
-	hostName := ""
-	if kafkaUtil.PodInformerInstance != nil {
-		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
-	}
-
-	// Detect which blob is the response (starts with "HTTP")
-	utils.Pipeline.PairsAttempted.Add(1)
-	if len(g2Blob) >= len(httpBytes) && bytes.Equal(g2Blob[:len(httpBytes)], httpBytes) {
-		// g1=request, g2=response (server ingress path)
-		tryReadFromBD(raddrStr, laddrStr, g1Blob, g2Blob, true, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-	} else if len(g1Blob) >= len(httpBytes) && bytes.Equal(g1Blob[:len(httpBytes)], httpBytes) {
-		// g1=response, g2=request (client egress path)
-		if !disableEgress {
-			tryReadFromBD(laddrStr, raddrStr, g2Blob, g1Blob, true, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-		}
-	} else {
-		utils.Pipeline.PairsParseFailure.Add(1)
-		if utils.IsMsgSeqLogsEnabled() {
-			slog.Warn("msg_seq: neither blob starts with HTTP",
-				"fd", connID.Fd,
-				"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
-				"g2_preview", string(g2Blob[:min(32, len(g2Blob))]))
-		}
-	}
+	utils.InitVar("MODULE_MEM_CHECK_INTERVAL", &memCheckInterval)
+	utils.InitVar("MSG_SEQ_FLUSH_ENABLED", &UseMsgSeqFlush)
 }
 
 func (factory *Factory) CanBeFilled() bool {
@@ -265,51 +68,6 @@ func (factory *Factory) CanBeFilled() bool {
 
 	maxConnCheck := len(factory.connections) < maxActiveConnections
 	return maxConnCheck
-}
-
-var (
-	sampleBufferPerMin        = -1
-	currentTotalBuffer int64  = 0
-	lastPrint          int64  = 0
-	bufferMutex               = sync.RWMutex{}
-	lastReset          uint64 = uint64(time.Now().UnixMilli())
-	// in milliseconds
-	memCheckInterval    = 500
-	requestProcessCount = 0
-	lastMemCheck        = time.Now().UnixMilli()
-)
-
-func init() {
-	utils.InitVar("TRAFFIC_SAMPLE_BUFFER_PER_MINUTE", &sampleBufferPerMin)
-	utils.InitVar("MODULE_MEM_CHECK_INTERVAL", &memCheckInterval)
-}
-
-func BufferCheck() bool {
-	bufferMutex.Lock()
-	defer bufferMutex.Unlock()
-
-	if (uint64(time.Now().UnixMilli()) - lastReset) > uint64(time.Minute.Milliseconds()) {
-		lastReset = uint64(time.Now().UnixMilli())
-		currentTotalBuffer = int64(0)
-		lastPrint = int64(0)
-		utils.LogIngest("Buffer reset", "currentTotalBuffer", currentTotalBuffer, "lastPrint", lastPrint)
-	}
-
-	bufferSampleCheck := (sampleBufferPerMin == -1) || currentTotalBuffer < int64(sampleBufferPerMin*1024*1024)
-	return bufferSampleCheck
-}
-
-func UpdateBufferSize(bufferSize uint64) {
-	bufferMutex.Lock()
-	defer bufferMutex.Unlock()
-
-	if sampleBufferPerMin != -1 && currentTotalBuffer < int64(sampleBufferPerMin*1024*1024) {
-		currentTotalBuffer += int64(bufferSize)
-		if currentTotalBuffer/(1024*1024) > lastPrint {
-			lastPrint = currentTotalBuffer / (1024 * 1024)
-			slog.Debug("Current total buffer", "buffer", currentTotalBuffer, "lastPrint", lastPrint)
-		}
-	}
 }
 
 func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
@@ -431,74 +189,6 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 			}
 		}
 	}(connectionID, tracker, ch)
-}
-
-// startFlushRoutine runs in its own goroutine, periodically flushing complete
-// msg_seq pairs. Exits when done channel is closed, doing a final flush before returning.
-func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan struct{}) {
-	ticker := time.NewTicker(flushTickInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			pairs := tracker.GetFlushablePairs()
-			for _, pair := range pairs {
-				g1Blob := fragmentsToBytes(pair.ReqGroup.fragments)
-				g2Blob := fragmentsToBytes(pair.RespGroup.fragments)
-
-				if utils.IsMsgSeqLogsEnabled() {
-					slog.Info("msg_seq: processing pair (tick)",
-						"fd", connID.Fd,
-						"g1_msg_seq", pair.ReqGroup.msgSeq,
-						"g2_msg_seq", pair.RespGroup.msgSeq,
-						"g1_bytes", len(g1Blob),
-						"g2_bytes", len(g2Blob))
-				}
-
-				ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
-			}
-			if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
-				slog.Info("msg_seq: flushed pairs (tick)",
-					"fd", connID.Fd,
-					"pairs_flushed", len(pairs))
-			}
-
-		case <-done:
-			// Final flush of all remaining pairs before exit
-			if utils.IsMsgSeqLogsEnabled() {
-				slog.Info("msg_seq: flush routine exiting, final flush",
-					"fd", connID.Fd,
-					"remaining_groups", len(tracker.msgGroups))
-			}
-			flushAndProcessRemainingPairs(connID, tracker)
-			return
-		}
-	}
-}
-
-func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
-	pairs := tracker.FlushRemainingPairs()
-	for _, pair := range pairs {
-		g1Blob := fragmentsToBytes(pair.ReqGroup.fragments)
-		g2Blob := fragmentsToBytes(pair.RespGroup.fragments)
-
-		if utils.IsMsgSeqLogsEnabled() {
-			slog.Info("msg_seq: processing remaining pair",
-				"fd", connID.Fd,
-				"g1_msg_seq", pair.ReqGroup.msgSeq,
-				"g2_msg_seq", pair.RespGroup.msgSeq,
-				"g1_bytes", len(g1Blob),
-				"g2_bytes", len(g2Blob))
-		}
-
-		ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
-	}
-	if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
-		slog.Info("msg_seq: flushed remaining pairs",
-			"fd", connID.Fd,
-			"pairs_flushed", len(pairs))
-	}
 }
 
 func (factory *Factory) StopProcessing(connID structs.ConnID) {
