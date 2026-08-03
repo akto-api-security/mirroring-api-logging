@@ -4,3 +4,7 @@ mirroring-api-logging
 temp
 **temp
 data-*
+**.bin
+*.prof
+*.md
+**pprof/
