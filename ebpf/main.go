@@ -4,8 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime"
@@ -246,21 +244,9 @@ func run() {
 	doProfiling := false
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
-	// Enable pprof HTTP endpoint for live profiling (mutex, block, cpu, heap)
-	// Access via: go tool pprof http://<pod-ip>:6060/debug/pprof/mutex
 	enablePprof := false
 	trafficUtils.InitVar("AKTO_ENABLE_PPROF", &enablePprof)
-	connections.RegisterMetricsHandlers()
-	if enablePprof {
-		runtime.SetMutexProfileFraction(1)
-		runtime.SetBlockProfileRate(1)
-	}
-	go func() {
-		slog.Info("HTTP server starting on :6060 (metrics + pprof if enabled)")
-		if err := http.ListenAndServe(":6060", nil); err != nil {
-			slog.Error("HTTP server failed", "error", err)
-		}
-	}()
+	trafficUtils.StartObservabilityServer(enablePprof)
 
 	if doProfiling {
 		ticker := time.NewTicker(30 * time.Second) // Create a ticker to trigger every 30 seconds

@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
+	_ "net/http/pprof" // side-effect: registers /debug/pprof/* on http.DefaultServeMux
 	"os"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,7 +35,59 @@ var (
 	rsEncoder   = flag.String("encoder", "both", "fast-path wire encoder: json | flatbuffers | both")
 	rsKafka     = flag.Bool("kafka", false, "enable REAL Kafka producing via kafka.InitKafka() (default off = KafkaDisabled, ProduceStr no-ops). "+
 		"Requires AKTO_KAFKA_BROKER_URL/_MAL env var and a reachable broker: InitKafka retries every 2s with NO timeout and will hang the test forever if the broker is unreachable.")
+	rsPprofPort = flag.Int("pprofport", 6061, "port for the live net/http/pprof server (6060 is main.go's; keep them distinct). "+
+		"Point pyroscope or `go tool pprof http://localhost:PORT/debug/pprof/...` at this for live/continuous profiling during long fixed-rate runs.")
 )
+
+// rsPprofOnce guards the HTTP pprof server so it's only started once even if
+// TestRateSweep somehow ran more than once in the same process (it normally
+// doesn't — each invocation is a fresh `go test` process by convention here).
+var rsPprofOnce sync.Once
+
+// rsStartPprofServer starts the standard net/http/pprof server exactly once,
+// mirroring main.go's live-profiling setup. This single HTTP endpoint is the
+// ONE driver of CPU profiling for this test (see rsCaptureCPU) — Go only
+// allows one active CPU profile per process, so an external pyroscope scrape
+// and our own per-cell capture would otherwise contend for the same resource.
+func rsStartPprofServer(t *testing.T, port int) {
+	rsPprofOnce.Do(func() {
+		go func() {
+			addr := fmt.Sprintf("localhost:%d", port)
+			t.Logf("pprof HTTP server on %s (go tool pprof http://%s/debug/pprof/... or point pyroscope here)", addr, addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				t.Logf("pprof HTTP server exited: %v", err)
+			}
+		}()
+	})
+}
+
+// rsCaptureCPU fetches a CPU profile through our own pprof HTTP server (rather
+// than calling pprof.StartCPUProfile directly) so this per-cell capture and an
+// external pyroscope scrape go through the same single CPU-profiling driver
+// instead of contending for Go's one-profile-at-a-time process limit. Sampled
+// for exactly `seconds`, started concurrently with the cell's load loop; by
+// the time the drain phase finishes (always longer), the fetch has completed.
+func rsCaptureCPU(port, seconds int, path string) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		url := fmt.Sprintf("http://localhost:%d/debug/pprof/profile?seconds=%d", port, seconds)
+		resp, err := http.Get(url)
+		if err != nil {
+			done <- fmt.Errorf("fetch cpu profile: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+		f, err := os.Create(path)
+		if err != nil {
+			done <- fmt.Errorf("create %s: %w", path, err)
+			return
+		}
+		defer f.Close()
+		_, err = io.Copy(f, resp.Body)
+		done <- err
+	}()
+	return done
+}
 
 // rsParseRate turns "300K"/"2M"/"50000" into an int events/sec.
 func rsParseRate(t *testing.T, s string) int {
@@ -50,16 +106,29 @@ func rsParseRate(t *testing.T, s string) int {
 	return n * mult
 }
 
-// rsWriteProfile dumps a named runtime profile ("heap"/"goroutine"/"allocs") or
-// the heap to path. Safe to call from any goroutine (no *testing.T use).
+// rsWriteProfile dumps a named runtime profile to path. Safe to call from any
+// goroutine (no *testing.T use).
+//
+//	"heap"         - forces runtime.GC() first for an accurate live-memory read
+//	                 (use for a final/end-state snapshot only, not periodically
+//	                 under load: a forced STW GC is itself a load generator).
+//	"heap-noforce" - same WriteHeapProfile, but WITHOUT forcing GC first — safe
+//	                 to call periodically under sustained load. inuse_space may
+//	                 be approximate (can include not-yet-swept garbage);
+//	                 alloc_space/alloc_objects are exact regardless (continuous
+//	                 counters, GC-independent).
+//	anything else  - looked up via pprof.Lookup (goroutine, allocs, mutex, block, ...)
 func rsWriteProfile(name, path string) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if name == "heap" {
+	switch name {
+	case "heap":
 		runtime.GC()
+		return pprof.WriteHeapProfile(f)
+	case "heap-noforce":
 		return pprof.WriteHeapProfile(f)
 	}
 	p := pprof.Lookup(name)
@@ -198,6 +267,15 @@ func TestRateSweep(t *testing.T) {
 	runtime.SetMutexProfileFraction(1)
 	defer runtime.SetMutexProfileFraction(0)
 
+	// Enable block profiling (off by default) — records time blocked on
+	// channel send/receive/select and lock waits. rate=1 samples every event.
+	runtime.SetBlockProfileRate(1)
+	defer runtime.SetBlockProfileRate(0)
+
+	// Live pprof HTTP server, mirroring main.go, for pyroscope / manual
+	// `go tool pprof http://...` access during long fixed-rate soaks.
+	rsStartPprofServer(t, *rsPprofPort)
+
 	// -parse selects which arm(s) to sweep. skip=true => parse-off (ingest only).
 	var arms []bool
 	switch *rsParseFlag {
@@ -317,23 +395,32 @@ func TestRateSweep(t *testing.T) {
 				if err := os.MkdirAll(profDir, 0o755); err != nil {
 					t.Fatalf("mkdir %s: %v", profDir, err)
 				}
-				cpuF, err := os.Create(profDir + "/cpu.prof")
-				if err != nil {
-					t.Fatalf("create cpu.prof: %v", err)
-				}
-				if err := pprof.StartCPUProfile(cpuF); err != nil {
-					t.Fatalf("start cpu profile: %v", err)
-				}
+				// CPU capture goes through our own pprof HTTP server (rsCaptureCPU),
+				// not a direct pprof.StartCPUProfile call — Go allows only one
+				// active CPU profile per process, so routing through the same
+				// endpoint an external pyroscope scrape would use avoids the two
+				// drivers contending. Sampled for exactly the window duration,
+				// started concurrently with the load loop below; the drain phase
+				// that follows is always longer, so the fetch is done by the time
+				// we read its result.
+				cpuDone := rsCaptureCPU(*rsPprofPort, int(rsWindowFlg.Seconds()), profDir+"/cpu.prof")
 				heapDone := make(chan struct{})
 				go func() {
-					tick := time.NewTicker(2 * time.Second)
+					// No forced runtime.GC() here: under sustained load a periodic
+					// STW GC is itself a load generator (esp. at low GOMAXPROCS).
+					// inuse_space snapshots are therefore approximate (may include
+					// not-yet-swept garbage); alloc_space/alloc_objects are exact
+					// regardless (continuous counters, GC-independent). heap-final
+					// below is the one snapshot where we still force GC, for an
+					// accurate end-state live-memory read.
+					tick := time.NewTicker(10 * time.Second)
 					defer tick.Stop()
 					for n := 0; ; {
 						select {
 						case <-heapDone:
 							return
 						case <-tick.C:
-							_ = rsWriteProfile("heap", fmt.Sprintf("%s/heap-%d.prof", profDir, n))
+							_ = rsWriteProfile("heap-noforce", fmt.Sprintf("%s/heap-%d.prof", profDir, n))
 							n++
 						}
 					}
@@ -401,13 +488,21 @@ func TestRateSweep(t *testing.T) {
 
 				// ---- stop pprof capture (covers window + drain) and dump the rest ----
 				close(heapDone)
-				pprof.StopCPUProfile()
-				cpuF.Close()
+				// cpuDone was sized for exactly *rsWindowFlg seconds, started at the
+				// same instant the load loop began; the drain phase above always
+				// takes longer, so this fetch has already completed — this read
+				// should not block.
+				if err := <-cpuDone; err != nil {
+					t.Errorf("cpu profile capture: %v", err)
+				}
 				if err := rsWriteProfile("goroutine", profDir+"/goroutine.prof"); err != nil {
 					t.Fatalf("write goroutine profile: %v", err)
 				}
 				if err := rsWriteProfile("allocs", profDir+"/allocs.prof"); err != nil {
 					t.Fatalf("write allocs profile: %v", err)
+				}
+				if err := rsWriteProfile("block", profDir+"/block.prof"); err != nil {
+					t.Fatalf("write block profile: %v", err)
 				}
 				if err := rsWriteProfile("mutex", profDir+"/mutex.prof"); err != nil {
 					t.Fatalf("write mutex profile: %v", err)
@@ -453,7 +548,7 @@ func TestRateSweep(t *testing.T) {
 					rsComma(metaUtils.Pipeline.ResponseBodyFailure.Load()))
 
 				// Persist the full pipeline metrics snapshot for this cell alongside its profiles.
-				if b, err := json.MarshalIndent(snapshot(), "", "  "); err != nil {
+				if b, err := json.MarshalIndent(metaUtils.Pipeline.Snapshot(), "", "  "); err != nil {
 					t.Errorf("marshal metrics snapshot: %v", err)
 				} else if err := os.WriteFile(profDir+"/metrics.json", b, 0o644); err != nil {
 					t.Errorf("write metrics.json: %v", err)
