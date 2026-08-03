@@ -29,6 +29,8 @@ var (
 	rsRps       = flag.String("rps", "", "single offered rate e.g. 100K|200K|300K|500K (empty => default sweep)")
 	rsWindowFlg = flag.Duration("window", 5*time.Second, "sustained-load duration per cell, e.g. 30s")
 	rsEncoder   = flag.String("encoder", "both", "fast-path wire encoder: json | flatbuffers | both")
+	rsKafka     = flag.Bool("kafka", false, "enable REAL Kafka producing via kafka.InitKafka() (default off = KafkaDisabled, ProduceStr no-ops). "+
+		"Requires AKTO_KAFKA_BROKER_URL/_MAL env var and a reachable broker: InitKafka retries every 2s with NO timeout and will hang the test forever if the broker is unreachable.")
 )
 
 // rsParseRate turns "300K"/"2M"/"50000" into an int events/sec.
@@ -209,11 +211,19 @@ func TestRateSweep(t *testing.T) {
 		t.Fatalf("invalid -parse=%q (want on|off|both)", *rsParseFlag)
 	}
 
-	// Test env: no broker (parse runs, produce is a no-op), fast worker teardown.
-	// ProduceStr is guarded by KafkaDisabled; the threat Produce path is not, so
-	// disable threat too, else it dials a nil Kafka writer and panics.
-	kafka.KafkaDisabled = true      // ProduceStr no-ops; parse still runs
+	// Test env: default no broker (parse runs, produce is a no-op), fast worker
+	// teardown. ProduceStr is guarded by KafkaDisabled; the threat Produce path
+	// is not, so disable threat too, else it dials a nil Kafka writer and panics.
+	kafka.KafkaDisabled = !*rsKafka
 	metaUtils.ThreatEnabled = false // threat Produce path is unguarded → would panic on nil writer
+	if !kafka.KafkaDisabled {
+		// -kafka=true: dial a REAL kafkaWriter so ProduceStr doesn't panic on a
+		// nil writer. BLOCKS (retries every 2s, no timeout) until a broker at
+		// AKTO_KAFKA_BROKER_URL/_MAL is reachable — go test's own -timeout is
+		// the only backstop if none is.
+		t.Log("kafka=true: calling InitKafka() — this BLOCKS until a broker is reachable")
+		kafka.InitKafka()
+	}
 
 	// -encoder selects which fast-path wire encoder(s) to sweep. parse-off never
 	// reaches the encoder (SkipPairProcessing returns before fastParseAndProduce),
@@ -433,6 +443,14 @@ func TestRateSweep(t *testing.T) {
 					armName, rsComma(int64(rate)), rsComma(pairsSent), elapsed,
 					rsComma(int64(float64(pairsSent)/elapsed)), rsConns,
 					rsComma(int64(float64(pairsSent)/float64(rsConns))))
+				t.Logf("pairs[%s@%s]: attempted=%s parseSuccess=%s parseFailure=%s mismatched=%s reqBodyFail=%s respBodyFail=%s",
+					armName, rsComma(int64(rate)),
+					rsComma(metaUtils.Pipeline.PairsAttempted.Load()),
+					rsComma(metaUtils.Pipeline.PairsParseSuccess.Load()),
+					rsComma(metaUtils.Pipeline.PairsParseFailure.Load()),
+					rsComma(metaUtils.Pipeline.PairsMismatched.Load()),
+					rsComma(metaUtils.Pipeline.RequestBodyFailure.Load()),
+					rsComma(metaUtils.Pipeline.ResponseBodyFailure.Load()))
 
 				// Persist the full pipeline metrics snapshot for this cell alongside its profiles.
 				if b, err := json.MarshalIndent(snapshot(), "", "  "); err != nil {

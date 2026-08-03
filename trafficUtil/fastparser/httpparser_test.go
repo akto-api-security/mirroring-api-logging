@@ -189,6 +189,61 @@ func BenchmarkParseResponseParallel(b *testing.B) {
 	}
 }
 
+// --- HEADER-COUNT SWEEP (fixed 4kb body, varying header count) ---
+//
+// The size sweeps above vary the BODY, which the parser never scans (zero-copy),
+// so they're flat. This sweep varies the axis that actually costs: header count.
+// Points straddle the 128-entry scratch array (120/128/129/200) to expose the
+// heap-grow alloc cliff. The extra ns/hdr metric is the marginal per-header cost;
+// watching it fall as count rises reveals the fixed per-message overhead.
+func BenchmarkParseRequestHeaders(b *testing.B) {
+	counts := []int{4, 8, 16, 32, 64, 120, 128, 129, 200}
+	rng := rand.New(rand.NewSource(1))
+	for _, hc := range counts {
+		req := buildRequest(rng, hc, 4096) // built ONCE, outside the timed loop
+		p := NewFastParser()
+		b.Run(fmt.Sprintf("%dhdr", hc), func(b *testing.B) {
+			b.ReportAllocs()
+			var n int64
+			for b.Loop() {
+				r, err := p.ParseRequest(req.raw)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = len(r.Headers) + len(r.Body)
+				n++
+			}
+			mps(b, n)
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(n)/float64(hc), "ns/hdr")
+		})
+	}
+}
+
+// BenchmarkParseRequestHeadersParallel is the all-cores counterpart: same header
+// sweep, GOMAXPROCS goroutines, one Parser each (never shared).
+func BenchmarkParseRequestHeadersParallel(b *testing.B) {
+	counts := []int{4, 8, 16, 32, 64, 120, 128, 129, 200}
+	rng := rand.New(rand.NewSource(1))
+	for _, hc := range counts {
+		req := buildRequest(rng, hc, 4096) // built ONCE, outside the timed loop
+		b.Run(fmt.Sprintf("%dhdr", hc), func(b *testing.B) {
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				p := NewFastParser() // one parser per goroutine — never share
+				for pb.Next() {
+					r, err := p.ParseRequest(req.raw)
+					if err != nil {
+						b.Fatal(err)
+					}
+					_ = len(r.Headers) + len(r.Body)
+				}
+			})
+			mps(b, int64(b.N))
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(hc), "ns/hdr")
+		})
+	}
+}
+
 func readFix(name string) []byte {
 	b, _ := os.ReadFile(filepath.Join("..", "..", "testdata", name))
 	return b
@@ -271,67 +326,100 @@ func TestFixturesMatchNetHTTP(t *testing.T) {
 	}
 }
 
+// ---- Shared random request builder ----
+//
+// buildRequest generates one well-formed HTTP/1.1 request and the oracle of what
+// it should parse to. It's shared by the generative correctness test (random
+// small header counts, cross-checked against net/http) and the header-count
+// benchmark (fixed large header counts, timed). Keeping one generator means the
+// benchmark exercises exactly the shape the correctness test already validates.
+
+// genHdrNames are realistic header names used first; past this pool the builder
+// synthesizes unique "X-Gen-N" names so any header count is reachable while
+// every name stays unique (the generative test asserts header-count equality).
+var genHdrNames = []string{
+	"Accept", "User-Agent", "X-Trace", "X-Custom-Header", "Cookie", "Referer",
+	"Accept-Encoding", "Accept-Language", "Cache-Control", "Origin",
+}
+
+// genRequest is a built request plus the values it must parse back to.
+type genRequest struct {
+	raw     []byte
+	method  string
+	path    string
+	body    string
+	headers map[string]string // lower(name) -> value, incl. Host + Content-Length
+}
+
+// buildRequest constructs a request with numHeaders custom headers (unique
+// names) plus Host and Content-Length, and a body of exactly bodyLen bytes.
+func buildRequest(rng *rand.Rand, numHeaders, bodyLen int) genRequest {
+	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
+	method := methods[rng.Intn(len(methods))]
+	path := "/" + randToken(rng, 1+rng.Intn(20))
+	if rng.Intn(2) == 0 {
+		path += "?q=" + randToken(rng, rng.Intn(10))
+	}
+	host := randToken(rng, 3+rng.Intn(10)) + ":8080"
+	body := randBody(rng, bodyLen)
+
+	want := map[string]string{}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host)
+	want["host"] = host
+
+	perm := rng.Perm(len(genHdrNames))
+	for i := 0; i < numHeaders; i++ {
+		name := fmt.Sprintf("X-Gen-%d", i) // unique beyond the realistic pool
+		if i < len(genHdrNames) {
+			name = genHdrNames[perm[i]]
+		}
+		val := randHeaderValue(rng, 1+rng.Intn(30))
+		fmt.Fprintf(&sb, "%s: %s\r\n", name, val)
+		want[strings.ToLower(name)] = val
+	}
+	fmt.Fprintf(&sb, "Content-Length: %d\r\n\r\n", len(body))
+	want["content-length"] = fmt.Sprintf("%d", len(body))
+	sb.WriteString(body)
+
+	return genRequest{raw: []byte(sb.String()), method: method, path: path, body: body, headers: want}
+}
+
 // ---- Generative differential: random well-formed requests, ours vs the values
 // we generated (a clean oracle) plus net/http cross-check on line+body ----
 
 func TestParserGenerative(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
-	hdrNames := []string{"Accept", "User-Agent", "X-Trace", "X-Custom-Header", "Cookie", "Referer"}
 	p := NewFastParser()
 
 	for iter := 0; iter < 2000; iter++ {
-		method := methods[rng.Intn(len(methods))]
-		path := "/" + randToken(rng, 1+rng.Intn(20))
-		if rng.Intn(2) == 0 {
-			path += "?q=" + randToken(rng, rng.Intn(10))
-		}
-		host := randToken(rng, 3+rng.Intn(10)) + ":8080"
-		body := randBody(rng, rng.Intn(200))
+		req := buildRequest(rng, rng.Intn(len(genHdrNames)+1), rng.Intn(200))
 
-		// build expected header set (unique names, safe values)
-		want := map[string]string{}
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host)
-		want["host"] = host
-		n := rng.Intn(len(hdrNames) + 1)
-		perm := rng.Perm(len(hdrNames))
-		for i := 0; i < n; i++ {
-			name := hdrNames[perm[i]]
-			val := randHeaderValue(rng, 1+rng.Intn(30))
-			fmt.Fprintf(&sb, "%s: %s\r\n", name, val)
-			want[strings.ToLower(name)] = val
-		}
-		fmt.Fprintf(&sb, "Content-Length: %d\r\n\r\n", len(body))
-		want["content-length"] = fmt.Sprintf("%d", len(body))
-		sb.WriteString(body)
-		raw := []byte(sb.String())
-
-		got, err := p.ParseRequest(raw)
+		got, err := p.ParseRequest(req.raw)
 		if err != nil {
-			t.Fatalf("iter %d: parser errored on well-formed input: %v\n%q", iter, err, raw)
+			t.Fatalf("iter %d: parser errored on well-formed input: %v\n%q", iter, err, req.raw)
 		}
-		if string(got.Method) != method {
-			t.Fatalf("iter %d: method got %q want %q", iter, got.Method, method)
+		if string(got.Method) != req.method {
+			t.Fatalf("iter %d: method got %q want %q", iter, got.Method, req.method)
 		}
-		if string(got.Path) != path {
-			t.Fatalf("iter %d: path got %q want %q", iter, got.Path, path)
+		if string(got.Path) != req.path {
+			t.Fatalf("iter %d: path got %q want %q", iter, got.Path, req.path)
 		}
-		if string(got.Body) != body {
-			t.Fatalf("iter %d: body got %q want %q", iter, got.Body, body)
+		if string(got.Body) != req.body {
+			t.Fatalf("iter %d: body got %q want %q", iter, got.Body, req.body)
 		}
 		om := ourHeaders(got.Headers)
-		if len(om) != len(want) {
-			t.Fatalf("iter %d: header count got %d want %d\n%q", iter, len(om), len(want), raw)
+		if len(om) != len(req.headers) {
+			t.Fatalf("iter %d: header count got %d want %d\n%q", iter, len(om), len(req.headers), req.raw)
 		}
-		for k, v := range want {
+		for k, v := range req.headers {
 			if om[k] != v {
 				t.Fatalf("iter %d: header %q got %q want %q", iter, k, om[k], v)
 			}
 		}
 		// cross-check line+body against net/http
-		if std, e := http.ReadRequest(bufio.NewReader(bytes.NewReader(raw))); e == nil {
-			if std.Method != method || std.RequestURI != path {
+		if std, e := http.ReadRequest(bufio.NewReader(bytes.NewReader(req.raw))); e == nil {
+			if std.Method != req.method || std.RequestURI != req.path {
 				t.Fatalf("iter %d: net/http disagreed: %q %q", iter, std.Method, std.RequestURI)
 			}
 		}
@@ -480,4 +568,154 @@ func FuzzParseResponse(f *testing.F) {
 			}
 		}
 	})
+}
+
+// ---- Zero-copy + allocation-free invariants (#2) ----
+//
+// The whole point of this parser is that it aliases the input buffer and
+// allocates nothing on the hot path. These lock that contract in as tests, not
+// just benchmark ReportAllocs output.
+
+// sink keeps parsed results reachable so AllocsPerRun's closure isn't optimized away.
+var (
+	sinkReq  *Request
+	sinkResp *Response
+)
+
+func TestParseRequestZeroAlloc(t *testing.T) {
+	p := NewFastParser()
+	buf := load(t, "req-1kb.bin")
+	if _, err := p.ParseRequest(buf); err != nil { // warm + validate before measuring
+		t.Fatal(err)
+	}
+	if n := testing.AllocsPerRun(1000, func() {
+		r, err := p.ParseRequest(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sinkReq = r
+	}); n != 0 {
+		t.Errorf("ParseRequest allocated %v allocs/op, want 0", n)
+	}
+}
+
+func TestParseResponseZeroAlloc(t *testing.T) {
+	p := NewFastParser()
+	buf := load(t, "resp-1kb.bin")
+	if _, err := p.ParseResponse(buf); err != nil {
+		t.Fatal(err)
+	}
+	if n := testing.AllocsPerRun(1000, func() {
+		r, err := p.ParseResponse(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sinkResp = r
+	}); n != 0 {
+		t.Errorf("ParseResponse allocated %v allocs/op, want 0", n)
+	}
+}
+
+// TestParseAliasesInputBuffer proves the returned fields are VIEWS into the
+// input, not copies: mutating the buffer in place changes what they report.
+func TestParseAliasesInputBuffer(t *testing.T) {
+	p := NewFastParser()
+	raw := []byte("POST /p HTTP/1.1\r\nHost: ex.com\r\nX-A: v1\r\n\r\nbody!")
+	r, err := p.ParseRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(r.Method) != "POST" || string(r.Header("X-A")) != "v1" || string(r.Body) != "body!" {
+		t.Fatalf("pre-mutation: method=%q x-a=%q body=%q", r.Method, r.Header("X-A"), r.Body)
+	}
+	// Mutate the underlying bytes in place (same lengths); aliased slices must follow.
+	raw[0] = 'X'                   // method: POST -> XOST
+	copy(r.Headers[1].Value, "z2") // X-A value: v1 -> z2 (writes through the alias)
+	raw[len(raw)-1] = '?'          // body: body! -> body?
+	if string(r.Method) != "XOST" {
+		t.Errorf("Method is a copy, not a view: got %q", r.Method)
+	}
+	if string(r.Header("X-A")) != "z2" {
+		t.Errorf("header Value is a copy, not a view: got %q", r.Header("X-A"))
+	}
+	if string(r.Body) != "body?" {
+		t.Errorf("Body is a copy, not a view: got %q", r.Body)
+	}
+}
+
+// ---- Parser reuse & result-invalidation contract (#3) ----
+//
+// A Parser reuses one Request/Response struct + scratch header array. The doc
+// says the returned pointer is valid only until the next like call. These pin
+// down that reuse, the invalidation of the prior handle, and per-call resets.
+
+func TestParserReuseInvalidatesPriorRequest(t *testing.T) {
+	p := NewFastParser()
+	first, err := p.ParseRequest([]byte("GET /one HTTP/1.1\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\nxx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first.Path) != "/one" || len(first.Headers) != 3 || string(first.Body) != "xx" {
+		t.Fatalf("first: path=%q headers=%d body=%q", first.Path, len(first.Headers), first.Body)
+	}
+	second, err := p.ParseRequest([]byte("POST /two HTTP/1.1\r\nX: y\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same backing struct is reused → the two handles are the same pointer...
+	if first != second {
+		t.Fatalf("expected reused *Request, got distinct pointers")
+	}
+	// ...so the earlier handle now reflects the SECOND parse (documented invalidation).
+	if string(first.Method) != "POST" || string(first.Path) != "/two" {
+		t.Errorf("prior result not invalidated: method=%q path=%q", first.Method, first.Path)
+	}
+	// Header slice length must reset — no stale headers from the 3-header parse.
+	if len(second.Headers) != 1 || string(second.Headers[0].Name) != "X" {
+		t.Errorf("headers not reset: n=%d %+v", len(second.Headers), second.Headers)
+	}
+	// Body must reset too — first had "xx", second has none.
+	if len(second.Body) != 0 {
+		t.Errorf("body not reset: got %q", second.Body)
+	}
+}
+
+func TestParserReuseResetsResponse(t *testing.T) {
+	p := NewFastParser()
+	if _, err := p.ParseResponse([]byte("HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\n\r\nhi")); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := p.ParseResponse([]byte("HTTP/1.1 404 Not Found\r\nX: y\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.StatusCode != 404 || string(r2.Reason) != "Not Found" {
+		t.Errorf("status line not reset: code=%d reason=%q", r2.StatusCode, r2.Reason)
+	}
+	if len(r2.Headers) != 1 || string(r2.Headers[0].Name) != "X" {
+		t.Errorf("headers not reset: n=%d", len(r2.Headers))
+	}
+	if len(r2.Body) != 0 {
+		t.Errorf("body not reset: got %q", r2.Body)
+	}
+}
+
+// Request and Response use SEPARATE scratch, so a parsed request survives a
+// subsequent response parse (and vice versa) — both handles stay valid at once.
+func TestRequestAndResponseUseSeparateScratch(t *testing.T) {
+	p := NewFastParser()
+	req, err := p.ParseRequest([]byte("GET /r HTTP/1.1\r\nA: 1\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.ParseResponse([]byte("HTTP/1.1 201 Created\r\nB: 2\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(req.Path) != "/r" || len(req.Headers) != 1 || string(req.Headers[0].Name) != "A" {
+		t.Errorf("request clobbered by response parse: path=%q headers=%+v", req.Path, req.Headers)
+	}
+	if resp.StatusCode != 201 {
+		t.Errorf("resp code=%d want 201", resp.StatusCode)
+	}
 }

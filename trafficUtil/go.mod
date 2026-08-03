@@ -1,8 +1,6 @@
 module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 
-go 1.24.0
-
-toolchain go1.24.3
+go 1.26.5
 
 require (
 	github.com/google/flatbuffers v25.12.19+incompatible

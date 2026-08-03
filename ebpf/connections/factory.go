@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -88,14 +89,27 @@ func convertToSingleByteArr(bufMap map[int][]byte) []byte {
 // deliver them (not necessarily seq order), so they're sorted here before
 // joining — same contiguity/gap semantics as convertToSingleByteArr, just over
 // a []fragment (unique, monotonic seq) instead of a map.
+//
+// slices.SortFunc (generics, Go 1.21+) instead of sort.Slice/sort.Sort:
+// sort.Slice's reflect.Swapper and sort.Sort's interface conversion both box
+// the slice header onto the heap (~1+ alloc/call, at ANY length). SortFunc is
+// monomorphized for `fragment` at compile time — no boxing, zero allocations,
+// still O(n log n) — needed since worst case is a ~1MB message split into many
+// small writes (hundreds of fragments), not just the 1-per-message case a
+// single small fixture produces.
 func fragmentsToBytes(fragments []fragment) []byte {
 	if len(fragments) == 0 {
 		return make([]byte, 0)
 	}
 
-	sort.Slice(fragments, func(i, j int) bool { return fragments[i].seq < fragments[j].seq })
+	slices.SortFunc(fragments, func(a, b fragment) int { return a.seq - b.seq })
 
-	var combined []byte
+	total := 0
+	for _, f := range fragments {
+		total += len(f.data)
+	}
+	combined := make([]byte, 0, total) // one allocation, sized exactly — no regrow/recopy passes
+
 	kPrev := -1
 	for _, f := range fragments {
 		if kPrev == -1 {
