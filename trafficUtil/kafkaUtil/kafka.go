@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -47,11 +46,6 @@ var globalTransport *kafka.Transport
 var transportOnce sync.Once
 var KafkaDisabled = false
 
-// SkipPairProcessing, when true, returns from ParseAndProduce just before
-// parseHTTPTraffic — no HTTP parse, no marshal, no produce. Used to isolate the
-// parse CPU cost (benchmarks / the "disable-pair-process" experiments).
-var SkipPairProcessing = false
-
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -66,7 +60,6 @@ func init() {
 	utils.InitVar("KAFKA_RECONNECT_INTERVAL_MINUTES", &kafkaReconnectIntervalMinutes)
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
 	utils.InitVar("KAFKA_DISABLED", &KafkaDisabled)
-	utils.InitVar("SKIP_PAIR_PROCESSING", &SkipPairProcessing)
 }
 
 func InitKafka() {
@@ -165,7 +158,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 				os.Exit(1)
 			}
 		} else {
-			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
+			// utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
 	}
 }
@@ -293,16 +286,6 @@ func LogKafkaError() {
 	}
 }
 
-var CLIENT_IP_HEADERS = []string{
-	"x-forwarded-for",
-	"x-real-ip",
-	"x-cluster-client-ip",
-	"true-client-ip",
-	"x-original-forwarded-for",
-	"x-client-ip",
-	"client-ip",
-}
-
 func ProducePodMapping(ctx context.Context, podName string) error {
 	message := map[string]string{
 		"podName":       podName,
@@ -350,26 +333,6 @@ func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 		return err
 	}
 	return nil
-}
-
-func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
-
-	for _, header := range CLIENT_IP_HEADERS {
-		if headerValues, exists := reqHeaders[header]; exists {
-			for _, headerValue := range headerValues.Values {
-				parts := strings.Split(headerValue, ",")
-				for _, part := range parts {
-					ip := strings.TrimSpace(part)
-					if ip != "" {
-						slog.Debug("Ip found in", "the header", header)
-						return ip
-					}
-				}
-			}
-		}
-	}
-
-	return packetIp
 }
 
 const (

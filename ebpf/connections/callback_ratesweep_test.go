@@ -303,6 +303,13 @@ func TestRateSweep(t *testing.T) {
 		kafka.InitKafka()
 	}
 
+	// FastIngestion selects the new flow end to end: msg_seq single-pair flushing
+	// AND the zero-copy fast parser + encoder. The parse-on arm needs it so it
+	// routes through fastParseAndProduce (otherwise SetFastEncoder below is a no-op
+	// and the encoder sweep measures nothing). parse-off returns before the parser
+	// gate (SkipPairProcessing), so enabling it globally is safe.
+	metaUtils.FastIngestion = true
+
 	// -encoder selects which fast-path wire encoder(s) to sweep. parse-off never
 	// reaches the encoder (SkipPairProcessing returns before fastParseAndProduce),
 	// so this only affects the parse-on arm.
@@ -316,7 +323,6 @@ func TestRateSweep(t *testing.T) {
 		t.Fatalf("invalid -encoder=%q (want json|flatbuffers|both)", *rsEncoder)
 	}
 
-	UseMsgSeqFlush = true
 	inactivityThreshold = 1 * time.Second
 	PerConnChBufferSize = 200 // per-conn channel depth under test
 	maxActiveConnections = rsConns + 10

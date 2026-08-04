@@ -39,6 +39,14 @@ var IgnoreEnvoyProxycalls = false
 var EnableGraph = true
 var ThreatEnabled = true
 
+// FastIngestion selects the whole processing flow, end to end. When true, the
+// connection layer uses msg_seq incremental single-pair flushing AND kafkaUtil
+// uses the zero-copy fast parser + encoder. When false, the old flow runs:
+// inactivity/threshold flat-buffer flushing + the net/http parser. The two must
+// move together — the fast parser assumes exactly one request/response pair per
+// flush, which only msg_seq flushing guarantees.
+var FastIngestion = false
+
 const EnvoyProxyIp = "127.0.0.6"
 
 func init() {
@@ -48,6 +56,7 @@ func init() {
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
+	InitVar("AKTO_FAST_INGESTION", &FastIngestion)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {

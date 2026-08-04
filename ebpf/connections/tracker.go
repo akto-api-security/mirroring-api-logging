@@ -134,7 +134,7 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 	}
 	payload := kernelBytes[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
 
-	if UseMsgSeqFlush {
+	if metaUtils.FastIngestion {
 		// msg_seq based buffering for incremental pair flushing
 		msgSeq := attr.MsgSeq
 		// msg_seq is always >= 1 (kernel seeds it to 1); guard defensively.

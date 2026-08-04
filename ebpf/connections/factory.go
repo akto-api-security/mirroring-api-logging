@@ -38,16 +38,6 @@ var (
 	memCheckInterval    = 500
 	requestProcessCount = 0
 	lastMemCheck        = time.Now().UnixMilli()
-
-	// UseMsgSeqFlush is the one genuinely CROSS-CUTTING flag in this package:
-	// read by tracker.go's AddDataEvent (which per-event bookkeeping mode to
-	// use) AND by this file's StartWorker (whether to spawn the flush-routine
-	// goroutine, which threshold/timer policy applies). Kept centrally and
-	// deliberately visible here rather than folded into either consumer.
-	//
-	// When true, use msg_seq based incremental pair flushing instead of
-	// waiting for inactivity timer to flush all accumulated data.
-	UseMsgSeqFlush = true
 )
 
 func init() {
@@ -59,7 +49,6 @@ func init() {
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
 	utils.InitVar("AKTO_PER_CONN_CH_BUFFER_SIZE", &PerConnChBufferSize)
 	utils.InitVar("MODULE_MEM_CHECK_INTERVAL", &memCheckInterval)
-	utils.InitVar("MSG_SEQ_FLUSH_ENABLED", &UseMsgSeqFlush)
 }
 
 func (factory *Factory) CanBeFilled() bool {
@@ -117,7 +106,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 
 		// Spawn flush routine if msg_seq flush is enabled
 		var done chan struct{}
-		if UseMsgSeqFlush {
+		if utils.FastIngestion {
 			done = make(chan struct{})
 			go startFlushRoutine(connID, tracker, done)
 		}
@@ -133,12 +122,12 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 					// the raw slice stays alive via the tracker, nothing to release.
 					msgSeq := tracker.AddDataEvent(e)
 
-					if !UseMsgSeqFlush && tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
+					if !utils.FastIngestion && tracker.GetSentBytes()+tracker.GetRecvBytes() > uint64(socketDataEventBytesThreshold) {
 						utils.LogProcessing("Socket Data threshold data breached, processing current data", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 						factory.StopProcessing(connID)
 						return
 					}
-					if UseMsgSeqFlush {
+					if utils.FastIngestion {
 						if msgSeq != lastSeenMsgSeq {
 							resetTimer(inactivityTimer, inactivityThreshold)
 							lastSeenMsgSeq = msgSeq
@@ -161,7 +150,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 
 			case <-delayedDeleteChan:
 				utils.LogProcessing("Stopping go routine (delayed close)", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-				if UseMsgSeqFlush {
+				if utils.FastIngestion {
 					close(done) // signal flush routine to do final flush and exit
 					factory.DeleteWorker(connID)
 				} else {
@@ -171,7 +160,7 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 
 			case <-inactivityTimer.C:
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
-				if UseMsgSeqFlush {
+				if utils.FastIngestion {
 					if utils.IsMsgSeqLogsEnabled() {
 						slog.Info("msg_seq: inactivity flush",
 							"fd", connID.Fd,

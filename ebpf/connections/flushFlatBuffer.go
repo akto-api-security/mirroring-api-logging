@@ -5,7 +5,7 @@ package connections
 // keyed by write/read event count) and, on close/inactivity, joins each into
 // one contiguous buffer and dispatches it for parsing. This is the flat-buffer
 // sibling of flushPairedRequests.go's msg_seq pairing + fragmentsToBytes join —
-// same job, older mode, active only when UseMsgSeqFlush=false.
+// same job, older mode, active only when utils.FastIngestion=false.
 
 import (
 	"bytes"
