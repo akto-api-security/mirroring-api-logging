@@ -9,6 +9,15 @@ GET http://<pod-ip>:6060/metrics/pipeline/reset  # return current then zero all 
 
 Both return JSON. All counters are cumulative since the last reset (or since process start).
 
+**`AKTO_FAST_INGESTION` matters for interpretation.** Most of these counters (group lifecycle,
+gap-skip, reorder histograms, `pairs_attempted`) are populated only on the msg_seq path
+(`AKTO_FAST_INGESTION=true`, `ebpf/connections/tracker.go` + `flushPairedRequests.go`). With
+fast ingestion disabled, the old flat-buffer path (`flushFlatBuffer.go`) runs instead and does
+not touch those counters at all — they'll stay at zero regardless of actual traffic. Only
+`events_received`, `input_chan_len/cap`, the two drop counters, and (depending on
+`AKTO_FAST_INGESTION` inside `kafkaUtil`) the parse/pair-outcome counters are populated on
+both paths.
+
 ---
 
 ## Counter Definitions
@@ -17,14 +26,16 @@ Both return JSON. All counters are cumulative since the last reset (or since pro
 
 | Field | Description |
 |---|---|
-| `events_received` | Events that were successfully binary-decoded in `SocketDataEventCallback` and dispatched to `SendEvent`. Does **not** include events dropped at the kernel ring buffer level. |
+| `events_received` | Data events that passed the port-ignore filter in `SocketDataEventCallback` and were dispatched to `SendDataEvent` (zero-copy — no binary decode, just an `unsafe.Pointer` view cast). Does **not** include events dropped at the kernel ring buffer level. |
+| `input_chan_len` | `len(inputChan)` sampled every 1000 events — how backed-up the perf-buffer→callback channel is. |
+| `input_chan_cap` | `cap(inputChan)` — set once at startup; the ceiling `input_chan_len` is measured against. |
 
 ### Drop Points
 
 | Field | Description |
 |---|---|
 | `events_dropped_kernel_ring_buf` | Events lost before reaching Go. Reported by gobpf's `lostEventsChannel`. Cause: perf reader goroutines too slow to drain the kernel perf buffer. |
-| `events_dropped_channel_full` | Events dropped by `SendEvent` because the per-connection channel was full (non-blocking send, default case). Cause: worker goroutine blocked on tracker.mutex. |
+| `events_dropped_channel_full` | Events dropped because the per-connection channel was full (non-blocking send, default case) — from either `SendEvent` (open/close events) or `SendDataEvent` (data events, `factory.go`). Cause: worker goroutine blocked on tracker.mutex, or the worker simply can't keep up with the channel's inflow rate. |
 
 ### Group Lifecycle
 
@@ -38,6 +49,15 @@ Every HTTP request on a connection creates 2 groups: one ingress (request), one 
 | `groups_stranded` | Groups discarded at final flush because they were below `lowestPendingSeq` (late arrivals written back into msgGroups). Cause: premature gap-skip due to cross-CPU delivery skew. |
 | `out_of_order_arrivals` | Group arrived with `msg_seq < highestMsgSeq` but `≥ lowestPendingSeq`. Cross-CPU delivery skew (multiple gobpf reader goroutines race into eventChannel). **Not data loss** — group is still reachable by drainPairs. |
 | `late_arrivals` | Group arrived with `msg_seq < lowestPendingSeq` (already passed by drainPairs). **Silent discard** — group is stranded, never flushed. |
+
+### Reorder Distance Histograms
+
+`out_of_order_dist` and `late_arrival_dist` bucket `highestMsgSeq - msgSeq` (the reorder
+distance) at the moment each out-of-position arrival is observed — one histogram for the
+recoverable case (`out_of_order_arrivals`), one for the lost case (`late_arrivals`). Buckets:
+`d1`, `d2_4`, `d5_8`, `d9_16`, `d17_32`, `d33_64`, `d65_plus`. Used to size the flush-hold /
+gap-skip threshold: pick it at roughly the p99 of `late_arrival_dist`'s recoverable cluster —
+see Known Problem #1 (premature gap-skip) in `message-chunking-pipeline.md`.
 
 ### Gap-Skip
 
@@ -54,13 +74,13 @@ become late arrivals.
 
 | Field | Description |
 |---|---|
-| `chunk_assembly_gaps` | `convertToSingleByteArr` detected a gap in rc/wc chunk keys and truncated the blob early. A dropped chunk causes this. The resulting truncated blob typically causes `pairs_parse_failure` downstream. Connects top-of-pipeline drops to parse failures. |
-| `pairs_attempted` | Pairs passed to `ProcessSinglePair`. Incremented before HTTP blob detection. |
-| `pairs_parse_success` | Pairs where `ParseAndProduce` successfully produced at least one request-response to Kafka. |
-| `pairs_parse_failure` | Pairs where `parseHTTPTraffic` returned nil — neither blob was a recognizable HTTP message (corrupt or truncated). |
-| `pairs_mismatched` | Pairs where `X-Debug-Token` request header value was not found in the response body. Indicates a mangled or mismatched request-response pairing. Only fires when the header is present (echo-server / debug runs). |
-| `request_body_failure` | Pairs where `io.ReadAll` failed on the request body. Pair is still produced with empty body; not counted as parse failure. |
-| `response_body_failure` | Pairs where `io.ReadAll` failed on the response body. Same treatment as above. |
+| `chunk_assembly_gaps` | `fragmentsToBytes` (msg_seq path, `flushPairedRequests.go`) or `convertToSingleByteArr` (flat-buffer path, `flushFlatBuffer.go`) detected a gap in seq/chunk keys and truncated the blob early. A dropped fragment/chunk causes this. The resulting truncated blob typically causes `pairs_parse_failure` downstream. Connects top-of-pipeline drops to parse failures. |
+| `pairs_attempted` | Pairs passed to `ProcessSinglePair` (`flushPairedRequests.go`), incremented before HTTP blob detection. **Only incremented on the msg_seq path** (`AKTO_FAST_INGESTION=true`) — the flat-buffer path's `ProcessTrackerData` has no equivalent counter, so this (and `groups_created`, `coverage_pct`) reads near-zero when fast ingestion is disabled. |
+| `pairs_parse_success` | Pairs where HTTP parsing + Kafka produce succeeded. Incremented from either parse path: `fastParseAndProduce` (fast/zero-copy, `AKTO_FAST_INGESTION=true`) or the std-lib `ParseAndProduce`/`parseHTTPTraffic` path (`AKTO_FAST_INGESTION=false`), in `trafficUtil/kafkaUtil/parse.go`+`parser.go`. |
+| `pairs_parse_failure` | Pairs where parsing failed — `parseHTTPTraffic` returned nil (std-lib path) or `ParseRequest`/`ParseResponse` errored (fast path) — neither blob was a recognizable HTTP message (corrupt or truncated). |
+| `pairs_mismatched` | Pairs where `X-Debug-Token` request header value was not found in the response body. Indicates a mangled or mismatched request-response pairing. Only fires when the header is present (echo-server / debug runs). Checked on both parse paths. |
+| `request_body_failure` | Pairs where `io.ReadAll` failed on the request body. **Only fires on the std-lib slow path** (`parseHTTPTraffic`, `AKTO_FAST_INGESTION=false`), and only for requests whose method/host/path matched the body-parsing policy (`shouldParseBody`) — the fast path (zero-copy `fastparser`) has no equivalent failure mode. Pair is still produced with empty body; not counted as a parse failure. |
+| `response_body_failure` | Same as `request_body_failure`, for the response body. |
 
 ### Computed Fields
 
@@ -156,16 +176,19 @@ curl -s http://localhost:6060/metrics/pipeline | jq '{
 
 ## Log Correlation
 
-Each metric has a corresponding log line to pinpoint when it occurred:
+Each metric has a corresponding log line to pinpoint when it occurred. All `msg_seq: ...` lines
+are gated behind the `MSG_SEQ_LOGS` env var (`IsMsgSeqLogsEnabled()`) — off by default, since
+they fire per-group/per-pair and are too high-volume for always-on production logging.
 
 | Metric | Log message |
 |---|---|
 | `events_dropped_kernel_ring_buf` | `⚠️ Lost N events on channel socket_data_events` |
 | `events_dropped_channel_full` | `Dropping event Channel full` |
-| `out_of_order_arrivals` | `msg_seq: out-of-order group arrival` |
-| `late_arrivals` | `msg_seq: late arrival below lowestPendingSeq (already flushed)` |
-| `gap_skips_fired` / `gap_skip_seqs_lost` | `msg_seq: gap-skip fd=N skipped_from=M lowestPendingSeq_after=K` |
-| `groups_orphaned` | `msg_seq: orphaned group (partner missing)` |
-| `pairs_parse_failure` | logged inside `ParseAndProduce` |
-| `pairs_parse_success` (inverse) | `msg_seq: flushing pair` (one per pair attempted) |
+| `out_of_order_arrivals` | `msg_seq: out-of-order group arrival` (behind `MSG_SEQ_LOGS`) |
+| `late_arrivals` | `msg_seq: late arrival below lowestPendingSeq (already flushed)` (behind `MSG_SEQ_LOGS`) |
+| `gap_skips_fired` / `gap_skip_seqs_lost` | `msg_seq: gap-skip fd=N skipped_from=M lowestPendingSeq_after=K` (behind `MSG_SEQ_LOGS`) |
+| `groups_orphaned` | `msg_seq: orphaned group (partner missing)` (behind `MSG_SEQ_LOGS`) |
+| `groups_stranded` | `msg_seq: stranded group discarded at final flush` (behind `MSG_SEQ_LOGS`) |
+| `pairs_parse_failure` | `PrintLog` inside `parseHTTPTraffic` (slow path) or silent on the fast path (`ParseRequest`/`ParseResponse` error, no log) |
+| `pairs_parse_success` (inverse) | `msg_seq: flushing pair` (behind `MSG_SEQ_LOGS`, msg_seq path only — one per pair attempted, logged in `drainPairs` before the parse actually runs) |
 | `pairs_mismatched` | no log line — check by correlating `X-Debug-Token` values in request/response blobs |

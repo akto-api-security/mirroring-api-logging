@@ -71,20 +71,23 @@ func (h *ReorderHist) Snapshot() ReorderHistSnapshot {
 	}
 }
 
-// PipelineMetrics holds run-scoped atomic counters for the msg_seq pipeline.
-// All fields are safe for concurrent access.
-// Both connections and kafkaUtil packages increment these directly.
+// PipelineMetrics holds run-scoped atomic counters for the ingest/flush/parse
+// pipeline. All fields are safe for concurrent access. Populated by both
+// ingestion modes (AKTO_FAST_INGESTION true/false) to varying degrees — see
+// per-field comments; group-lifecycle/gap-skip/reorder/PairsAttempted are
+// msg_seq-path only (AKTO_FAST_INGESTION=true, ebpf/connections) and read zero
+// on the flat-buffer path. Incremented directly by connections and kafkaUtil.
 type PipelineMetrics struct {
 	// Input
-	EventsReceived atomic.Int64 // SocketDataEventCallback: successfully decoded events
+	EventsReceived atomic.Int64 // SocketDataEventCallback: data events past the port-ignore filter, dispatched to SendDataEvent (zero-copy view cast, not decoded)
 	InputChanLen   atomic.Int64 // sampled len(inputChan) every 1000 events
 	InputChanCap   atomic.Int64 // cap(inputChan) — set once at startup
 
 	// Drop points
 	EventsDroppedKernelRingBuf atomic.Int64 // gobpf lostEventsChannel: kernel perf ring buffer overflow
-	EventsDroppedChannelFull   atomic.Int64 // SendEvent: per-conn channel full
+	EventsDroppedChannelFull   atomic.Int64 // SendEvent (open/close) or SendDataEvent (data): per-conn channel full
 
-	// Group lifecycle (one group = one HTTP message direction)
+	// Group lifecycle (one group = one HTTP message direction). msg_seq path only.
 	GroupsCreated      atomic.Int64 // new msg_seq group first seen in AddDataEvent
 	GroupsOrphaned     atomic.Int64 // partner missing at flush time (drainPairs)
 	GroupsStranded     atomic.Int64 // late arrivals below lowestPendingSeq, discarded at final flush
@@ -92,24 +95,27 @@ type PipelineMetrics struct {
 	LateArrivals       atomic.Int64 // msg_seq < lowestPendingSeq (already flushed)
 
 	// Reorder distance (highestMsgSeq - msgSeq) at out-of-position arrival.
-	// Sizes the flush hold threshold.
+	// Sizes the flush hold threshold. msg_seq path only.
 	OutOfOrderDist  ReorderHist // above lps (currently recovered)
 	LateArrivalDist ReorderHist // below lps (currently lost) — key sizing input
 
-	// Gap-skip (drainPairs advancing lowestPendingSeq past a missing seq)
+	// Gap-skip (drainPairs advancing lowestPendingSeq past a missing seq). msg_seq path only.
 	GapSkipsFired   atomic.Int64 // how many times a missing seq triggered a skip
 	GapSkipSeqsLost atomic.Int64 // total individual seqs skipped across all gap-skips
 
-	// Chunk assembly
-	ChunkAssemblyGaps atomic.Int64 // convertToSingleByteArr broke early due to missing chunk key (silent truncation)
+	// Chunk/fragment assembly
+	ChunkAssemblyGaps atomic.Int64 // fragmentsToBytes (msg_seq path) or convertToSingleByteArr (flat-buffer path) broke early due to a missing seq/chunk key (silent truncation)
 
-	// Pair outcomes
+	// Pair outcomes. PairsAttempted is msg_seq-path only (ProcessSinglePair,
+	// flushPairedRequests.go) — the flat-buffer path's ProcessTrackerData has no
+	// equivalent counter. The rest are populated by kafkaUtil regardless of
+	// which ingestion mode produced the pair.
 	PairsAttempted      atomic.Int64 // pairs passed to ProcessSinglePair
-	PairsParseSuccess   atomic.Int64 // ParseAndProduce produced at least one req-resp pair
-	PairsParseFailure   atomic.Int64 // parseHTTPTraffic returned nil (corrupt/truncated req or resp)
+	PairsParseSuccess   atomic.Int64 // fastParseAndProduce or parseHTTPTraffic/ParseAndProduce produced at least one req-resp pair
+	PairsParseFailure   atomic.Int64 // parseHTTPTraffic returned nil, or fast-path ParseRequest/ParseResponse errored (corrupt/truncated req or resp)
 	PairsMismatched     atomic.Int64 // X-Debug-Token in request not found in response body (echo mismatch)
-	RequestBodyFailure  atomic.Int64 // req body io.ReadAll failed (pair still produced, empty body)
-	ResponseBodyFailure atomic.Int64 // resp body io.ReadAll failed (pair still produced, empty body)
+	RequestBodyFailure  atomic.Int64 // req body io.ReadAll failed — std-lib slow path only (parseHTTPTraffic), and only for requests matching the body-parsing policy; pair still produced, empty body
+	ResponseBodyFailure atomic.Int64 // resp body io.ReadAll failed — same conditions as RequestBodyFailure
 
 	// Reset tracking
 	ResetAt time.Time
