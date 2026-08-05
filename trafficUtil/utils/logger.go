@@ -62,7 +62,7 @@ func LogIngest(format string, args ...any) {
 }
 
 func IsIngestLogsEnabled() bool {
-	return processLogs
+	return ingestLogs
 }
 
 func IsProcessLogsEnabled() bool {
