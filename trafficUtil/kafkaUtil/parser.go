@@ -74,7 +74,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		resp := &responses[i]
 
 		url := req.URL.String()
-		// checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
+		checkDebugUrlAndPrint(url, req.Host, "URL,host found in ParseAndProduce")
 
 		// Convert headers in a single pass (both protobuf and string map formats)
 		headers := convertHeaders(req, resp, shouldPrint)
