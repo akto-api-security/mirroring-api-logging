@@ -399,7 +399,7 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     conn_info_map.delete(&tgid_fd);    
 }
 
-static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
+static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
     int bytes_exchanged = PT_REGS_RC(ret);
 
     if(args->iovlen > 0 && args->buf_size > 0){
@@ -445,26 +445,36 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
 
     enum traffic_direction_t direction = is_send ? kEgress : kIngress;
 
-    if (conn_info->role == kRoleUnknown && args->buf != NULL) {
-        enum message_type_t msg_type = infer_http_message(args->buf, bytes_exchanged);
-        if (msg_type != kUnknown) {
-            conn_info->role = ((direction == kEgress) ^ (msg_type == kResponse))
-                                  ? kRoleClient : kRoleServer;
+    // Role + msg_seq are per-connection/per-message properties, not per-buffer:
+    // `direction` is constant across a syscall's iovecs, and both values are
+    // cached in conn_info. Computing them is only meaningful once per syscall,
+    // so callers that inline this function many times (the iovec loop) pass
+    // compute_meta=false for all but the first buffer. Because compute_meta is
+    // a compile-time constant at each inline site, the heavy infer_http_message
+    // block is dead-code-eliminated from the copies that don't need it, keeping
+    // the vec probes under the BPF verifier's instruction limit.
+    if (compute_meta) {
+        if (conn_info->role == kRoleUnknown && args->buf != NULL) {
+            enum message_type_t msg_type = infer_http_message(args->buf, bytes_exchanged);
+            if (msg_type != kUnknown) {
+                conn_info->role = ((direction == kEgress) ^ (msg_type == kResponse))
+                                      ? kRoleClient : kRoleServer;
+            }
+        }
+
+        // msg_seq: increments on direction change (HTTP message boundary)
+        if (conn_info->msg_seq == 0) {
+            conn_info->msg_seq = 1;
+            conn_info->prev_direction = direction;
+        } else if (direction != conn_info->prev_direction) {
+            conn_info->msg_seq++;
+            conn_info->prev_direction = direction;
         }
     }
 
     socket_data_event->role      = conn_info->role;
     socket_data_event->direction = direction;
-
-    // msg_seq: increments on direction change (HTTP message boundary)
-    if (conn_info->msg_seq == 0) {
-        conn_info->msg_seq = 1;
-        conn_info->prev_direction = direction;
-    } else if (direction != conn_info->prev_direction) {
-        conn_info->msg_seq++;
-        conn_info->prev_direction = direction;
-    }
-    socket_data_event->msg_seq = conn_info->msg_seq;
+    socket_data_event->msg_seq   = conn_info->msg_seq;
 
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
@@ -539,7 +549,11 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
         
         args->buf = iov_cpy.iov_base;
         args->buf_size = iov_size;
-        process_syscall_data(ret, args, id, is_send, false);
+        // compute_meta only on the first iovec: role/msg_seq are per-message,
+        // and the HTTP request/response line lives in iov[0]. i==0 is a
+        // compile-time constant per unrolled copy, so the metadata code is
+        // emitted once instead of LOOP_LIMIT times.
+        process_syscall_data(ret, args, id, is_send, false, /* compute_meta */ i == 0);
         bytes_sent += iov_size;
         
       }
@@ -895,7 +909,7 @@ int syscall__probe_ret_recvfrom(struct pt_regs* ctx) {
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
     if (read_args != NULL) {
-        process_syscall_data(ctx, read_args, id, false, false);
+        process_syscall_data(ctx, read_args, id, false, false, true);
     }
 
     active_read_args_map.delete(&id);
@@ -943,7 +957,7 @@ int syscall__probe_ret_sendto(struct pt_regs* ctx) {
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
     if (write_args != NULL) {
-        process_syscall_data(ctx, write_args, id, true, false);
+        process_syscall_data(ctx, write_args, id, true, false, true);
     }
 
     active_write_args_map.delete(&id);
@@ -984,7 +998,7 @@ int syscall__probe_ret_recv(struct pt_regs* ctx) {
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
     if (read_args != NULL) {
-        process_syscall_data(ctx, read_args, id, false, false);
+        process_syscall_data(ctx, read_args, id, false, false, true);
     }
 
     active_read_args_map.delete(&id);
@@ -1038,7 +1052,7 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
       if(PRINT_BPF_LOGS){
         bpf_trace_printk("syscall__probe_ret_read pid=%d fd=%d sock_event=1", id >> 32, read_args->fd);
       }
-      process_syscall_data(ctx, read_args, id, false, false);
+      process_syscall_data(ctx, read_args, id, false, false, true);
     } else if (read_args != NULL) {
       if(PRINT_BPF_LOGS){
         bpf_trace_printk("syscall__probe_ret_read pid=%d fd=%d sock_event=0 skipping", id >> 32, read_args->fd);
@@ -1128,7 +1142,7 @@ int syscall__probe_ret_send(struct pt_regs* ctx) {
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
     if (write_args != NULL) {
-        process_syscall_data(ctx, write_args, id, true, false);
+        process_syscall_data(ctx, write_args, id, true, false, true);
     }
 
     active_write_args_map.delete(&id);
@@ -1182,7 +1196,7 @@ int syscall__probe_ret_write(struct pt_regs* ctx) {
       if(PRINT_BPF_LOGS){
         bpf_trace_printk("syscall__probe_ret_write data process: pid=%d fd=%d sock_event=1", id >> 32, write_args->fd);
       }
-      process_syscall_data(ctx, write_args, id, true, false);
+      process_syscall_data(ctx, write_args, id, true, false, true);
     } else if (write_args != NULL) {
       if(PRINT_BPF_LOGS){
         bpf_trace_printk("syscall__probe_ret_write pid=%d fd=%d sock_event=0 skipping", id >> 32, write_args->fd);
@@ -1464,7 +1478,7 @@ int probe_ret_SSL_write(struct pt_regs* ctx) {
 
   const struct data_args_t* write_args = active_ssl_write_args_map.lookup(&id);
   if (write_args != NULL) {
-    process_syscall_data(ctx, write_args, id, true, true);
+    process_syscall_data(ctx, write_args, id, true, true, true);
   }
 
   active_ssl_write_args_map.delete(&id);
@@ -1557,7 +1571,7 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
 
   const struct data_args_t* read_args = active_ssl_read_args_map.lookup(&id);
   if (read_args != NULL) {
-    process_syscall_data(ctx, read_args, id, false, true);
+    process_syscall_data(ctx, read_args, id, false, true, true);
   }
 
   active_ssl_read_args_map.delete(&id);
@@ -1795,7 +1809,7 @@ static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64
   data_args.buf = args->plaintext_ptr;
   data_args.fd = fd;
 
-  process_syscall_data(ctx, &data_args, id, true, /* ssl */ true);
+  process_syscall_data(ctx, &data_args, id, true, /* ssl */ true, true);
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_return_tls_conn_write 2.3 %llu %lu", id, tgid);
@@ -1935,7 +1949,7 @@ static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_
   data_args.buf = args->plaintext_ptr;
   data_args.fd = fd;
 
-  process_syscall_data(ctx, &data_args, id, false, /* ssl */ true);
+  process_syscall_data(ctx, &data_args, id, false, /* ssl */ true, true);
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_return_tls_conn_read 2.3 %llu %lu", id, tgid);
