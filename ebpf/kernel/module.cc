@@ -8,7 +8,7 @@
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
-#define LOOP_LIMIT 42
+#define LOOP_LIMIT 10
 
 #define ARCH_TYPE 1
 
@@ -304,18 +304,18 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
-    if (PRINT_BPF_LOGS) {
-      u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
-      u32 dip = conn_info.raddr;
-      u32 sip = srcIp;
-      bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
-      bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
-      bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
-      bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.rport));
-      bpf_trace_printk("new_conn: role=%d", conn_info.role);
-    }
+//    if (PRINT_BPF_LOGS) {
+//      u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
+//      u32 dip = conn_info.raddr;
+//      u32 sip = srcIp;
+//      bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
+//      bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
+//      bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+//      bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
+//      bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
+//      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.rport));
+//      bpf_trace_printk("new_conn: role=%d", conn_info.role);
+//    }
 
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
@@ -476,16 +476,16 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->direction = direction;
     socket_data_event->msg_seq   = conn_info->msg_seq;
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
-      u32 ip = conn_info->raddr;
-      bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
-      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->rport));
-      u32 sip = conn_info->laddr;
-      bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
-      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
-      bpf_trace_printk("data: role=%d dir=%d msg_seq=%d", conn_info->role, direction, conn_info->msg_seq);
-    }
+//    if (PRINT_BPF_LOGS){
+//      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
+//      u32 ip = conn_info->raddr;
+//      bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
+//      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->rport));
+//      u32 sip = conn_info->laddr;
+//      bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+//      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
+//      bpf_trace_printk("data: role=%d dir=%d msg_seq=%d", conn_info->role, direction, conn_info->msg_seq);
+//    }
 
     int bytes_sent = 0;
     size_t size_to_save = 0;
@@ -524,7 +524,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->writeEventsCount = conn_info->writeEventsCount;
     socket_data_event->readEventsCount = conn_info->readEventsCount;
 
-    if(PRINT_BPF_LOGS){
+    if(PRINT_BPF_LOGS || true){
           bpf_trace_printk("rc: %d wc: %d data: %s", socket_data_event->readEventsCount, socket_data_event->writeEventsCount, socket_data_event->msg);
     }
     socket_data_event->bytes_sent = is_send ? 1 : -1;
@@ -1387,7 +1387,7 @@ static void set_conn_as_ssl(u32 tgid, u32 fd){
     if (conn_info == NULL) {
         return;
     }
-    if(PRINT_BPF_LOGS){
+    if(PRINT_BPF_LOGS || true){
       bpf_trace_printk("SSL marking ssl tgid: %d", tgid_fd);
     }
     conn_info->ssl = true;
@@ -1397,7 +1397,7 @@ static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
 
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_entry_SSL_write_core: pid: %d %d %d", id, tgid, fd);
   }
 
@@ -1453,7 +1453,7 @@ int probe_entry_SSL_write(struct pt_regs *ctx, void *ssl, void *buf, int num) {
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
     u32 fd = get_fd_node(tgid, ssl);
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_entry_SSL_write: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
@@ -1462,7 +1462,7 @@ int probe_entry_SSL_write(struct pt_regs *ctx, void *ssl, void *buf, int num) {
 
 int probe_entry_SSL_write_boring(struct pt_regs *ctx, void *ssl, void *buf, int num) {
     u32 fd = get_fd(ssl, 4, false);
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_entry_SSL_write_boring: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
@@ -1472,7 +1472,7 @@ int probe_entry_SSL_write_boring(struct pt_regs *ctx, void *ssl, void *buf, int 
 int probe_ret_SSL_write(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
 
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_ret_SSL_write: pid: %d", id);
   }
 
@@ -1489,7 +1489,7 @@ static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf,
     u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
 
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_entry_SSL_read_core: pid: %d %d %d", id, tgid, fd);
   }
 
@@ -1545,7 +1545,7 @@ int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
     int32_t fd = get_fd_node(tgid, ssl);
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_entry_SSL_read: fd: %d", fd);
   }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
@@ -1554,7 +1554,7 @@ int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
 
 int probe_entry_SSL_read_boring(struct pt_regs *ctx, void *ssl, void *buf, int num) {
     int32_t fd = get_fd(ssl, 4, true);
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_entry_SSL_read_boring: fd: %d", fd);
   }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
@@ -1565,7 +1565,7 @@ int probe_entry_SSL_read_boring(struct pt_regs *ctx, void *ssl, void *buf, int n
 int probe_ret_SSL_read(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
 
-  if(PRINT_BPF_LOGS){
+  if(PRINT_BPF_LOGS || true){
     bpf_trace_printk("probe_ret_SSL_read: pid: %d", id);
   }
 
