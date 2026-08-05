@@ -147,7 +147,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 			}
 			metaUtils.LogIngest("Got data",
 				"fd", connId.Fd,
-				"id", connId.Id,
+				"pid", connId.Id >> 32,
 				"timestamp", connId.Conn_start_ns,
 				"msg_seq", attr.MsgSeq,
 				"rc", attr.ReadEventsCount,
