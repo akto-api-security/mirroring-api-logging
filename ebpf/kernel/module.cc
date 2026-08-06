@@ -8,7 +8,7 @@
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
-#define LOOP_LIMIT 10
+#define LOOP_LIMIT 42
 
 #define ARCH_TYPE 1
 
@@ -535,7 +535,7 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->writeEventsCount = conn_info->writeEventsCount;
     socket_data_event->readEventsCount = conn_info->readEventsCount;
 
-    if(PRINT_BPF_LOGS || true){
+    if(PRINT_BPF_LOGS){
           bpf_trace_printk("rc: %d wc: %d data: %s", socket_data_event->readEventsCount, socket_data_event->writeEventsCount, socket_data_event->msg);
     }
     socket_data_event->bytes_sent = is_send ? 1 : -1;
@@ -1398,7 +1398,7 @@ static void set_conn_as_ssl(u32 tgid, u32 fd){
     if (conn_info == NULL) {
         return;
     }
-    if(PRINT_BPF_LOGS || true){
+    if(PRINT_BPF_LOGS){
       bpf_trace_printk("SSL marking ssl tgid: %d", tgid_fd);
     }
     conn_info->ssl = true;
@@ -1500,7 +1500,7 @@ int probe_entry_SSL_write(struct pt_regs *ctx, void *ssl, void *buf, int num) {
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
     u32 fd = get_fd_node(tgid, ssl);
-  if(PRINT_BPF_LOGS || true){
+  if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_SSL_write: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
@@ -1509,7 +1509,7 @@ int probe_entry_SSL_write(struct pt_regs *ctx, void *ssl, void *buf, int num) {
 
 int probe_entry_SSL_write_boring(struct pt_regs *ctx, void *ssl, void *buf, int num) {
     u32 fd = get_fd(ssl, 4, false);
-  if(PRINT_BPF_LOGS || true){
+  if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_SSL_write_boring: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
@@ -1519,7 +1519,7 @@ int probe_entry_SSL_write_boring(struct pt_regs *ctx, void *ssl, void *buf, int 
 int probe_ret_SSL_write(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
 
-  if(PRINT_BPF_LOGS || true){
+  if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_ret_SSL_write: pid: %d", id);
   }
 
@@ -1624,7 +1624,7 @@ int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
     int32_t fd = get_fd_node(tgid, ssl);
-  if(PRINT_BPF_LOGS || true){
+  if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_SSL_read: fd: %d", fd);
   }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
@@ -1633,7 +1633,7 @@ int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
 
 int probe_entry_SSL_read_boring(struct pt_regs *ctx, void *ssl, void *buf, int num) {
     int32_t fd = get_fd(ssl, 4, true);
-  if(PRINT_BPF_LOGS || true){
+  if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_SSL_read_boring: fd: %d", fd);
   }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
@@ -1644,7 +1644,7 @@ int probe_entry_SSL_read_boring(struct pt_regs *ctx, void *ssl, void *buf, int n
 int probe_ret_SSL_read(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
 
-  if(PRINT_BPF_LOGS || true){
+  if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_ret_SSL_read: pid: %d", id);
   }
 

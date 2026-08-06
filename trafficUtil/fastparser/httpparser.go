@@ -6,8 +6,18 @@ package fastparser
 // alias the input buffer — nothing is copied. The parser returns an error on
 // malformed input instead of panicking, so callers can log-and-skip.
 //
+// Chunked bodies are the one exception to "nothing is copied": when a message
+// carries `Transfer-Encoding: chunked`, the body is decoded IN PLACE — the chunk
+// data is compacted toward the front of the body region (each decoded byte only
+// ever moves leftward, over framing already consumed), and Body is returned as a
+// sub-slice of the input. It still aliases the input buffer (zero allocation),
+// but the framing bytes in the body region are overwritten. Callers therefore
+// must own the buffer they pass in; in this codebase the parse buffer is a fresh
+// per-message allocation (fragmentsToBytes / convertToSingleByteArr), so this is
+// safe. Identity / Content-Length bodies are untouched: pure alias, no writes.
+//
 // A Parser holds reusable scratch state; create one per goroutine and reuse it.
- 
+
 import (
 	"bytes"
 	"errors"
@@ -117,7 +127,14 @@ func (p *Parser) ParseRequest(buf []byte) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.Body = buf[i:n]
+	body := buf[i:n]
+	if isChunked(r.Headers) {
+		body, err = decodeChunkedInPlace(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	r.Body = body
 	return r, nil
 }
 
@@ -157,7 +174,14 @@ func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.Body = buf[i:n]
+	body := buf[i:n]
+	if isChunked(r.Headers) {
+		body, err = decodeChunkedInPlace(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	r.Body = body
 	return r, nil
 }
 
@@ -204,4 +228,106 @@ func parseHeaders(buf []byte, start int, out *[]Header, scratch []Header) (int, 
 		}
 		i = abs + 1
 	}
+}
+
+// isChunked reports whether the message body uses chunked transfer-encoding.
+// Per RFC 7230 §3.3.1 "chunked" must be the final coding; we match it as the
+// last token of the last Transfer-Encoding header (case-insensitive), which also
+// covers the common single-value "Transfer-Encoding: chunked".
+func isChunked(hs []Header) bool {
+	var te []byte
+	for i := range hs {
+		if asciiEqualFold(hs[i].Name, "Transfer-Encoding") {
+			te = hs[i].Value // last one wins
+		}
+	}
+	if te == nil {
+		return false
+	}
+	// take the token after the last comma, trim OWS
+	if c := bytes.LastIndexByte(te, ','); c >= 0 {
+		te = te[c+1:]
+	}
+	for len(te) > 0 && (te[0] == ' ' || te[0] == '\t') {
+		te = te[1:]
+	}
+	for len(te) > 0 && (te[len(te)-1] == ' ' || te[len(te)-1] == '\t') {
+		te = te[:len(te)-1]
+	}
+	return asciiEqualFold(te, "chunked")
+}
+
+// decodeChunkedInPlace decodes an HTTP/1.1 chunked-transfer body IN PLACE and
+// returns the decoded body as a sub-slice of the same backing array — zero
+// allocation. Decoded bytes only ever move leftward (the framing they replace was
+// already consumed), so a single read cursor r ahead of a write cursor w never
+// clobbers unread data. Chunk extensions (";name=value" after the size) and
+// trailer headers (after the terminating 0-chunk) are ignored. Malformed framing
+// (bad hex size, truncated chunk, missing CRLF, no terminator) returns
+// ErrMalformed rather than panicking.
+func decodeChunkedInPlace(body []byte) ([]byte, error) {
+	n := len(body)
+	w, r := 0, 0
+	for {
+		// ---- chunk-size line: hex digits up to ';' (extension) or CR ----
+		size := 0
+		digits := 0
+		for r < n {
+			c := body[r]
+			hv, ok := hexVal(c)
+			if !ok {
+				break
+			}
+			// guard against overflow / absurd sizes
+			if size > (1<<28) { // 256MB ceiling; larger is malformed for our use
+				return nil, ErrMalformed
+			}
+			size = size<<4 | int(hv)
+			digits++
+			r++
+		}
+		if digits == 0 {
+			return nil, ErrMalformed // size line had no hex digit
+		}
+		// skip optional chunk extension: everything up to CR
+		for r < n && body[r] != '\r' {
+			r++
+		}
+		// require CRLF ending the size line
+		if r+1 >= n || body[r] != '\r' || body[r+1] != '\n' {
+			return nil, ErrMalformed
+		}
+		r += 2
+
+		if size == 0 {
+			// last chunk. trailers/final CRLF (if any) are ignored.
+			return body[:w], nil
+		}
+
+		// ---- chunk data: exactly `size` bytes, then CRLF ----
+		if r+size+2 > n { // data + trailing CRLF must fit
+			return nil, ErrMalformed
+		}
+		// compact leftward; copy handles w<r safely (and w==r is a no-op copy).
+		copy(body[w:w+size], body[r:r+size])
+		w += size
+		r += size
+		if body[r] != '\r' || body[r+1] != '\n' {
+			return nil, ErrMalformed
+		}
+		r += 2
+	}
+}
+
+// hexVal returns the value of a single hex digit and whether c was a hex digit.
+func hexVal(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
