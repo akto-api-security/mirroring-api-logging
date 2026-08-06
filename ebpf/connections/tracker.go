@@ -108,6 +108,10 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		conn.role = attr.Role
 	}
 
+	// first few read/write calls in a TLS are of handshake
+	// these are extra data we don't need, once TLS established
+	// request/resp is exchanged through SSL_read/write which sends ssl=true
+	// So we reset the buffers to discard the handshake data. 
 	if !conn.ssl && attr.Ssl {
 		for k := range conn.sentBuf {
 			conn.sentBuf[k] = []byte{}
@@ -120,6 +124,8 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		conn.ssl = attr.Ssl
 	}
 
+	// Data events ssl true/false must match the conn info ssl
+	// helps to ensure we process only decrypted data for ssl requests.
 	if conn.ssl != attr.Ssl {
 		return attr.MsgSeq
 	}
