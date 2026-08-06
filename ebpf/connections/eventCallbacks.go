@@ -152,8 +152,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 				"msg_seq", attr.MsgSeq,
 				"rc", attr.ReadEventsCount,
 				"wc", attr.WriteEventsCount,
-				"raddr", connId.Raddr,
-				"rport", connId.Rport,
+				"raddr", utils.FormatAddr(connId.Raddr, connId.Rport),
 				"data", dataStr,
 				"ssl", attr.Ssl,
 				"bytesSent", bytesSent)

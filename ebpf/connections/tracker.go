@@ -111,14 +111,24 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 	// first few read/write calls in a TLS are of handshake
 	// these are extra data we don't need, once TLS established
 	// request/resp is exchanged through SSL_read/write which sends ssl=true
-	// So we reset the buffers to discard the handshake data. 
+	// So we reset the buffers to discard the handshake data.
 	if !conn.ssl && attr.Ssl {
-		for k := range conn.sentBuf {
-			conn.sentBuf[k] = []byte{}
+		if !metaUtils.FastIngestion {
+			for k := range conn.sentBuf {
+				conn.sentBuf[k] = []byte{}
+			}
+			for k := range conn.recvBuf {
+				conn.recvBuf[k] = []byte{}
+			}
+		} else {
+			conn.msgGroups = make(map[uint32]*msgSeqGroup)
+			conn.highestMsgSeq = 0
+			conn.lowestPendingSeq = 0
+			conn.seenMsgSeqs = utils.SeqRingBitset{}
+
 		}
-		for k := range conn.recvBuf {
-			conn.recvBuf[k] = []byte{}
-		}
+
+		// Needed for both
 		conn.sentBytes = 0
 		conn.recvBytes = 0
 		conn.ssl = attr.Ssl
