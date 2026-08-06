@@ -47,6 +47,13 @@ var ThreatEnabled = true
 // flush, which only msg_seq flushing guarantees.
 var FastIngestion = false
 
+// FastParserGunzip, when true, makes the fast parser decompress gzip response
+// bodies (Content-Encoding: gzip) after de-chunking. Off by default because it
+// allocates (decompression expands, so the body can't alias the input buffer) —
+// the default fast path stays zero-copy/zero-alloc. Opt in when readable bodies
+// matter more than the per-message decompression cost.
+var FastParserGunzip = true
+
 const EnvoyProxyIp = "127.0.0.6"
 
 func init() {
@@ -57,6 +64,7 @@ func init() {
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
 	InitVar("AKTO_FAST_INGESTION", &FastIngestion)
+	InitVar("AKTO_FAST_PARSER_GUNZIP", &FastParserGunzip)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {

@@ -20,10 +20,20 @@ package fastparser
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
 )
 
 var ErrMalformed = errors.New("httpparser: malformed HTTP message")
+
+// ErrGunzip is a SOFT error: the message parsed fine (status line + headers are
+// valid) but its gzip body could not be decoded. ParseResponse returns a VALID
+// *Response with an empty Body alongside this error, so a caller that recognises
+// it (errors.Is) can keep the pair — with an empty response body — instead of
+// dropping it. Callers that treat every error as fatal will simply drop the pair,
+// which is safe. Distinct from ErrMalformed, which always returns a nil result.
+var ErrGunzip = errors.New("httpparser: gzip body decode failed")
 
 const maxHeaders = 128
 
@@ -93,6 +103,12 @@ type Parser struct {
 	resp        Response
 	reqHeaders  [maxHeaders]Header
 	respHeaders [maxHeaders]Header
+	// Gunzip, when true, makes ParseResponse decompress gzip response bodies
+	// (Content-Encoding: gzip) after de-chunking. This is the one path that
+	// ALLOCATES and whose Body does NOT alias the input (decompression expands),
+	// so it's opt-in; leave false to keep the zero-copy/zero-alloc default. Set
+	// by the caller from utils.FastParserGunzip.
+	Gunzip bool
 }
 
 func NewFastParser() *Parser { return &Parser{} }
@@ -139,6 +155,11 @@ func (p *Parser) ParseRequest(buf []byte) (*Request, error) {
 }
 
 // ParseResponse parses one complete HTTP response from buf.
+//
+// Return contract: on a hard failure (bad status line/headers) it returns
+// (nil, ErrMalformed). When Gunzip is enabled and the gzip body fails to decode,
+// it returns a VALID *Response with an empty Body plus ErrGunzip (a soft error) —
+// callers may keep such a response. All other successes return (resp, nil).
 func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 	r := &p.resp
 	r.Version, r.Reason, r.Body = nil, nil, nil
@@ -175,11 +196,24 @@ func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 		return nil, err
 	}
 	body := buf[i:n]
+	// Decoding order mirrors the wire order in reverse: on the wire the body is
+	// gzipped first, then chunk-framed, so we de-chunk first, then gunzip.
 	if isChunked(r.Headers) {
 		body, err = decodeChunkedInPlace(body)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if p.Gunzip && isGzip(r.Headers) {
+		dec, derr := gunzipBody(body)
+		if derr != nil {
+			// Soft failure: status line + headers are valid, only the body could
+			// not be decompressed. Return the usable response with an empty body
+			// and ErrGunzip so the caller can keep the pair (see ErrGunzip doc).
+			r.Body = nil
+			return r, ErrGunzip
+		}
+		body = dec
 	}
 	r.Body = body
 	return r, nil
@@ -255,6 +289,43 @@ func isChunked(hs []Header) bool {
 		te = te[:len(te)-1]
 	}
 	return asciiEqualFold(te, "chunked")
+}
+
+// isGzip reports whether the body is gzip-compressed via Content-Encoding.
+// Last Content-Encoding header wins; value matched case-insensitively after OWS
+// trim. Only the single-coding "gzip" is treated as gzip (coding lists like
+// "gzip, br" are left alone — decoding a stacked encoding is out of scope).
+func isGzip(hs []Header) bool {
+	var ce []byte
+	for i := range hs {
+		if asciiEqualFold(hs[i].Name, "Content-Encoding") {
+			ce = hs[i].Value // last one wins
+		}
+	}
+	for len(ce) > 0 && (ce[0] == ' ' || ce[0] == '\t') {
+		ce = ce[1:]
+	}
+	for len(ce) > 0 && (ce[len(ce)-1] == ' ' || ce[len(ce)-1] == '\t') {
+		ce = ce[:len(ce)-1]
+	}
+	return asciiEqualFold(ce, "gzip")
+}
+
+// gunzipBody decompresses a gzip body. UNLIKE the rest of the parser this
+// ALLOCATES (decompression expands; the result can't alias or fit the input),
+// so it runs only behind the Parser.Gunzip opt-in. Any gzip error (bad header,
+// corrupt stream, truncated) returns ErrMalformed rather than panicking, matching
+// the parser's log-and-skip contract.
+func gunzipBody(body []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	return out, nil
 }
 
 // decodeChunkedInPlace decodes an HTTP/1.1 chunked-transfer body IN PLACE and

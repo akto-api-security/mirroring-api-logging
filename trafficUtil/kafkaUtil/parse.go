@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -157,6 +158,7 @@ var fastPrinted atomic.Int64
 func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 	p := parserPool.Get().(*fastparser.Parser)
 	defer parserPool.Put(p)
+	p.Gunzip = utils.FastParserGunzip
 	enc := encoderPool.Get().(fastparser.Encoder)
 	defer encoderPool.Put(enc)
 
@@ -167,8 +169,14 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 	}
 	resp, err := p.ParseResponse(sentBuffer)
 	if err != nil {
-		utils.Pipeline.PairsParseFailure.Add(1)
-		return
+		if errors.Is(err, fastparser.ErrGunzip) {
+			// Soft failure: resp is valid with an empty body. Keep the pair
+			// (request + headers are still useful) and count the dropped body.
+			utils.Pipeline.ResponseBodyFailure.Add(1)
+		} else {
+			utils.Pipeline.PairsParseFailure.Add(1)
+			return
+		}
 	}
 
 	host := string(req.Host())
