@@ -109,6 +109,8 @@ type Parser struct {
 	// so it's opt-in; leave false to keep the zero-copy/zero-alloc default. Set
 	// by the caller from utils.FastParserGunzip.
 	Gunzip bool
+
+	HandleChunkEncoding bool
 }
 
 func NewFastParser() *Parser { return &Parser{} }
@@ -144,7 +146,7 @@ func (p *Parser) ParseRequest(buf []byte) (*Request, error) {
 		return nil, err
 	}
 	body := buf[i:n]
-	if isChunked(r.Headers) {
+	if p.HandleChunkEncoding && isChunked(r.Headers) {
 		body, err = decodeChunkedInPlace(body)
 		if err != nil {
 			return nil, err
@@ -198,7 +200,7 @@ func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 	body := buf[i:n]
 	// Decoding order mirrors the wire order in reverse: on the wire the body is
 	// gzipped first, then chunk-framed, so we de-chunk first, then gunzip.
-	if isChunked(r.Headers) {
+	if p.HandleChunkEncoding && isChunked(r.Headers) {
 		body, err = decodeChunkedInPlace(body)
 		if err != nil {
 			return nil, err

@@ -159,6 +159,7 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 	p := parserPool.Get().(*fastparser.Parser)
 	defer parserPool.Put(p)
 	p.Gunzip = utils.FastParserGunzip
+	p.HandleChunkEncoding = utils.HandleChunkEncoding
 	enc := encoderPool.Get().(fastparser.Encoder)
 	defer encoderPool.Put(enc)
 
