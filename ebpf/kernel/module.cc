@@ -1533,25 +1533,38 @@ int probe_ret_SSL_write(struct pt_regs* ctx) {
 }
 
 // SSL_write_ex return: RC is the 1/0 success flag, real length is at *written.
-int probe_ret_SSL_write_ex(struct pt_regs* ctx) {
-  uint64_t id = bpf_get_current_pid_tgid();
+// Shared body for both SSL_*_ex return probes. They differ only in the args map
+// and is_send; the map can't be passed as a value in this bcc C style, so it's
+// selected here by is_send (same approach as ssl_entry_stash). For the _ex API
+// PT_REGS_RC is the 1/0 success flag, so the real length comes from *len_ptr.
+static __inline void ssl_ret_ex(struct pt_regs* ctx, u64 id, bool is_send){
+  struct data_args_t* args = is_send
+      ? active_ssl_write_args_map.lookup(&id)
+      : active_ssl_read_args_map.lookup(&id);
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_ret_SSL_write_ex: pid: %d", id);
-  }
-
-  struct data_args_t* write_args = active_ssl_write_args_map.lookup(&id);
-  if (write_args != NULL && PT_REGS_RC(ctx) == 1 && write_args->len_ptr != NULL) {
+  if (args != NULL && PT_REGS_RC(ctx) == 1 && args->len_ptr != NULL) {
     size_t n = 0;
-    bpf_probe_read_user(&n, sizeof(n), write_args->len_ptr);
+    bpf_probe_read_user(&n, sizeof(n), args->len_ptr);
     if (n > MAX_MSG_SIZE) {
       n = MAX_MSG_SIZE;
     }
-    write_args->msg_len = (int)n;
-    process_syscall_data(ctx, write_args, id, true, true, true);
+    args->msg_len = (int)n;
+    process_syscall_data(ctx, args, id, is_send, true, true);
   }
 
-  active_ssl_write_args_map.delete(&id);
+  if (is_send) {
+    active_ssl_write_args_map.delete(&id);
+  } else {
+    active_ssl_read_args_map.delete(&id);
+  }
+}
+
+int probe_ret_SSL_write_ex(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_ret_SSL_write_ex: pid: %d", id);
+  }
+  ssl_ret_ex(ctx, id, /* is_send */ true);
   return 0;
 }
 
@@ -1660,23 +1673,10 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
 // SSL_read_ex return: RC is the 1/0 success flag, real length is at *readbytes.
 int probe_ret_SSL_read_ex(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
-
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_ret_SSL_read_ex: pid: %d", id);
   }
-
-  struct data_args_t* read_args = active_ssl_read_args_map.lookup(&id);
-  if (read_args != NULL && PT_REGS_RC(ctx) == 1 && read_args->len_ptr != NULL) {
-    size_t n = 0;
-    bpf_probe_read_user(&n, sizeof(n), read_args->len_ptr);
-    if (n > MAX_MSG_SIZE) {
-      n = MAX_MSG_SIZE;
-    }
-    read_args->msg_len = (int)n;
-    process_syscall_data(ctx, read_args, id, false, true, true);
-  }
-
-  active_ssl_read_args_map.delete(&id);
+  ssl_ret_ex(ctx, id, /* is_send */ false);
   return 0;
 }
 
