@@ -1,4 +1,5 @@
 package fastparser
+
 // Package httpparser is a zero-copy, allocation-free HTTP/1.x message parser.
 //
 // It parses one complete request or response held entirely in a single []byte.
@@ -250,13 +251,7 @@ func parseHeaders(buf []byte, start int, out *[]Header, scratch []Header) (int, 
 			return 0, ErrMalformed
 		}
 		name := lineSeg[:colon]
-		val := lineSeg[colon+1:]
-		for len(val) > 0 && (val[0] == ' ' || val[0] == '\t') {
-			val = val[1:]
-		}
-		for len(val) > 0 && (val[len(val)-1] == ' ' || val[len(val)-1] == '\t') {
-			val = val[:len(val)-1]
-		}
+		val := trimOWS(lineSeg[colon+1:])
 		if len(*out) < len(scratch) {
 			*out = append(*out, Header{Name: name, Value: val})
 		} else {
@@ -266,51 +261,53 @@ func parseHeaders(buf []byte, start int, out *[]Header, scratch []Header) (int, 
 	}
 }
 
-// isChunked reports whether the message body uses chunked transfer-encoding.
-// Per RFC 7230 §3.3.1 "chunked" must be the final coding; we match it as the
-// last token of the last Transfer-Encoding header (case-insensitive), which also
-// covers the common single-value "Transfer-Encoding: chunked".
-func isChunked(hs []Header) bool {
-	var te []byte
+// lastHeaderValue returns the value of the LAST header matching name
+// (case-insensitive), or nil if absent. Last-wins is the correct semantics for
+// Transfer-Encoding / Content-Encoding when a header is repeated. (headerValue,
+// by contrast, returns the FIRST match — that's what request Host/Header lookups
+// want; the two are intentionally different.)
+func lastHeaderValue(hs []Header, name string) []byte {
+	var v []byte
 	for i := range hs {
-		if asciiEqualFold(hs[i].Name, "Transfer-Encoding") {
-			te = hs[i].Value // last one wins
+		if asciiEqualFold(hs[i].Name, name) {
+			v = hs[i].Value
 		}
 	}
+	return v
+}
+
+// trimOWS trims leading/trailing HTTP optional whitespace (space or tab).
+func trimOWS(b []byte) []byte {
+	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t') {
+		b = b[1:]
+	}
+	for len(b) > 0 && (b[len(b)-1] == ' ' || b[len(b)-1] == '\t') {
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
+// isChunked reports whether the message body uses chunked transfer-encoding.
+// Per RFC 7230 §3.3.1 "chunked" must be the FINAL coding; we match it as the
+// last comma-token of the last Transfer-Encoding header (case-insensitive), which
+// also covers the common single-value "Transfer-Encoding: chunked".
+func isChunked(hs []Header) bool {
+	te := lastHeaderValue(hs, "Transfer-Encoding")
 	if te == nil {
 		return false
 	}
-	// take the token after the last comma, trim OWS
 	if c := bytes.LastIndexByte(te, ','); c >= 0 {
-		te = te[c+1:]
+		te = te[c+1:] // final coding only
 	}
-	for len(te) > 0 && (te[0] == ' ' || te[0] == '\t') {
-		te = te[1:]
-	}
-	for len(te) > 0 && (te[len(te)-1] == ' ' || te[len(te)-1] == '\t') {
-		te = te[:len(te)-1]
-	}
-	return asciiEqualFold(te, "chunked")
+	return asciiEqualFold(trimOWS(te), "chunked")
 }
 
 // isGzip reports whether the body is gzip-compressed via Content-Encoding.
-// Last Content-Encoding header wins; value matched case-insensitively after OWS
-// trim. Only the single-coding "gzip" is treated as gzip (coding lists like
-// "gzip, br" are left alone — decoding a stacked encoding is out of scope).
+// Last Content-Encoding header wins; the WHOLE value (after OWS trim) must be
+// "gzip". Coding lists like "gzip, br" are left alone — decoding a stacked
+// encoding is out of scope.
 func isGzip(hs []Header) bool {
-	var ce []byte
-	for i := range hs {
-		if asciiEqualFold(hs[i].Name, "Content-Encoding") {
-			ce = hs[i].Value // last one wins
-		}
-	}
-	for len(ce) > 0 && (ce[0] == ' ' || ce[0] == '\t') {
-		ce = ce[1:]
-	}
-	for len(ce) > 0 && (ce[len(ce)-1] == ' ' || ce[len(ce)-1] == '\t') {
-		ce = ce[:len(ce)-1]
-	}
-	return asciiEqualFold(ce, "gzip")
+	return asciiEqualFold(trimOWS(lastHeaderValue(hs, "Content-Encoding")), "gzip")
 }
 
 // gunzipBody decompresses a gzip body. UNLIKE the rest of the parser this
@@ -352,7 +349,7 @@ func decodeChunkedInPlace(body []byte) ([]byte, error) {
 				break
 			}
 			// guard against overflow / absurd sizes
-			if size > (1<<28) { // 256MB ceiling; larger is malformed for our use
+			if size > (1 << 28) { // 256MB ceiling; larger is malformed for our use
 				return nil, ErrMalformed
 			}
 			size = size<<4 | int(hv)

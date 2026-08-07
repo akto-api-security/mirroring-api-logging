@@ -32,8 +32,7 @@ func gzipResponse(payload []byte) []byte {
 // 1. round-trip: Gunzip=true decompresses to the original payload.
 func TestGunzipRoundTrip(t *testing.T) {
 	payload := []byte(`{"name":"John Doe","age":30,"note":"long enough for gzip to matter"}`)
-	p := NewFastParser()
-	p.Gunzip = true
+	p := newParser(withGunzip())
 	r, err := p.ParseResponse(gzipResponse(payload))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -46,8 +45,7 @@ func TestGunzipRoundTrip(t *testing.T) {
 // 2. soft error: corrupt gzip -> ErrGunzip, but resp is valid with empty body.
 func TestGunzipCorruptIsSoftError(t *testing.T) {
 	raw := []byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 11\r\n\r\nnotgzipdata")
-	p := NewFastParser()
-	p.Gunzip = true
+	p := newParser(withGunzip())
 	r, err := p.ParseResponse(raw)
 	if !errors.Is(err, ErrGunzip) {
 		t.Fatalf("err = %v, want ErrGunzip", err)
@@ -67,7 +65,7 @@ func TestGunzipCorruptIsSoftError(t *testing.T) {
 func TestGunzipDisabledLeavesBodyCompressed(t *testing.T) {
 	payload := []byte(`{"k":"v"}`)
 	raw := gzipResponse(payload)
-	p := NewFastParser() // Gunzip defaults false
+	p := newParser() // Gunzip defaults false
 	r, err := p.ParseResponse(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -83,31 +81,24 @@ func TestGunzipDisabledLeavesBodyCompressed(t *testing.T) {
 
 // 4. isGzip table: only single-coding gzip (case-insensitive, OWS-trimmed, last-wins).
 func TestIsGzip(t *testing.T) {
-	hdr := func(pairs ...string) []Header {
-		hs := make([]Header, 0, len(pairs)/2)
-		for i := 0; i+1 < len(pairs); i += 2 {
-			hs = append(hs, Header{Name: []byte(pairs[i]), Value: []byte(pairs[i+1])})
-		}
-		return hs
-	}
 	cases := []struct {
 		name string
 		hs   []Header
 		want bool
 	}{
-		{"plain", hdr("Content-Encoding", "gzip"), true},
-		{"uppercase", hdr("Content-Encoding", "GZIP"), true},
-		{"mixedcase-name", hdr("content-ENCODING", "gzip"), true},
-		{"ows", hdr("Content-Encoding", "  gzip \t"), true},
-		{"stacked-not-plain-gzip", hdr("Content-Encoding", "gzip, br"), false}, // coding list: out of scope
-		{"identity", hdr("Content-Encoding", "identity"), false},
-		{"br", hdr("Content-Encoding", "br"), false},
-		{"deflate", hdr("Content-Encoding", "deflate"), false},
-		{"empty", hdr("Content-Encoding", ""), false},
-		{"absent", hdr("Content-Type", "application/json"), false},
+		{"plain", mkHeaders("Content-Encoding", "gzip"), true},
+		{"uppercase", mkHeaders("Content-Encoding", "GZIP"), true},
+		{"mixedcase-name", mkHeaders("content-ENCODING", "gzip"), true},
+		{"ows", mkHeaders("Content-Encoding", "  gzip \t"), true},
+		{"stacked-not-plain-gzip", mkHeaders("Content-Encoding", "gzip, br"), false}, // coding list: out of scope
+		{"identity", mkHeaders("Content-Encoding", "identity"), false},
+		{"br", mkHeaders("Content-Encoding", "br"), false},
+		{"deflate", mkHeaders("Content-Encoding", "deflate"), false},
+		{"empty", mkHeaders("Content-Encoding", ""), false},
+		{"absent", mkHeaders("Content-Type", "application/json"), false},
 		{"no-headers", nil, false},
-		{"multi-last-wins-gzip", hdr("Content-Encoding", "br", "Content-Encoding", "gzip"), true},
-		{"multi-last-wins-not-gzip", hdr("Content-Encoding", "gzip", "Content-Encoding", "br"), false},
+		{"multi-last-wins-gzip", mkHeaders("Content-Encoding", "br", "Content-Encoding", "gzip"), true},
+		{"multi-last-wins-not-gzip", mkHeaders("Content-Encoding", "gzip", "Content-Encoding", "br"), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -123,25 +114,16 @@ func TestChunkedThenGzip(t *testing.T) {
 	payload := []byte(`{"method":"POST","echo":"the full round trip through chunked+gzip"}`)
 	comp := gzipBytes(payload)
 
+	// Reuse the chunkedBody generator to frame the gzip bytes as 2 chunks
+	// (exercises multi-chunk de-framing) instead of hand-rolling chunk lines.
 	var sb strings.Builder
 	sb.WriteString("HTTP/1.1 200 OK\r\n")
 	sb.WriteString("Content-Encoding: gzip\r\n")
 	sb.WriteString("Transfer-Encoding: chunked\r\n")
 	sb.WriteString("\r\n")
-	// frame the gzip bytes as two chunks to exercise multi-chunk de-framing
-	half := len(comp) / 2
-	fmtChunk := func(b []byte) {
-		sb.WriteString(itoaHex(len(b)))
-		sb.WriteString("\r\n")
-		sb.Write(b)
-		sb.WriteString("\r\n")
-	}
-	fmtChunk(comp[:half])
-	fmtChunk(comp[half:])
-	sb.WriteString("0\r\n\r\n")
+	sb.WriteString(chunkedBody(comp, 2))
 
-	p := NewFastParser()
-	p.Gunzip = true
+	p := newParser(withChunk(), withGunzip()) // de-chunk runs before gunzip (gzip is inside chunked)
 	r, err := p.ParseResponse([]byte(sb.String()))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -149,20 +131,4 @@ func TestChunkedThenGzip(t *testing.T) {
 	if !bytes.Equal(r.Body, payload) {
 		t.Fatalf("chunked+gzip body got %q want %q", r.Body, payload)
 	}
-}
-
-// itoaHex renders n as lowercase hex (chunk-size line).
-func itoaHex(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	const digits = "0123456789abcdef"
-	var buf [16]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = digits[n&0xf]
-		n >>= 4
-	}
-	return string(buf[i:])
 }

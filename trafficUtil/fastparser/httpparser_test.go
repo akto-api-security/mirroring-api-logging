@@ -1,4 +1,4 @@
-package fastparser 
+package fastparser
 
 import (
 	"bufio"

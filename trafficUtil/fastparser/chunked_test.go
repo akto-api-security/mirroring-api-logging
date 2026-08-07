@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -54,7 +55,7 @@ func buildChunkedResponse(payload []byte, nChunks int) (raw []byte, wantBody []b
 // ---- Unit cases ----
 
 func TestParseResponseChunked(t *testing.T) {
-	p := NewFastParser()
+	p := newParser(withChunk())
 	cases := []struct {
 		name string
 		raw  string
@@ -112,7 +113,7 @@ func TestParseResponseChunked(t *testing.T) {
 }
 
 func TestParseRequestChunked(t *testing.T) {
-	p := NewFastParser()
+	p := newParser(withChunk())
 	raw := "POST /u HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n0\r\n\r\n"
 	r, err := p.ParseRequest([]byte(raw))
 	if err != nil {
@@ -124,12 +125,12 @@ func TestParseRequestChunked(t *testing.T) {
 }
 
 func TestParseChunkedMalformed(t *testing.T) {
-	p := NewFastParser()
+	p := newParser(withChunk())
 	cases := []string{
-		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",               // no chunks at all
-		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhi\r\n",     // size 5 but only 2 bytes
-		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nxyz\r\nhi\r\n",   // non-hex size
-		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello",      // missing trailing CRLF + terminator
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",                      // no chunks at all
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhi\r\n",           // size 5 but only 2 bytes
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nxyz\r\nhi\r\n",         // non-hex size
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello",            // missing trailing CRLF + terminator
 		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhelloXX0\r\n\r\n", // bad post-data CRLF
 	}
 	for i, raw := range cases {
@@ -140,55 +141,52 @@ func TestParseChunkedMalformed(t *testing.T) {
 }
 
 func TestNonChunkedUnaffected(t *testing.T) {
-	// A Transfer-Encoding that is NOT chunked (e.g. only gzip) must be treated as
-	// identity here — body returned verbatim, no decode attempt.
-	p := NewFastParser()
-	raw := "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\nhello"
+	// With chunk-decoding ENABLED, a body that LOOKS chunk-framed but whose
+	// Transfer-Encoding is NOT chunked (here: gzip) must be returned verbatim —
+	// the isChunked gate, not the payload shape, decides whether we de-chunk.
+	// Using a chunk-shaped body is the strong assertion: if the gate were wrong
+	// we'd decode it to "hello" and this would fail.
+	p := newParser(withChunk())
+	framed := "5\r\nhello\r\n0\r\n\r\n" // valid chunk framing as a raw body
+	raw := "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n" + framed
 	r, err := p.ParseResponse([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(r.Body) != "hello" {
-		t.Fatalf("body got %q want %q", r.Body, "hello")
+	if string(r.Body) != framed {
+		t.Fatalf("chunk-shaped body under non-chunked TE must be verbatim, got %q want %q", r.Body, framed)
 	}
 }
 
 // ---- isChunked unit table: boundary cases the ParseResponse tests don't isolate ----
 
 func TestIsChunked(t *testing.T) {
-	hdr := func(pairs ...string) []Header {
-		hs := make([]Header, 0, len(pairs)/2)
-		for i := 0; i+1 < len(pairs); i += 2 {
-			hs = append(hs, Header{Name: []byte(pairs[i]), Value: []byte(pairs[i+1])})
-		}
-		return hs
-	}
 	cases := []struct {
 		name string
 		hs   []Header
 		want bool
 	}{
-		{"plain", hdr("Transfer-Encoding", "chunked"), true},
-		{"uppercase-value", hdr("Transfer-Encoding", "CHUNKED"), true},
-		{"mixedcase-name", hdr("transfer-ENCODING", "chunked"), true},
-		{"chunked-last-in-list", hdr("Transfer-Encoding", "gzip, chunked"), true},
-		{"ows-around-value", hdr("Transfer-Encoding", "  chunked \t"), true},
-		{"ows-in-list", hdr("Transfer-Encoding", "gzip ,\tchunked "), true},
+		{"plain", mkHeaders("Transfer-Encoding", "chunked"), true},
+		{"uppercase-value", mkHeaders("Transfer-Encoding", "CHUNKED"), true},
+		{"mixedcase-name", mkHeaders("transfer-ENCODING", "chunked"), true},
+		{"chunked-last-in-list", mkHeaders("Transfer-Encoding", "gzip, chunked"), true},
+		{"ows-around-value", mkHeaders("Transfer-Encoding", "  chunked \t"), true},
+		{"ows-in-list", mkHeaders("Transfer-Encoding", "gzip ,\tchunked "), true},
 
 		// chunked present but NOT the final coding -> body is not chunk-framed,
 		// must be false or we'd corrupt a non-chunked body.
-		{"chunked-not-last", hdr("Transfer-Encoding", "chunked, gzip"), false},
+		{"chunked-not-last", mkHeaders("Transfer-Encoding", "chunked, gzip"), false},
 
-		{"only-gzip", hdr("Transfer-Encoding", "gzip"), false},
-		{"empty-value", hdr("Transfer-Encoding", ""), false},
-		{"absent", hdr("Content-Length", "5"), false},
+		{"only-gzip", mkHeaders("Transfer-Encoding", "gzip"), false},
+		{"empty-value", mkHeaders("Transfer-Encoding", ""), false},
+		{"absent", mkHeaders("Content-Length", "5"), false},
 		{"no-headers", nil, false},
-		{"substring-prefix", hdr("Transfer-Encoding", "xchunked"), false},
-		{"substring-suffix", hdr("Transfer-Encoding", "chunkedx"), false},
+		{"substring-prefix", mkHeaders("Transfer-Encoding", "xchunked"), false},
+		{"substring-suffix", mkHeaders("Transfer-Encoding", "chunkedx"), false},
 
 		// multiple Transfer-Encoding headers: last one wins.
-		{"multi-te-last-chunked", hdr("Transfer-Encoding", "gzip", "Transfer-Encoding", "chunked"), true},
-		{"multi-te-last-not-chunked", hdr("Transfer-Encoding", "chunked", "Transfer-Encoding", "gzip"), false},
+		{"multi-te-last-chunked", mkHeaders("Transfer-Encoding", "gzip", "Transfer-Encoding", "chunked"), true},
+		{"multi-te-last-not-chunked", mkHeaders("Transfer-Encoding", "chunked", "Transfer-Encoding", "gzip"), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -202,7 +200,7 @@ func TestIsChunked(t *testing.T) {
 // A response whose Transfer-Encoding lists chunked NOT last must have its body
 // returned verbatim (no decode attempt) — the end-to-end guard for chunked-not-last.
 func TestChunkedNotLastNotDecoded(t *testing.T) {
-	p := NewFastParser()
+	p := newParser(withChunk())
 	raw := "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
 	r, err := p.ParseResponse([]byte(raw))
 	if err != nil {
@@ -218,7 +216,7 @@ func TestChunkedNotLastNotDecoded(t *testing.T) {
 
 func TestChunkedMatchesNetHTTP(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
-	p := NewFastParser()
+	p := newParser(withChunk())
 	for i := 0; i < 500; i++ {
 		size := rng.Intn(5000)
 		payload := make([]byte, size)
@@ -251,7 +249,7 @@ func TestChunkedMatchesNetHTTP(t *testing.T) {
 // ---- In-place contract: Body aliases the input buffer, zero allocation ----
 
 func TestChunkedDecodeAliasesAndZeroAlloc(t *testing.T) {
-	p := NewFastParser()
+	p := newParser(withChunk())
 	raw, want := buildChunkedResponse([]byte("helloworld"), 2)
 
 	// aliasing: decoded Body must point INTO raw (compacted to the body region),
@@ -296,7 +294,7 @@ func FuzzDecodeChunked(f *testing.F) {
 	} {
 		f.Add([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + seed))
 	}
-	p := NewFastParser()
+	p := newParser(withChunk())
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -319,7 +317,7 @@ func BenchmarkParseResponseChunked(b *testing.B) {
 			payload[i] = byte('a' + i%26)
 		}
 		fixture, _ := buildChunkedResponse(payload, 8) // 8 chunks
-		p := NewFastParser()
+		p := newParser(withChunk())
 		scratch := make([]byte, len(fixture))
 		b.Run(s, func(b *testing.B) {
 			b.ReportAllocs()
@@ -338,21 +336,24 @@ func BenchmarkParseResponseChunked(b *testing.B) {
 	}
 }
 
-// sizeBytes maps the "256b".."64kb" labels used by the size sweep to byte counts.
+// sizeBytes parses a size-sweep label ("256b", "1kb", "64kb", ...) into a byte
+// count. Deriving it from the label — rather than a hardcoded switch — keeps it
+// in sync with the `sizes` slice automatically, and panics on an unknown label
+// instead of silently returning a wrong default (a bad benchmark size should
+// fail loudly, not lie).
 func sizeBytes(s string) int {
-	switch s {
-	case "256b":
-		return 256
-	case "1kb":
-		return 1024
-	case "4kb":
-		return 4096
-	case "10kb":
-		return 10240
-	case "20kb":
-		return 20480
-	case "64kb":
-		return 65536
+	num, mul := s, 1
+	switch {
+	case strings.HasSuffix(s, "kb"):
+		num, mul = s[:len(s)-2], 1024
+	case strings.HasSuffix(s, "b"):
+		num, mul = s[:len(s)-1], 1
+	default:
+		panic("sizeBytes: unrecognized size label " + s)
 	}
-	return 1024
+	n, err := strconv.Atoi(num)
+	if err != nil {
+		panic("sizeBytes: bad numeric prefix in " + s + ": " + err.Error())
+	}
+	return n * mul
 }
