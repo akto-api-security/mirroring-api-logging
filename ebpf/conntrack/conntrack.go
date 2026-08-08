@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
-	"github.com/iovisor/gobpf/bcc"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
+	"github.com/iovisor/gobpf/bcc"
 )
 
 var enableConnPrefill = false
@@ -244,7 +244,7 @@ func EnumerateExistingConnections(pid uint32) ([]ConnectionInfo, error) {
 
 // PopulateConnInfoWithRotation adds a connection to the BPF maps with rotation logic
 func PopulateConnInfoWithRotation(
-	connInfoTable, connCounterTable, connInfoMapKeysTable *bcc.Table,
+	connInfoTables []*bcc.Table, connCounterTable, connInfoMapKeysTable *bcc.Table,
 	tgidFd uint64,
 	connInfo *structs.ConnInfoT,
 	maxMapSize int,
@@ -271,8 +271,10 @@ func PopulateConnInfoWithRotation(
 
 	oldKeyBytes, err := connInfoMapKeysTable.Get(indexKey)
 	if err == nil && len(oldKeyBytes) == 8 {
-		// Delete old entry
-		connInfoTable.Delete(oldKeyBytes)
+		// Delete old entry from the correct shard
+		oldTgidFd := binary.LittleEndian.Uint64(oldKeyBytes)
+		shard := oldTgidFd & 3  // Power-of-2 sharding: tgidFd & 3
+		connInfoTables[shard].Delete(oldKeyBytes)
 	}
 
 	// Write new tgid_fd to keys array
@@ -282,12 +284,13 @@ func PopulateConnInfoWithRotation(
 		return fmt.Errorf("failed to set conn_info_map_keys: %w", err)
 	}
 
-	// Serialize and write conn_info to map
+	// Serialize and write conn_info to map in the correct shard
 	connInfoBytes, err := SerializeConnInfo(connInfo)
 	if err != nil {
 		return fmt.Errorf("failed to serialize conn_info: %w", err)
 	}
-	if err := connInfoTable.Set(tgidFdBytes, connInfoBytes); err != nil {
+	shard := tgidFd & 3  // Power-of-2 sharding: tgidFd & 3
+	if err := connInfoTables[shard].Set(tgidFdBytes, connInfoBytes); err != nil {
 		return fmt.Errorf("failed to set conn_info_map: %w", err)
 	}
 
@@ -303,7 +306,7 @@ func PopulateConnInfoWithRotation(
 // PopulateExistingConnections enumerates and populates all existing connections for given PIDs
 func PopulateExistingConnections(
 	pids []uint32,
-	connInfoTable, connCounterTable, connInfoMapKeysTable *bcc.Table,
+	connInfoTables []*bcc.Table, connCounterTable, connInfoMapKeysTable *bcc.Table,
 	maxMapSize int,
 ) {
 	var totalConnFound, totalConnPopulated int
@@ -343,7 +346,7 @@ func PopulateExistingConnections(
 			}
 
 			err := PopulateConnInfoWithRotation(
-				connInfoTable, connCounterTable, connInfoMapKeysTable,
+				connInfoTables, connCounterTable, connInfoMapKeysTable,
 				tgidFd, connInfo, maxMapSize,
 			)
 			if err != nil {

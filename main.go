@@ -358,7 +358,6 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 
 				bytesIn = 0
 				time.Sleep(10 * time.Second)
-				kafkaUtil.Close()
 				break
 			}
 

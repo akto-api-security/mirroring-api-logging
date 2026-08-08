@@ -34,9 +34,15 @@ import (
 var source string = ""
 
 func replaceBpfChunkSizeMacros() {
-	chunkSizeLimit := 4
+	chunkSizeLimit := 1
 	trafficUtils.InitVar("BPF_CHUNK_SIZE_LIMIT", &chunkSizeLimit)
 	source = strings.Replace(source, "CHUNK_SIZE_LIMIT", strconv.Itoa(chunkSizeLimit), -1)
+}
+
+func replaceBpfLoopSizeMacros() {
+	loopSizeLimit := 4
+	trafficUtils.InitVar("BPF_LOOP_SIZE_LIMIT", &loopSizeLimit)
+	source = strings.Replace(source, "LOOP_SIZE_LIMIT", strconv.Itoa(loopSizeLimit), -1)
 }
 
 func replaceBpfLogsMacros() {
@@ -105,6 +111,7 @@ func run() {
 
 	replaceBpfLogsMacros()
 	replaceBpfChunkSizeMacros()
+	replaceBpfLoopSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceArchType()
 
@@ -116,6 +123,8 @@ func run() {
 		panic("bpf module is nil")
 	}
 	defer bpfModule.Close()
+
+	bpfwrapper.InitKernelPortFilter(bpfModule)
 
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
@@ -155,7 +164,9 @@ func run() {
 	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
+	// Use full NumCPU for data event workers to maximize parallelism
+	dataWorkers := runtime.NumCPU()
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback, dataWorkers))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
@@ -251,7 +262,12 @@ func run() {
 }
 
 func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {
-	connInfoTable := bcc.NewTable(bpfModule.TableId("conn_info_map"), bpfModule)
+	connInfoTables := [4]*bcc.Table{
+		bcc.NewTable(bpfModule.TableId("conn_info_map_0"), bpfModule),
+		bcc.NewTable(bpfModule.TableId("conn_info_map_1"), bpfModule),
+		bcc.NewTable(bpfModule.TableId("conn_info_map_2"), bpfModule),
+		bcc.NewTable(bpfModule.TableId("conn_info_map_3"), bpfModule),
+	}
 	connCounterTable := bcc.NewTable(bpfModule.TableId("conn_counter"), bpfModule)
 	connInfoMapKeysTable := bcc.NewTable(bpfModule.TableId("conn_info_map_keys"), bpfModule)
 
@@ -261,7 +277,7 @@ func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {
 	slog.Info("populating pre-existing connections", "pids", tracedPids)
 	conntrack.PopulateExistingConnections(
 		tracedPids,
-		connInfoTable,
+		connInfoTables[:],
 		connCounterTable,
 		connInfoMapKeysTable,
 		maxConnectionSizeMapSize,

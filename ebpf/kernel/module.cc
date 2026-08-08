@@ -8,7 +8,7 @@
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
-#define LOOP_LIMIT 42
+#define LOOP_LIMIT LOOP_SIZE_LIMIT
 
 #define ARCH_TYPE 1
 
@@ -108,10 +108,17 @@ struct socket_data_event_t {
     u32 readEventsCount;
     u32 writeEventsCount;
     bool ssl;
+    u8 _padding[3];
+    u64 event_timestamp_ns;
     char msg[MAX_MSG_SIZE];
 };
 
-BPF_HASH(conn_info_map, u64, struct conn_info_t, TRAFFIC_MAX_CONNECTION_MAP_SIZE); // 128 * 1024
+// Sharded conn_info_map: 4 independent maps to reduce spinlock contention
+#define CONN_INFO_SHARD_SIZE (TRAFFIC_MAX_CONNECTION_MAP_SIZE / 4)
+BPF_HASH(conn_info_map_0, u64, struct conn_info_t, CONN_INFO_SHARD_SIZE);
+BPF_HASH(conn_info_map_1, u64, struct conn_info_t, CONN_INFO_SHARD_SIZE);
+BPF_HASH(conn_info_map_2, u64, struct conn_info_t, CONN_INFO_SHARD_SIZE);
+BPF_HASH(conn_info_map_3, u64, struct conn_info_t, CONN_INFO_SHARD_SIZE);
 /*
 Stores conn_info_map's keys on a rotating basic, using the conn_counter.
 i.e. clear the one which you're on and store the new one.
@@ -122,6 +129,37 @@ BPF_ARRAY(conn_counter, int, 1);
 BPF_PERF_OUTPUT(socket_data_events);
 BPF_PERF_OUTPUT(socket_open_events);
 BPF_PERF_OUTPUT(socket_close_events);
+
+// Map for kernel-side port filtering (e.g. Redis, Kafka, Zookeeper, Mongo)
+BPF_HASH(ignore_ports_map, u16, u8, 16);
+
+// Shard selection helpers for conn_info_map (power-of-2 sharding via bitwise AND)
+static __inline struct conn_info_t* conn_info_lookup(u64 tgid_fd) {
+    switch (tgid_fd & 3) {
+        case 0: return conn_info_map_0.lookup(&tgid_fd);
+        case 1: return conn_info_map_1.lookup(&tgid_fd);
+        case 2: return conn_info_map_2.lookup(&tgid_fd);
+        default: return conn_info_map_3.lookup(&tgid_fd);
+    }
+}
+
+static __inline int conn_info_update(u64 tgid_fd, struct conn_info_t* val) {
+    switch (tgid_fd & 3) {
+        case 0: return conn_info_map_0.update(&tgid_fd, val);
+        case 1: return conn_info_map_1.update(&tgid_fd, val);
+        case 2: return conn_info_map_2.update(&tgid_fd, val);
+        default: return conn_info_map_3.update(&tgid_fd, val);
+    }
+}
+
+static __inline void conn_info_delete(u64 tgid_fd) {
+    switch (tgid_fd & 3) {
+        case 0: conn_info_map_0.delete(&tgid_fd); break;
+        case 1: conn_info_map_1.delete(&tgid_fd); break;
+        case 2: conn_info_map_2.delete(&tgid_fd); break;
+        default: conn_info_map_3.delete(&tgid_fd); break;
+    }
+}
 
 BPF_PERCPU_ARRAY(socket_data_event_buffer_heap, struct socket_data_event_t, 1);
 
@@ -259,9 +297,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
       u64 *curr = conn_info_map_keys.lookup(&val);
       if (curr != NULL) {
         u64 curVal = *curr;
-        struct conn_info_t *conn_info = conn_info_map.lookup(&curVal);
+        struct conn_info_t *conn_info = conn_info_lookup(curVal);
         if (conn_info != NULL) {
-          conn_info_map.delete(&curVal);
+          conn_info_delete(curVal);
           if (PRINT_BPF_LOGS){
             bpf_trace_printk("conn_info_counter deleting: %d", curVal);
           }
@@ -270,7 +308,7 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     }
 
     conn_info_map_keys.update(&val, &tgid_fd);
-    conn_info_map.update(&tgid_fd, &conn_info);
+    conn_info_update(tgid_fd, &conn_info);
 
     struct socket_open_event_t socket_open_event = {};
     socket_open_event.id = conn_info.id;
@@ -304,7 +342,7 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
     u32 tgid = id >> 32;
     u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
+    struct conn_info_t* conn_info = conn_info_lookup(tgid_fd);
     if (conn_info == NULL) {
         return;
     }
@@ -318,46 +356,42 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
-    conn_info_map.delete(&tgid_fd);    
+    conn_info_delete(tgid_fd);    
 }
 
-static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
+// Inner function that processes data with conn_info pointer and local counter tracking
+// This avoids repeated map lookups in the iovec path
+static __inline void process_syscall_data_inner(
+    struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send,
+    struct conn_info_t* conn_info, u32* read_count, u32* write_count) {
+
     int bytes_exchanged = PT_REGS_RC(ret);
 
     if(args->iovlen > 0 && args->buf_size > 0){
         bytes_exchanged = args->buf_size;
     }
 
-    if (bytes_exchanged <= 0) {
+    // Skip perf_submit for very small events (< 128 bytes, likely protocol overhead/ACKs)
+    // This reduces submission rate for low-value traffic
+    if (bytes_exchanged < 128) {
+        return;
+    }
+
+    // Additional filtering: skip read syscalls returning 0 bytes (probes, keepalives)
+    // These generate syscalls but no useful data
+    if (bytes_exchanged == 0 && !is_send) {
         return;
     }
 
     if (PRINT_BPF_LOGS){
       bpf_trace_printk("SSL data 1 %d", id);
     }
-    if (args->fd < 0) {
-        return;
-    }
 
-    u32 tgid = id >> 32;
-    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
-    }
-    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
-    if (conn_info == NULL) {
+    // Skip perf_submit for filtered ports (kernel-side filtering)
+    u16 check_port = conn_info->port;
+    u8 *port_filtered = ignore_ports_map.lookup(&check_port);
+    if (port_filtered != NULL) {
         return;
-    }
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
-    }
-    
-    if (conn_info->ssl != ssl) {
-        return;
-    }
-
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
     }
 
     u32 kZero = 0;
@@ -370,9 +404,9 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->fd = conn_info->fd;
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
     socket_data_event->port = conn_info->port;
-    socket_data_event->ip = conn_info->ip; 
+    socket_data_event->ip = conn_info->ip;
     socket_data_event->ssl = conn_info->ssl;
-    
+
     int bytes_sent = 0;
     size_t size_to_save = 0;
     int i =0;
@@ -402,48 +436,103 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     }
 
     if (is_send){
-      conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
+      *write_count = (*write_count) + 1u;
     } else {
-      conn_info->readEventsCount = (conn_info->readEventsCount) + 1u;
+      *read_count = (*read_count) + 1u;
     }
 
-    socket_data_event->writeEventsCount = conn_info->writeEventsCount;
-    socket_data_event->readEventsCount = conn_info->readEventsCount;
-
+    socket_data_event->writeEventsCount = *write_count;
+    socket_data_event->readEventsCount = *read_count;
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
     bpf_trace_printk("current_size: %d i:%d, bytes_exchanged: %d", current_size, i, bytes_exchanged);
     unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
-    bpf_trace_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000),tgid_fd, socket_data_event->msg);
+    bpf_trace_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000), id, socket_data_event->msg);
   }
-    
+
     socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
+    // Use kernel timestamp to avoid userspace syscalls
+    socket_data_event->event_timestamp_ns = bpf_ktime_get_ns();
     socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
 
     bytes_sent += current_size;
   }
+}
 
+// Wrapper for non-iovec syscalls (regular read/write/send/recv paths)
+static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
+    if (args->fd < 0) {
+        return;
+    }
+
+    u32 tgid = id >> 32;
+    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
+    }
+    struct conn_info_t* conn_info = conn_info_lookup(tgid_fd);
+    if (conn_info == NULL) {
+        return;
+    }
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
+    }
+
+    if (conn_info->ssl != ssl) {
+        return;
+    }
+
+    if (PRINT_BPF_LOGS){
+      bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
+    }
+
+    u32 rc = conn_info->readEventsCount;
+    u32 wc = conn_info->writeEventsCount;
+    process_syscall_data_inner(ret, args, id, is_send, conn_info, &rc, &wc);
+    conn_info->readEventsCount = rc;
+    conn_info->writeEventsCount = wc;
 }
 
 static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_args_t* args, u64 id, bool is_send){
-    int bytes_sent=0;
+    if (args->fd < 0) {
+        return;
+    }
+
+    u32 tgid = id >> 32;
+    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+
+    // Single lookup for all iov iterations (avoids N lookups)
+    struct conn_info_t* conn_info = conn_info_lookup(tgid_fd);
+    if (conn_info == NULL || conn_info->ssl) {
+        return;  // ssl=false for syscall-level hooks
+    }
+
+    // Cache counter values for all iterations
+    u32 rc = conn_info->readEventsCount;
+    u32 wc = conn_info->writeEventsCount;
+
+    int bytes_sent = 0;
     int total_size = PT_REGS_RC(ret);
     const struct iovec* iov = args->iov;
+    #pragma unroll
     for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size ; ++i) {
         struct iovec iov_cpy;
         bpf_probe_read(&iov_cpy, sizeof(iov_cpy), &iov[i]);
 
         const int bytes_remaining = total_size - bytes_sent;
         const size_t iov_size = iov_cpy.iov_len < bytes_remaining ? iov_cpy.iov_len : bytes_remaining ;
-        
+
         args->buf = iov_cpy.iov_base;
         args->buf_size = iov_size;
-        process_syscall_data(ret, args, id, is_send, false);
+        process_syscall_data_inner(ret, args, id, is_send, conn_info, &rc, &wc);
         bytes_sent += iov_size;
-        
-      }
+    }
+
+    // Update conn_info with final counter values (once instead of N times)
+    conn_info->readEventsCount = rc;
+    conn_info->writeEventsCount = wc;
 }
 
 // Hooks
@@ -1089,7 +1178,7 @@ static void set_conn_as_ssl(u32 tgid, u32 fd){
     if(PRINT_BPF_LOGS){
       bpf_trace_printk("SSL tgid: %d", tgid_fd);
     }
-    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
+    struct conn_info_t* conn_info = conn_info_lookup(tgid_fd);
     if (conn_info == NULL) {
         return;
     }
@@ -1281,38 +1370,6 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
   }
 
   active_ssl_read_args_map.delete(&id);
-  return 0;
-}
-
-// Trace kernel function:
-// int security_socket_sendmsg(struct socket *sock, struct msghdr *msg, int size)
-// which is called by write/writev
-int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
-  u64 id = bpf_get_current_pid_tgid();
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_security_socket_sendmsg: pid: %d", id);
-  }
-  struct data_args_t* write_args = active_write_args_map.lookup(&id);
-  if (write_args != NULL) {
-    write_args->sock_event = true;
-  }
-  return 0;
-}
-
-// Trace kernel function:
-// int security_socket_recvmsg(struct socket *sock, struct msghdr *msg, int size)
-int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
-  u64 id = bpf_get_current_pid_tgid();
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_security_socket_recvmsg: pid: %d", id);
-  }
-  
-  struct data_args_t* read_args = active_read_args_map.lookup(&id);
-  if (read_args != NULL) {
-    read_args->sock_event = true;
-  }
   return 0;
 }
 

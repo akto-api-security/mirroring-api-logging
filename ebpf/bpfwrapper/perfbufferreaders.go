@@ -25,13 +25,21 @@ type ProbeChannel struct {
 	lostEventsChannel chan uint64
 	// The bpf perf map that links our user mode channel to the BPF module.
 	perfMap *bcc.PerfMap
+	// Number of parallel goroutines processing events from eventChannel
+	numWorkers int
 }
 
 // NewProbeChannel creates a new probe channel with the given handle for the given bpf channel name.
-func NewProbeChannel(name string, handler ProbeEventLoop) *ProbeChannel {
+// numWorkers is optional (variadic) to maintain backward compatibility; default is 1.
+func NewProbeChannel(name string, handler ProbeEventLoop, numWorkers ...int) *ProbeChannel {
+	workers := 1
+	if len(numWorkers) > 0 && numWorkers[0] > 1 {
+		workers = numWorkers[0]
+	}
 	return &ProbeChannel{
-		name:      name,
-		eventLoop: handler,
+		name:       name,
+		eventLoop:  handler,
+		numWorkers: workers,
 	}
 }
 
@@ -43,12 +51,15 @@ func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *c
 	table := bcc.NewTable(module.TableId(probeChannel.name), module)
 
 	var err error
-	probeChannel.perfMap, err = bcc.InitPerfMapWithPageCnt(table, probeChannel.eventChannel, probeChannel.lostEventsChannel, 8192)
+	probeChannel.perfMap, err = bcc.InitPerfMapWithPageCnt(table, probeChannel.eventChannel, probeChannel.lostEventsChannel, 65536)
 	if err != nil {
 		return fmt.Errorf("failed to init perf mapping for %q due to: %v", probeChannel.name, err)
 	}
 
-	go probeChannel.eventLoop(probeChannel.eventChannel, connectionFactory)
+	// Launch N parallel goroutines to process events from the channel
+	for i := 0; i < probeChannel.numWorkers; i++ {
+		go probeChannel.eventLoop(probeChannel.eventChannel, connectionFactory)
+	}
 	go func() {
 		log.Printf("⚠️ Lost events on channel, starting to listen for lost events on channel %s", probeChannel.name)
 		for lost := range probeChannel.lostEventsChannel {
