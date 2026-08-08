@@ -110,7 +110,10 @@ func run() {
 
 	bpfwrapper.DeleteExistingAktoKernelProbes()
 
-	bpfModule := bcc.NewModule(source, []string{})
+	// Force-include compat header so BPF_LOAD_ACQ/BPF_STORE_REL are defined before host
+	// headers (from -v /usr/src:/usr/src) are included. Does not modify host.
+	cflags := []string{"-include", "kernel/bpf_compat.h"}
+	bpfModule := bcc.NewModule(source, cflags)
 	if bpfModule == nil {
 		slog.Error("failed to create BPF module", "error", "module is nil")
 		panic("bpf module is nil")
