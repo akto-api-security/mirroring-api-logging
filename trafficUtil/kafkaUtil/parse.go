@@ -218,6 +218,12 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 
 	go ProduceStr(context.Background(), string(out), string(req.Path), string(req.Host()), string(req.Method))
 
+	
+	if utils.ThreatEnabled {
+		srcIP := getSourceIpFast(req, ctx.SourceIP)
+		go Produce(context.Background(), buildProtobufPayloadFast(req, resp, ctx, srcIP))
+	}
+
 	// PairsMismatched: X-Debug-Token from the request should echo in the response body.
 	if token := req.Header("X-Debug-Token"); len(token) > 0 && !bytes.Contains(resp.Body, token) {
 		utils.Pipeline.PairsMismatched.Add(1)

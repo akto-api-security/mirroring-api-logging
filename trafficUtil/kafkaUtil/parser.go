@@ -122,11 +122,11 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			value["tag"] = tag
 		}
 
-		// checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
+		checkDebugUrlAndPrint(url, req.Host, "After pod labels URL,host marshalling to JSON")
 		out, err := json.Marshal(value)
 		if err != nil {
 			slog.Error("Failed to json marshal the payload", "error", err)
-			// checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
+			checkDebugUrlAndPrint(url, req.Host, fmt.Sprintf("json marshal payload failed %v", err))
 			return
 		}
 

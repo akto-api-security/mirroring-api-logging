@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +122,50 @@ func getSourceIpFast(req *fastparser.Request, packetIp string) string {
 		}
 	}
 	return packetIp
+}
+
+// buildProtobufHeadersFast builds the protobuf header map from parsed headers,
+// mirroring convertHeaders' Protobuf map: lowercase keys, single-element Values,
+// last-wins on duplicate names. A wire Host header lands under "host" (lowercased),
+// matching legacy's explicit host entry.
+func buildProtobufHeadersFast(hs []fastparser.Header) map[string]*trafficpb.StringList {
+	m := make(map[string]*trafficpb.StringList, len(hs))
+	for i := range hs {
+		m[strings.ToLower(string(hs[i].Name))] = &trafficpb.StringList{Values: []string{string(hs[i].Value)}}
+	}
+	return m
+}
+
+// fastStatus builds the "<code> <reason>" status string (reason omitted if empty).
+func fastStatus(code int, reason []byte) string {
+	if len(reason) > 0 {
+		return strconv.Itoa(code) + " " + string(reason)
+	}
+	return strconv.Itoa(code)
+}
+
+// buildProtobufPayloadFast is the zero-net/http counterpart of buildProtobufPayload
+// for the fast path. sourceIp is the resolved client IP (getSourceIpFast) — the
+// threat payload uses the resolved IP, unlike the JSON payload's raw packet IP.
+func buildProtobufPayloadFast(req *fastparser.Request, resp *fastparser.Response, ctx TrafficContext, sourceIp string) *trafficpb.HttpResponseParam {
+	return &trafficpb.HttpResponseParam{
+		Method:          string(req.Method),
+		Path:            string(req.Path),
+		Type:            string(req.Version),
+		RequestHeaders:  buildProtobufHeadersFast(req.Headers),
+		ResponseHeaders: buildProtobufHeadersFast(resp.Headers),
+		RequestPayload:  string(req.Body),
+		ResponsePayload: string(resp.Body),
+		Ip:              sourceIp,
+		DestIp:          ctx.DestIP,
+		Time:            int32(time.Now().Unix()),
+		StatusCode:      int32(resp.StatusCode),
+		Status:          fastStatus(resp.StatusCode, resp.Reason),
+		AktoAccountId:   fmt.Sprint(1000000),
+		AktoVxlanId:     fmt.Sprint(ctx.VxlanID),
+		IsPending:       ctx.IsPending,
+		Source:          ctx.TrafficSource,
+	}
 }
 
 // buildProtobufPayload creates the protobuf payload for the threat client.

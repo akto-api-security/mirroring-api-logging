@@ -140,7 +140,7 @@ func InitKafka() {
 			slog.Info("Started Kafka periodic reconnection routine", "interval_minutes", kafkaReconnectIntervalMinutes)
 
 			// Start heartbeat routine
-			// go sendKafkaHeartbeat()
+			go sendKafkaHeartbeat()
 			slog.Info("Started Kafka heartbeat routine", "interval_seconds", heartbeatIntervalSeconds)
 			break
 		}

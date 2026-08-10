@@ -37,6 +37,7 @@ var (
 	rsKafka     = flag.Bool("kafka", false, "enable REAL Kafka producing via kafka.InitKafka() (default off = KafkaDisabled, ProduceStr no-ops). "+
 		"Requires AKTO_KAFKA_BROKER_URL/_MAL env var and a reachable broker: InitKafka retries every 2s with NO timeout and will hang the test forever if the broker is unreachable.")
 	rsResetTopic  = flag.Bool("resettopic", true, "with -kafka=true: delete+recreate the target topic before InitKafka. No-op without -kafka=true.")
+	rsThreat      = flag.Bool("threat", false, "enable the threat protobuf Produce path (utils.ThreatEnabled). Requires -kafka=true (Produce needs a real writer + the akto.api.logs2 topic); fatal otherwise.")
 	rsKafkaDocker = flag.String("kafkadocker", "kafka-internal", "docker container name to run kafka-topics in, for -resettopic")
 	rsPprofPort   = flag.Int("pprofport", 6061, "port for the live net/http/pprof server (6060 is main.go's; keep them distinct). "+
 		"Point pyroscope or `go tool pprof http://localhost:PORT/debug/pprof/...` at this for live/continuous profiling during long fixed-rate runs.")
@@ -322,7 +323,10 @@ func TestRateSweep(t *testing.T) {
 	// teardown. ProduceStr is guarded by KafkaDisabled; the threat Produce path
 	// is not, so disable threat too, else it dials a nil Kafka writer and panics.
 	kafka.KafkaDisabled = !*rsKafka
-	metaUtils.ThreatEnabled = false // threat Produce path is unguarded → would panic on nil writer
+	if *rsThreat && !*rsKafka {
+		t.Fatal("-threat requires -kafka=true (Produce needs a real writer + the akto.api.logs2 topic)")
+	}
+	metaUtils.ThreatEnabled = *rsThreat
 	if !kafka.KafkaDisabled {
 		if *rsResetTopic {
 			rsResetKafkaTopic(t, *rsKafkaDocker, rsKafkaTopic)

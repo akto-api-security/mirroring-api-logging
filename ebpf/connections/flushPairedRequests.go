@@ -86,10 +86,12 @@ func fragmentsToBytes(fragments []fragment) []byte {
 			// read,write count will not be 1, they will simply continue from the last request
 			// This can only be replicated when there is a time gap/inactivityThreshold between requests
 			// on the same underlying connection
-			if !sequenceCheckSkip && f.seq != 1 {
-				slog.Warn("Bad start sequence", "key", f.seq, "value", string(f.data))
-				break
-			}
+
+			// In fastIngestion mode, this is not needed. 
+			// if !sequenceCheckSkip && f.seq != 1 {
+			// 	slog.Warn("Bad start sequence", "key", f.seq, "value", string(f.data))
+			// 	break
+			// }
 			kPrev = f.seq
 		} else {
 			if kPrev+1 != f.seq {
