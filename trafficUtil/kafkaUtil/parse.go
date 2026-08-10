@@ -168,6 +168,7 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 		utils.Pipeline.PairsParseFailure.Add(1)
 		return
 	}
+	checkDebugUrlAndPrint(string(req.Path), string(req.Host()), "URL,host found in ParseAndProduce")
 	resp, err := p.ParseResponse(sentBuffer)
 	if err != nil {
 		if errors.Is(err, fastparser.ErrGunzip) {
