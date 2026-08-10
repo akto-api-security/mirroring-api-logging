@@ -212,8 +212,8 @@ func (factory *Factory) DeleteWorker(connectionID structs.ConnID) {
 	if (time.Now().UnixMilli())-lastMemCheck > int64(memCheckInterval) {
 		lastMemCheck = time.Now().UnixMilli()
 		mem := utils.LogMemoryStats()
-		// utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
-		// utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
+		utils.PrintLog("Requests processed", "count", requestProcessCount, "lastMemCheck", lastMemCheck)
+		utils.PrintLog("connection factory size", "connections", len(factory.connections), "processors", len(factory.processor), "lastMemCheck", lastMemCheck)
 		requestProcessCount = 0
 		if mem >= bufferMemThreshold {
 			trackersToDelete := make(map[structs.ConnID]struct{})
