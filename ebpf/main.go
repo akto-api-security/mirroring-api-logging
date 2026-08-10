@@ -143,7 +143,7 @@ func run() {
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
 
-	// kafkaUtil.StartConfigConsumer()
+	kafkaUtil.StartConfigConsumer()
 
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
