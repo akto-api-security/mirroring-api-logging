@@ -62,10 +62,10 @@ func SocketOpenEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 		if metaUtils.IsIngestLogsEnabled() {
 			metaUtils.LogIngest("Received socket open event",
 				"fd", connId.Fd,
-				"id", connId.Id,
+				"pid", connId.Id >> 32,
 				"timestamp", connId.Conn_start_ns,
-				"raddr", connId.Raddr,
-				"rport", connId.Rport)
+				"raddr", utils.FormatAddr(connId.Raddr,connId.Rport),
+			)
 		}
 		connectionFactory.CreateIfNotExists(connId)
 		connectionFactory.SendEvent(connId, event)
@@ -86,10 +86,10 @@ func SocketCloseEventCallback(inputChan chan []byte, connectionFactory *Factory)
 		if metaUtils.IsIngestLogsEnabled() {
 			metaUtils.LogIngest("Received close on",
 				"fd", connId.Fd,
-				"id", connId.Id,
+				"pid", connId.Id >> 32,
 				"timestamp", connId.Conn_start_ns,
-				"raddr", connId.Raddr,
-				"rport", connId.Rport)
+				"raddr", utils.FormatAddr(connId.Raddr,connId.Rport),
+		)
 		}
 		connectionFactory.SendEvent(connId, event)
 	}
@@ -152,8 +152,7 @@ func SocketDataEventCallback(inputChan chan []byte, connectionFactory *Factory) 
 				"msg_seq", attr.MsgSeq,
 				"rc", attr.ReadEventsCount,
 				"wc", attr.WriteEventsCount,
-				"raddr", connId.Raddr,
-				"rport", connId.Rport,
+				"raddr", utils.FormatAddr(connId.Raddr, connId.Rport),
 				"data", dataStr,
 				"ssl", attr.Ssl,
 				"bytesSent", bytesSent)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	_ "net/http/pprof" // side-effect: registers /debug/pprof/* on http.DefaultServeMux
 	"os"
+	"os/exec"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
@@ -35,9 +36,37 @@ var (
 	rsEncoder   = flag.String("encoder", "both", "fast-path wire encoder: json | flatbuffers | both")
 	rsKafka     = flag.Bool("kafka", false, "enable REAL Kafka producing via kafka.InitKafka() (default off = KafkaDisabled, ProduceStr no-ops). "+
 		"Requires AKTO_KAFKA_BROKER_URL/_MAL env var and a reachable broker: InitKafka retries every 2s with NO timeout and will hang the test forever if the broker is unreachable.")
-	rsPprofPort = flag.Int("pprofport", 6061, "port for the live net/http/pprof server (6060 is main.go's; keep them distinct). "+
+	rsResetTopic  = flag.Bool("resettopic", true, "with -kafka=true: delete+recreate the target topic before InitKafka. No-op without -kafka=true.")
+	rsKafkaDocker = flag.String("kafkadocker", "kafka-internal", "docker container name to run kafka-topics in, for -resettopic")
+	rsPprofPort   = flag.Int("pprofport", 6061, "port for the live net/http/pprof server (6060 is main.go's; keep them distinct). "+
 		"Point pyroscope or `go tool pprof http://localhost:PORT/debug/pprof/...` at this for live/continuous profiling during long fixed-rate runs.")
 )
+
+// rsKafkaTopic mirrors the literal in kafkaUtil/kafka.go's ProduceStr.
+const rsKafkaTopic = "akto.api.logs"
+
+// rsResetKafkaTopic deletes and recreates rsKafkaTopic via `docker exec
+// kafka-topics` (kafka-go's Conn.CreateTopics/DeleteTopics only speak wire
+// protocol V0, which this broker doesn't advertise — confirmed via
+// kafka-broker-api-versions showing CreateTopics(19)/DeleteTopics(20) as the
+// supported range — so the CLI is used instead of the client library here).
+func rsResetKafkaTopic(t *testing.T, container, topic string) {
+	del := exec.Command("docker", "exec", container, "kafka-topics",
+		"--bootstrap-server", "localhost:9092", "--delete", "--topic", topic)
+	if out, err := del.CombinedOutput(); err != nil {
+		t.Logf("resettopic: delete %q (ok if this is the first run / topic doesn't exist yet): %v: %s", topic, err, out)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	create := exec.Command("docker", "exec", container, "kafka-topics",
+		"--bootstrap-server", "localhost:9092", "--create", "--topic", topic,
+		"--partitions", "1", "--replication-factor", "1")
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("resettopic: create %q: %v: %s", topic, err, out)
+	}
+	t.Logf("resettopic: %q deleted+recreated via %s", topic, container)
+}
 
 // rsPprofOnce guards the HTTP pprof server so it's only started once even if
 // TestRateSweep somehow ran more than once in the same process (it normally
@@ -295,6 +324,9 @@ func TestRateSweep(t *testing.T) {
 	kafka.KafkaDisabled = !*rsKafka
 	metaUtils.ThreatEnabled = false // threat Produce path is unguarded → would panic on nil writer
 	if !kafka.KafkaDisabled {
+		if *rsResetTopic {
+			rsResetKafkaTopic(t, *rsKafkaDocker, rsKafkaTopic)
+		}
 		// -kafka=true: dial a REAL kafkaWriter so ProduceStr doesn't panic on a
 		// nil writer. BLOCKS (retries every 2s, no timeout) until a broker at
 		// AKTO_KAFKA_BROKER_URL/_MAL is reachable — go test's own -timeout is
@@ -309,6 +341,9 @@ func TestRateSweep(t *testing.T) {
 	// and the encoder sweep measures nothing). parse-off returns before the parser
 	// gate (SkipPairProcessing), so enabling it globally is safe.
 	metaUtils.FastIngestion = true
+
+	metaUtils.FastParserGunzip = false
+	metaUtils.HandleChunkEncoding = false
 
 	// -encoder selects which fast-path wire encoder(s) to sweep. parse-off never
 	// reaches the encoder (SkipPairProcessing returns before fastParseAndProduce),
@@ -419,14 +454,28 @@ func TestRateSweep(t *testing.T) {
 					// regardless (continuous counters, GC-independent). heap-final
 					// below is the one snapshot where we still force GC, for an
 					// accurate end-state live-memory read.
+					//
+					// goroutine-count.tsv logs runtime.NumGoroutine() alongside each
+					// heap snapshot (not a full goroutine.prof dump — too heavy to do
+					// every 10s) so a growth TRAJECTORY is visible, not just the
+					// end-of-run floor count after everything's drained. A full
+					// goroutine.prof is still captured once at the end (below).
 					tick := time.NewTicker(10 * time.Second)
 					defer tick.Stop()
+					goroutineCountFile, gcErr := os.Create(profDir + "/goroutine-count.tsv")
+					if gcErr == nil {
+						defer goroutineCountFile.Close()
+						fmt.Fprintf(goroutineCountFile, "elapsed_sec\tnum_goroutine\n")
+					}
 					for n := 0; ; {
 						select {
 						case <-heapDone:
 							return
 						case <-tick.C:
 							_ = rsWriteProfile("heap-noforce", fmt.Sprintf("%s/heap-%d.prof", profDir, n))
+							if goroutineCountFile != nil {
+								fmt.Fprintf(goroutineCountFile, "%d\t%d\n", (n+1)*10, runtime.NumGoroutine())
+							}
 							n++
 						}
 					}

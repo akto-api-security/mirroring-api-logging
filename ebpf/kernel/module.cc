@@ -94,6 +94,13 @@ struct data_args_t {
     const struct iovec* iov;
     int iovlen;
     int buf_size;
+    // For the SSL_*_ex family only: the caller's out-param pointer
+    // (size_t *written / *readbytes). Captured at entry, dereferenced at the
+    // _ex return probe to get the real length. NULL for every other caller.
+    const size_t* len_ptr;
+    // Resolved length for the _ex path. When > 0, process_syscall_data uses it
+    // instead of PT_REGS_RC (which for _ex is the 1/0 success flag, not a size).
+    int msg_len;
 };
 
 struct close_args_t {
@@ -304,18 +311,18 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
 
-    if (PRINT_BPF_LOGS) {
-      u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
-      u32 dip = conn_info.raddr;
-      u32 sip = srcIp;
-      bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
-      bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
-      bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
-      bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
-      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.rport));
-      bpf_trace_printk("new_conn: role=%d", conn_info.role);
-    }
+//    if (PRINT_BPF_LOGS) {
+//      u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
+//      u32 dip = conn_info.raddr;
+//      u32 sip = srcIp;
+//      bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
+//      bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
+//      bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+//      bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
+//      bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
+//      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.rport));
+//      bpf_trace_printk("new_conn: role=%d", conn_info.role);
+//    }
 
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
@@ -402,7 +409,11 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
 static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
     int bytes_exchanged = PT_REGS_RC(ret);
 
-    if(args->iovlen > 0 && args->buf_size > 0){
+    if(args->msg_len > 0){
+        // SSL_*_ex path: real length came from the *written/*readbytes out-param
+        // (PT_REGS_RC is just the 1/0 success flag for _ex).
+        bytes_exchanged = args->msg_len;
+    } else if(args->iovlen > 0 && args->buf_size > 0){
         bytes_exchanged = args->buf_size;
     }
 
@@ -476,16 +487,16 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->direction = direction;
     socket_data_event->msg_seq   = conn_info->msg_seq;
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
-      u32 ip = conn_info->raddr;
-      bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
-      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->rport));
-      u32 sip = conn_info->laddr;
-      bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
-      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
-      bpf_trace_printk("data: role=%d dir=%d msg_seq=%d", conn_info->role, direction, conn_info->msg_seq);
-    }
+//    if (PRINT_BPF_LOGS){
+//      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
+//      u32 ip = conn_info->raddr;
+//      bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
+//      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->rport));
+//      u32 sip = conn_info->laddr;
+//      bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+//      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
+//      bpf_trace_printk("data: role=%d dir=%d msg_seq=%d", conn_info->role, direction, conn_info->msg_seq);
+//    }
 
     int bytes_sent = 0;
     size_t size_to_save = 0;
@@ -1393,23 +1404,39 @@ static void set_conn_as_ssl(u32 tgid, u32 fd){
     conn_info->ssl = true;
 }
 
-static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+// Shared stash for all SSL entry probes (read & write, classic & _ex). The only
+// difference between the read and write cores was the args map, so it's a bool
+// here. len_ptr is NULL for the classic API and the *written/*readbytes pointer
+// for the _ex API.
+static void ssl_entry_stash(struct pt_regs *ctx, u32 fd, const size_t* len_ptr, bool is_write){
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
 
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_SSL_write_core: pid: %d %d %d", id, tgid, fd);
+    bpf_trace_printk("ssl_entry_stash: pid: %d %d fd: %d", id, tgid, fd);
   }
 
-  char* bufc = (char*)PT_REGS_PARM2(ctx);
-
-  struct data_args_t write_args = {};
-  write_args.fd = fd;
-  write_args.buf = bufc;
-  active_ssl_write_args_map.update(&id, &write_args);
+  struct data_args_t args = {};
+  args.fd = fd;
+  args.buf = (char*)PT_REGS_PARM2(ctx);
+  args.len_ptr = len_ptr;
+  if (is_write) {
+    active_ssl_write_args_map.update(&id, &args);
+  } else {
+    active_ssl_read_args_map.update(&id, &args);
+  }
 
   // Mark connection as SSL right away, so encrypted traffic does not get traced.
-  set_conn_as_ssl(tgid, write_args.fd);
+  set_conn_as_ssl(tgid, fd);
+}
+
+static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, NULL, /* is_write */ true);
+}
+
+// _ex variant: capture the *written out-param pointer (4th arg) for the ret probe.
+static void probe_entry_SSL_write_ex_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, (const size_t*)PT_REGS_PARM4(ctx), /* is_write */ true);
 }
 
 int probe_entry_SSL_write_1_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
@@ -1445,6 +1472,26 @@ int probe_entry_SSL_write_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num
     bpf_trace_printk("probe_entry_SSL_write_3_5: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+// SSL_write_ex(ssl, buf, num, size_t *written): same first 3 args as SSL_write,
+// so fd derivation is identical; only the ex core (which grabs PARM4) differs.
+int probe_entry_SSL_write_ex_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 3, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_ex_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_write_ex_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_write_ex_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 5, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_ex_3_5: fd: %d", fd);
+  }
+    probe_entry_SSL_write_ex_core(ctx, ssl, buf, num, fd);
   return 0;
 }
 
@@ -1485,23 +1532,49 @@ int probe_ret_SSL_write(struct pt_regs* ctx) {
   return 0;
 }
 
-static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
-    u64 id = bpf_get_current_pid_tgid();
-  u32 tgid = id >> 32;
+// SSL_write_ex return: RC is the 1/0 success flag, real length is at *written.
+// Shared body for both SSL_*_ex return probes. They differ only in the args map
+// and is_send; the map can't be passed as a value in this bcc C style, so it's
+// selected here by is_send (same approach as ssl_entry_stash). For the _ex API
+// PT_REGS_RC is the 1/0 success flag, so the real length comes from *len_ptr.
+static __inline void ssl_ret_ex(struct pt_regs* ctx, u64 id, bool is_send){
+  struct data_args_t* args = is_send
+      ? active_ssl_write_args_map.lookup(&id)
+      : active_ssl_read_args_map.lookup(&id);
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_SSL_read_core: pid: %d %d %d", id, tgid, fd);
+  if (args != NULL && PT_REGS_RC(ctx) == 1 && args->len_ptr != NULL) {
+    size_t n = 0;
+    bpf_probe_read_user(&n, sizeof(n), args->len_ptr);
+    if (n > MAX_MSG_SIZE) {
+      n = MAX_MSG_SIZE;
+    }
+    args->msg_len = (int)n;
+    process_syscall_data(ctx, args, id, is_send, true, true);
   }
 
-  char* bufc = (char*)PT_REGS_PARM2(ctx);
+  if (is_send) {
+    active_ssl_write_args_map.delete(&id);
+  } else {
+    active_ssl_read_args_map.delete(&id);
+  }
+}
 
-  struct data_args_t read_args = {};
-  read_args.fd = fd;
-  read_args.buf = bufc;
-  active_ssl_read_args_map.update(&id, &read_args);
+int probe_ret_SSL_write_ex(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_ret_SSL_write_ex: pid: %d", id);
+  }
+  ssl_ret_ex(ctx, id, /* is_send */ true);
+  return 0;
+}
 
-  // Mark connection as SSL right away, so encrypted traffic does not get traced.
-  set_conn_as_ssl(tgid, read_args.fd);
+static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, NULL, /* is_write */ false);
+}
+
+// _ex variant: capture the *readbytes out-param pointer (4th arg) for the ret probe.
+static void probe_entry_SSL_read_ex_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, (const size_t*)PT_REGS_PARM4(ctx), /* is_write */ false);
 }
 
 int probe_entry_SSL_read_1_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
@@ -1540,6 +1613,25 @@ int probe_entry_SSL_read_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num)
   return 0;
 }
 
+// SSL_read_ex(ssl, buf, num, size_t *readbytes): same first 3 args as SSL_read.
+int probe_entry_SSL_read_ex_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 3, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_ex_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_read_ex_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_read_ex_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 5, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_ex_3_5: fd: %d", fd);
+  }
+    probe_entry_SSL_read_ex_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
 // using this probe for node-openSSL only.
 int probe_entry_SSL_read(struct pt_regs *ctx, void *ssl, void *buf, int num) {
   u64 id = bpf_get_current_pid_tgid();
@@ -1575,6 +1667,16 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
   }
 
   active_ssl_read_args_map.delete(&id);
+  return 0;
+}
+
+// SSL_read_ex return: RC is the 1/0 success flag, real length is at *readbytes.
+int probe_ret_SSL_read_ex(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_ret_SSL_read_ex: pid: %d", id);
+  }
+  ssl_ret_ex(ctx, id, /* is_send */ false);
   return 0;
 }
 

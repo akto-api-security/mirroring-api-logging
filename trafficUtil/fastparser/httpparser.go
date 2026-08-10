@@ -1,4 +1,5 @@
 package fastparser
+
 // Package httpparser is a zero-copy, allocation-free HTTP/1.x message parser.
 //
 // It parses one complete request or response held entirely in a single []byte.
@@ -6,14 +7,34 @@ package fastparser
 // alias the input buffer — nothing is copied. The parser returns an error on
 // malformed input instead of panicking, so callers can log-and-skip.
 //
+// Chunked bodies are the one exception to "nothing is copied": when a message
+// carries `Transfer-Encoding: chunked`, the body is decoded IN PLACE — the chunk
+// data is compacted toward the front of the body region (each decoded byte only
+// ever moves leftward, over framing already consumed), and Body is returned as a
+// sub-slice of the input. It still aliases the input buffer (zero allocation),
+// but the framing bytes in the body region are overwritten. Callers therefore
+// must own the buffer they pass in; in this codebase the parse buffer is a fresh
+// per-message allocation (fragmentsToBytes / convertToSingleByteArr), so this is
+// safe. Identity / Content-Length bodies are untouched: pure alias, no writes.
+//
 // A Parser holds reusable scratch state; create one per goroutine and reuse it.
- 
+
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
 )
 
 var ErrMalformed = errors.New("httpparser: malformed HTTP message")
+
+// ErrGunzip is a SOFT error: the message parsed fine (status line + headers are
+// valid) but its gzip body could not be decoded. ParseResponse returns a VALID
+// *Response with an empty Body alongside this error, so a caller that recognises
+// it (errors.Is) can keep the pair — with an empty response body — instead of
+// dropping it. Callers that treat every error as fatal will simply drop the pair,
+// which is safe. Distinct from ErrMalformed, which always returns a nil result.
+var ErrGunzip = errors.New("httpparser: gzip body decode failed")
 
 const maxHeaders = 128
 
@@ -83,6 +104,14 @@ type Parser struct {
 	resp        Response
 	reqHeaders  [maxHeaders]Header
 	respHeaders [maxHeaders]Header
+	// Gunzip, when true, makes ParseResponse decompress gzip response bodies
+	// (Content-Encoding: gzip) after de-chunking. This is the one path that
+	// ALLOCATES and whose Body does NOT alias the input (decompression expands),
+	// so it's opt-in; leave false to keep the zero-copy/zero-alloc default. Set
+	// by the caller from utils.FastParserGunzip.
+	Gunzip bool
+
+	HandleChunkEncoding bool
 }
 
 func NewFastParser() *Parser { return &Parser{} }
@@ -117,11 +146,23 @@ func (p *Parser) ParseRequest(buf []byte) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.Body = buf[i:n]
+	body := buf[i:n]
+	if p.HandleChunkEncoding && isChunked(r.Headers) {
+		body, err = decodeChunkedInPlace(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	r.Body = body
 	return r, nil
 }
 
 // ParseResponse parses one complete HTTP response from buf.
+//
+// Return contract: on a hard failure (bad status line/headers) it returns
+// (nil, ErrMalformed). When Gunzip is enabled and the gzip body fails to decode,
+// it returns a VALID *Response with an empty Body plus ErrGunzip (a soft error) —
+// callers may keep such a response. All other successes return (resp, nil).
 func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 	r := &p.resp
 	r.Version, r.Reason, r.Body = nil, nil, nil
@@ -157,7 +198,27 @@ func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.Body = buf[i:n]
+	body := buf[i:n]
+	// Decoding order mirrors the wire order in reverse: on the wire the body is
+	// gzipped first, then chunk-framed, so we de-chunk first, then gunzip.
+	if p.HandleChunkEncoding && isChunked(r.Headers) {
+		body, err = decodeChunkedInPlace(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if p.Gunzip && isGzip(r.Headers) {
+		dec, derr := gunzipBody(body)
+		if derr != nil {
+			// Soft failure: status line + headers are valid, only the body could
+			// not be decompressed. Return the usable response with an empty body
+			// and ErrGunzip so the caller can keep the pair (see ErrGunzip doc).
+			r.Body = nil
+			return r, ErrGunzip
+		}
+		body = dec
+	}
+	r.Body = body
 	return r, nil
 }
 
@@ -190,13 +251,7 @@ func parseHeaders(buf []byte, start int, out *[]Header, scratch []Header) (int, 
 			return 0, ErrMalformed
 		}
 		name := lineSeg[:colon]
-		val := lineSeg[colon+1:]
-		for len(val) > 0 && (val[0] == ' ' || val[0] == '\t') {
-			val = val[1:]
-		}
-		for len(val) > 0 && (val[len(val)-1] == ' ' || val[len(val)-1] == '\t') {
-			val = val[:len(val)-1]
-		}
+		val := trimOWS(lineSeg[colon+1:])
 		if len(*out) < len(scratch) {
 			*out = append(*out, Header{Name: name, Value: val})
 		} else {
@@ -204,4 +259,146 @@ func parseHeaders(buf []byte, start int, out *[]Header, scratch []Header) (int, 
 		}
 		i = abs + 1
 	}
+}
+
+// lastHeaderValue returns the value of the LAST header matching name
+// (case-insensitive), or nil if absent. Last-wins is the correct semantics for
+// Transfer-Encoding / Content-Encoding when a header is repeated. (headerValue,
+// by contrast, returns the FIRST match — that's what request Host/Header lookups
+// want; the two are intentionally different.)
+func lastHeaderValue(hs []Header, name string) []byte {
+	var v []byte
+	for i := range hs {
+		if asciiEqualFold(hs[i].Name, name) {
+			v = hs[i].Value
+		}
+	}
+	return v
+}
+
+// trimOWS trims leading/trailing HTTP optional whitespace (space or tab).
+func trimOWS(b []byte) []byte {
+	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t') {
+		b = b[1:]
+	}
+	for len(b) > 0 && (b[len(b)-1] == ' ' || b[len(b)-1] == '\t') {
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
+// isChunked reports whether the message body uses chunked transfer-encoding.
+// Per RFC 7230 §3.3.1 "chunked" must be the FINAL coding; we match it as the
+// last comma-token of the last Transfer-Encoding header (case-insensitive), which
+// also covers the common single-value "Transfer-Encoding: chunked".
+func isChunked(hs []Header) bool {
+	te := lastHeaderValue(hs, "Transfer-Encoding")
+	if te == nil {
+		return false
+	}
+	if c := bytes.LastIndexByte(te, ','); c >= 0 {
+		te = te[c+1:] // final coding only
+	}
+	return asciiEqualFold(trimOWS(te), "chunked")
+}
+
+// isGzip reports whether the body is gzip-compressed via Content-Encoding.
+// Last Content-Encoding header wins; the WHOLE value (after OWS trim) must be
+// "gzip". 
+// TODO: Coding lists like "gzip, br" are left alone — decoding a stacked
+// encoding is out of scope.
+func isGzip(hs []Header) bool {
+	return asciiEqualFold(trimOWS(lastHeaderValue(hs, "Content-Encoding")), "gzip")
+}
+
+// gunzipBody decompresses a gzip body. UNLIKE the rest of the parser this
+// ALLOCATES (decompression expands; the result can't alias or fit the input),
+// so it runs only behind the Parser.Gunzip opt-in. Any gzip error (bad header,
+// corrupt stream, truncated) returns ErrMalformed rather than panicking, matching
+// the parser's log-and-skip contract.
+func gunzipBody(body []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	return out, nil
+}
+
+// decodeChunkedInPlace decodes an HTTP/1.1 chunked-transfer body IN PLACE and
+// returns the decoded body as a sub-slice of the same backing array — zero
+// allocation. Decoded bytes only ever move leftward (the framing they replace was
+// already consumed), so a single read cursor r ahead of a write cursor w never
+// clobbers unread data. Chunk extensions (";name=value" after the size) and
+// trailer headers (after the terminating 0-chunk) are ignored. Malformed framing
+// (bad hex size, truncated chunk, missing CRLF, no terminator) returns
+// ErrMalformed rather than panicking.
+func decodeChunkedInPlace(body []byte) ([]byte, error) {
+	n := len(body)
+	w, r := 0, 0
+	for {
+		// ---- chunk-size line: hex digits up to ';' (extension) or CR ----
+		size := 0
+		digits := 0
+		for r < n {
+			c := body[r]
+			hv, ok := hexVal(c)
+			if !ok {
+				break
+			}
+			// guard against overflow / absurd sizes
+			if size > (1 << 28) { // 256MB ceiling; larger is malformed for our use
+				return nil, ErrMalformed
+			}
+			size = size<<4 | int(hv)
+			digits++
+			r++
+		}
+		if digits == 0 {
+			return nil, ErrMalformed // size line had no hex digit
+		}
+		// skip optional chunk extension: everything up to CR
+		for r < n && body[r] != '\r' {
+			r++
+		}
+		// require CRLF ending the size line
+		if r+1 >= n || body[r] != '\r' || body[r+1] != '\n' {
+			return nil, ErrMalformed
+		}
+		r += 2
+
+		if size == 0 {
+			// last chunk. trailers/final CRLF (if any) are ignored.
+			return body[:w], nil
+		}
+
+		// ---- chunk data: exactly `size` bytes, then CRLF ----
+		if r+size+2 > n { // data + trailing CRLF must fit
+			return nil, ErrMalformed
+		}
+		// compact leftward; copy handles w<r safely (and w==r is a no-op copy).
+		copy(body[w:w+size], body[r:r+size])
+		w += size
+		r += size
+		if body[r] != '\r' || body[r+1] != '\n' {
+			return nil, ErrMalformed
+		}
+		r += 2
+	}
+}
+
+// hexVal returns the value of a single hex digit and whether c was a hex digit.
+func hexVal(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
