@@ -123,6 +123,7 @@ func BenchmarkParseRequest(b *testing.B) {
 				n++
 			}
 			mps(b, n)
+			gibps(b, n, int64(len(buf)))
 		})
 	}
 }
@@ -143,6 +144,7 @@ func BenchmarkParseResponse(b *testing.B) {
 				n++
 			}
 			mps(b, n)
+			gibps(b, n, int64(len(buf)))
 		})
 	}
 }

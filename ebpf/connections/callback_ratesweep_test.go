@@ -454,14 +454,28 @@ func TestRateSweep(t *testing.T) {
 					// regardless (continuous counters, GC-independent). heap-final
 					// below is the one snapshot where we still force GC, for an
 					// accurate end-state live-memory read.
+					//
+					// goroutine-count.tsv logs runtime.NumGoroutine() alongside each
+					// heap snapshot (not a full goroutine.prof dump — too heavy to do
+					// every 10s) so a growth TRAJECTORY is visible, not just the
+					// end-of-run floor count after everything's drained. A full
+					// goroutine.prof is still captured once at the end (below).
 					tick := time.NewTicker(10 * time.Second)
 					defer tick.Stop()
+					goroutineCountFile, gcErr := os.Create(profDir + "/goroutine-count.tsv")
+					if gcErr == nil {
+						defer goroutineCountFile.Close()
+						fmt.Fprintf(goroutineCountFile, "elapsed_sec\tnum_goroutine\n")
+					}
 					for n := 0; ; {
 						select {
 						case <-heapDone:
 							return
 						case <-tick.C:
 							_ = rsWriteProfile("heap-noforce", fmt.Sprintf("%s/heap-%d.prof", profDir, n))
+							if goroutineCountFile != nil {
+								fmt.Fprintf(goroutineCountFile, "%d\t%d\n", (n+1)*10, runtime.NumGoroutine())
+							}
 							n++
 						}
 					}
