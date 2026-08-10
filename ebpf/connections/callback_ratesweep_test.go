@@ -46,6 +46,10 @@ var (
 // rsKafkaTopic mirrors the literal in kafkaUtil/kafka.go's ProduceStr.
 const rsKafkaTopic = "akto.api.logs"
 
+// rsThreatTopic mirrors the literal in kafkaUtil/kafka.go's Produce (the
+// threat protobuf path, gated by -threat/utils.ThreatEnabled).
+const rsThreatTopic = "akto.api.logs2"
+
 // rsResetKafkaTopic deletes and recreates rsKafkaTopic via `docker exec
 // kafka-topics` (kafka-go's Conn.CreateTopics/DeleteTopics only speak wire
 // protocol V0, which this broker doesn't advertise — confirmed via
@@ -330,6 +334,9 @@ func TestRateSweep(t *testing.T) {
 	if !kafka.KafkaDisabled {
 		if *rsResetTopic {
 			rsResetKafkaTopic(t, *rsKafkaDocker, rsKafkaTopic)
+			if *rsThreat {
+				rsResetKafkaTopic(t, *rsKafkaDocker, rsThreatTopic)
+			}
 		}
 		// -kafka=true: dial a REAL kafkaWriter so ProduceStr doesn't panic on a
 		// nil writer. BLOCKS (retries every 2s, no timeout) until a broker at
