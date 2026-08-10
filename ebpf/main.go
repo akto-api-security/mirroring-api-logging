@@ -154,11 +154,6 @@ func run() {
 		fillExistingConnections(bpfModule, kubePids)
 	}
 
-	if kafkaUtil.PodInformerInstance != nil {
-		kubePids := kafkaUtil.PodInformerInstance.GetAllKubePids()
-		fillExistingConnections(bpfModule, kubePids)
-	}
-
 	connectionFactory := connections.NewFactory()
 
 	trafficMetrics.InitTrafficMaps()
