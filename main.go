@@ -1123,6 +1123,13 @@ func main() {
 		interfaceName = "any"
 	}
 	initKafka()
+
+	// Listen for ENV_RELOAD / RESTART commands on akto.config.updates.
+	StartConfigConsumer()
+
+	// Periodically publish env + profiling heartbeats.
+	go sendKafkaHeartbeat()
+
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
