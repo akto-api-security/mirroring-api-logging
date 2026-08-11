@@ -3,6 +3,7 @@
 LOG_FILE="/tmp/dump.log"
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB (10 * 1024 * 1024 bytes)
 CHECK_INTERVAL=60                        # Check interval in seconds
+ENV_FILE="${AKTO_ENV_FILE:-/app/.env}"   # Env persisted by ENV_RELOAD; keep in sync with config_consumer.go
 
 # Function to rotate the log file
 rotate_log() {
@@ -24,6 +25,14 @@ fi
 
 while :
 do
+    # Load env updates persisted by the previous process before (re)starting,
+    # so ENV_RELOAD changes survive the os.Exit-based restart.
+    if [ -f "$ENV_FILE" ]; then
+        set -a
+        . "$ENV_FILE"
+        set +a
+    fi
+
     # Start the mirroring module in the background
     if [[ "${ENABLE_LOGS}" == "false" ]]; then
         /mirroring-api-logging >> "$LOG_FILE" 2>&1 &
