@@ -103,6 +103,7 @@ func run() {
 	}
 	source = string(byteString)
 
+	kafkaUtil.InitKafka()
 	replaceBpfLogsMacros()
 	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
@@ -122,7 +123,6 @@ func run() {
 
 	// this needs to be called before InitKafka
 	apiProcessor.InitCloudTrafficProcessor()
-	kafkaUtil.InitKafka()
 
 	kafkaUtil.StartConfigConsumer()
 
