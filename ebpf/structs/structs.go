@@ -34,6 +34,15 @@ type SocketDataEventAttr struct {
 // so the two stay in sync if the layout ever changes.
 const MsgOffset = 68
 
+// endpoint_role_t (from kernel/module.cc): whether the traced process is the
+// client (did connect) or server (did accept) on a connection. Populated on
+// SocketDataEventAttr.Role.
+const (
+	RoleUnknown uint32 = 0
+	RoleClient  uint32 = 1
+	RoleServer  uint32 = 2
+)
+
 /*
 u64 id;
 u32 fd;

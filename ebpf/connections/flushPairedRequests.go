@@ -128,7 +128,7 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 						"g2_bytes", len(g2Blob))
 				}
 
-				ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
+				ProcessSinglePair(connID, tracker.laddr, tracker.lport, tracker.role, g1Blob, g2Blob)
 			}
 			if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
 				slog.Info("msg_seq: flushed pairs (tick)",
@@ -164,7 +164,7 @@ func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
 				"g2_bytes", len(g2Blob))
 		}
 
-		ProcessSinglePair(connID, tracker.laddr, tracker.lport, g1Blob, g2Blob)
+		ProcessSinglePair(connID, tracker.laddr, tracker.lport, tracker.role, g1Blob, g2Blob)
 	}
 	if len(pairs) > 0 && utils.IsMsgSeqLogsEnabled() {
 		slog.Info("msg_seq: flushed remaining pairs",
@@ -174,7 +174,20 @@ func flushAndProcessRemainingPairs(connID structs.ConnID, tracker *Tracker) {
 }
 
 // ProcessSinglePair processes one request-response pair from msg_seq groups.
-func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, g1Blob, g2Blob []byte) {
+//
+// g1 is ALWAYS the request and g2 the response — guaranteed by msg_seq parity:
+// the connection's first payload is always client→server (the HTTP request, or
+// the TLS ClientHello), so odd seqs are client→server (request direction) and
+// even seqs are server→client (response direction). drainPairs pairs (odd, odd+1)
+// = (request, response). So orientation needs no content sniffing.
+//
+// role decides inbound vs outbound (and thus source/dest IP order): a server
+// (accept) sees inbound traffic; a client (connect) sees outbound. The per-event
+// read/write direction can't classify this on its own (both roles read and write),
+// so role is the authority. When role is unknown (connect/accept missed and the
+// kernel hasn't inferred it from an HTTP message yet — rare), fall back to the
+// old HTTP-prefix sniff to guess orientation.
+func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, role uint32, g1Blob, g2Blob []byte) {
 
 	raddrStr := ebpfutils.FormatAddr(connID.Raddr, connID.Rport)
 	laddrStr := ebpfutils.FormatAddr(laddrVal, lportVal)
@@ -183,23 +196,36 @@ func ProcessSinglePair(connID structs.ConnID, laddrVal uint32, lportVal uint16, 
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	// Detect which blob is the response (starts with "HTTP")
 	utils.Pipeline.PairsAttempted.Add(1)
-	if len(g2Blob) >= len(httpBytes) && bytes.Equal(g2Blob[:len(httpBytes)], httpBytes) {
-		// g1=request, g2=response (server ingress path)
-		tryReadFromBD(raddrStr, laddrStr, g1Blob, g2Blob, true, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
-	} else if len(g1Blob) >= len(httpBytes) && bytes.Equal(g1Blob[:len(httpBytes)], httpBytes) {
-		// g1=response, g2=request (client egress path)
+
+	switch role {
+	case structs.RoleServer:
+		// inbound: remote peer is the client → source=remote, dest=local
+		tryReadFromBD(raddrStr, laddrStr, g1Blob, g2Blob, true, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+
+	case structs.RoleClient:
+		// outbound: we are the client → source=local, dest=remote
 		if !disableEgress {
-			tryReadFromBD(laddrStr, raddrStr, g2Blob, g1Blob, true, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+			tryReadFromBD(laddrStr, raddrStr, g1Blob, g2Blob, true, utils.DirectionOutbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
 		}
-	} else {
-		utils.Pipeline.PairsParseFailure.Add(1)
-		if utils.IsMsgSeqLogsEnabled() {
-			slog.Warn("msg_seq: neither blob starts with HTTP",
-				"fd", connID.Fd,
-				"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
-				"g2_preview", string(g2Blob[:min(32, len(g2Blob))]))
+
+	default:
+		// role unknown — parity still gives g1=request; we just can't tell in/out,
+		// so sniff which blob is the response to orient (legacy behaviour).
+		if len(g2Blob) >= len(httpBytes) && bytes.Equal(g2Blob[:len(httpBytes)], httpBytes) {
+			tryReadFromBD(raddrStr, laddrStr, g1Blob, g2Blob, true, utils.DirectionInbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+		} else if len(g1Blob) >= len(httpBytes) && bytes.Equal(g1Blob[:len(httpBytes)], httpBytes) {
+			if !disableEgress {
+				tryReadFromBD(laddrStr, raddrStr, g2Blob, g1Blob, true, utils.DirectionOutbound, connID.Id, connID.Fd, uniqueDaemonsetId, hostName)
+			}
+		} else {
+			utils.Pipeline.PairsParseFailure.Add(1)
+			if utils.IsMsgSeqLogsEnabled() {
+				slog.Warn("msg_seq: neither blob starts with HTTP",
+					"fd", connID.Fd,
+					"g1_preview", string(g1Blob[:min(32, len(g1Blob))]),
+					"g2_preview", string(g2Blob[:min(32, len(g2Blob))]))
+			}
 		}
 	}
 }
