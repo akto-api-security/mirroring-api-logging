@@ -294,13 +294,13 @@ var (
 
 	EventChanBuffSize = 4096
 
-	lruCache            *LRUCache
-	lruCacheCapacity    = 100000
-	bloomFilterCapacity = 1000000
-	bloomFilterFPRate   = 0.01
-	timeBucketDuration       = 10 * time.Minute
-	memSamplingEnabled       = false
-	parserMetricsEnabled     = true
+	lruCache             *LRUCache
+	lruCacheCapacity     = 100000
+	bloomFilterCapacity  = 1000000
+	bloomFilterFPRate    = 0.01
+	timeBucketDuration   = 10 * time.Minute
+	memSamplingEnabled   = false
+	parserMetricsEnabled = true
 )
 
 var bloomFilter *bloomfilter.BloomFilter
@@ -641,6 +641,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
 	if shouldPrint {
 		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
+	}
+
+	if tryFastParseAndProduce(receiveBuffer, sentBuffer, ctx) {
+		return
 	}
 
 	if KafkaDisabled() {
