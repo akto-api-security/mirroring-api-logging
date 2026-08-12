@@ -50,6 +50,17 @@ var IgnoreEnvoyProxycalls = false
 var EnableGraph = true
 var ThreatEnabled = true
 
+// FastParser enables the zero-copy HTTP parse + JSON encode path in kafkaUtil.
+// Best when each flush is a single request/response pair; multi-message buffers
+// fall back to the legacy net/http parser.
+var FastParser = false
+
+// FastParserGunzip decompresses gzip response bodies on the fast path (allocates).
+var FastParserGunzip = true
+
+// FastParserChunkEncoding handles Transfer-Encoding: chunked on the fast path.
+var FastParserChunkEncoding = true
+
 const EnvoyProxyIp = "127.0.0.6"
 
 // HostMappingPath is the root where the real host filesystem is visible (Docker: "/host"
@@ -86,6 +97,9 @@ func init() {
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
 	InitVar("TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS", &TrafficLogBpfSocketDataSubmits)
+	InitVar("AKTO_FAST_PARSER", &FastParser)
+	InitVar("AKTO_FAST_PARSER_GUNZIP", &FastParserGunzip)
+	InitVar("AKTO_FAST_PARSER_CHUNK_ENCODING", &FastParserChunkEncoding)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {

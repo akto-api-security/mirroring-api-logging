@@ -1,5 +1,13 @@
 
 
+## Operating limits & config
+
+See [OPERATING_LIMITS.md](./OPERATING_LIMITS.md) (host CPU limits — customer-facing).
+
+## Performance improvements
+
+See [PERFORMANCE_IMPROVEMENTS.md](./PERFORMANCE_IMPROVEMENTS.md) (PR #196 / #197 summary — customer-facing).
+
 ## Bare-metal tarball bundle
 
 See [scripts/EBPF_CORE_BUNDLE.md](../scripts/EBPF_CORE_BUNDLE.md) for client install steps for the `akto-mirroring-module-*` tarball bundle.
