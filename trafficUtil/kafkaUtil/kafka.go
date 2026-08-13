@@ -339,6 +339,7 @@ const (
 	LogTypeError = "ERROR"
 	LogTypeInfo  = "INFO"
 	LogTypeDebug = "DEBUG"
+	LogTypeWarn = "WARN"
 )
 
 func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) error {
