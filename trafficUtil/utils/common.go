@@ -45,7 +45,7 @@ var ThreatEnabled = true
 // inactivity/threshold flat-buffer flushing + the net/http parser. The two must
 // move together — the fast parser assumes exactly one request/response pair per
 // flush, which only msg_seq flushing guarantees.
-var FastIngestion = true
+var FastIngestion = false
 
 // FastParserGunzip, when true, makes the fast parser decompress gzip response
 // bodies (Content-Encoding: gzip) after de-chunking. Off by default because it

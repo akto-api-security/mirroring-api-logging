@@ -32,7 +32,10 @@ var (
 	bufferMemThreshold            = 400 // MB
 	trackerDataProcessInterval    = 100
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
-	PerConnChBufferSize           = 10 // per-connection channel buffer size
+	// PerConnChBufferSize default is set in init() based on utils.FastIngestion
+	// (200 for the fast msg_seq path, 10 for the old path); AKTO_PER_CONN_CH_BUFFER_SIZE
+	// still overrides. Declared with the conservative default here.
+	PerConnChBufferSize = 10 // per-connection channel buffer size
 
 	// in milliseconds — DeleteWorker's periodic mem-check/eviction
 	memCheckInterval    = 500
@@ -47,6 +50,11 @@ func init() {
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
 	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+	// Fast msg_seq path sustains higher per-conn bursts → deeper buffer; old path
+	// keeps the small default. Set before InitVar so the env var still wins.
+	if utils.FastIngestion {
+		PerConnChBufferSize = 200
+	}
 	utils.InitVar("AKTO_PER_CONN_CH_BUFFER_SIZE", &PerConnChBufferSize)
 	utils.InitVar("MODULE_MEM_CHECK_INTERVAL", &memCheckInterval)
 }
