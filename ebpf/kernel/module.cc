@@ -306,6 +306,15 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     conn_info.ssl = false;
     conn_info.laddr = srcIp;
     conn_info.lport = lport;
+    // rport was read from skc_dport / sin_port — both network byte order (__be16).
+    // Canonicalize to host order here (once, covers both derivation paths above) so
+    // every downstream consumer (open/data/close events, Go FormatAddr, and the
+    // host-order port filter in eventCallbacks.go) sees it consistently with lport,
+    // which is already host order (skc_num). Cold path: runs once per connection,
+    // not in the data hot loop, so no verifier-instruction pressure.
+    // NOTE: the sockaddr fallback (socketConn == false) still leaves lport/laddr = 0;
+    // separate, rarer issue — not fixed here to keep this change minimal.
+    conn_info.rport = bpf_ntohs(conn_info.rport);
     conn_info.role = isConnect ? kRoleClient : kRoleServer;
 
     conn_info.readEventsCount = 0;
