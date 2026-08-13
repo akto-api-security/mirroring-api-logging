@@ -3,12 +3,12 @@ package kafkaUtil
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -100,6 +100,14 @@ func getProfilingData() map[string]interface{} {
 	return profiling
 }
 
+// shellSingleQuote wraps s in single quotes so it can be safely sourced by a
+// POSIX shell. Values containing $, backticks, spaces, etc. are treated
+// literally; an embedded single quote is escaped as '\'' (close-quote, an
+// escaped literal quote, reopen-quote).
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func writeEnvFile() error {
 	dir := "/ebpf"
 	finalPath := "/ebpf/.env"
@@ -113,28 +121,27 @@ func writeEnvFile() error {
 
 	for _, env := range os.Environ() {
 		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
 		key := parts[0]
 		val := parts[1]
-
-		// Proper shell escaping
-		escapedVal := strconv.Quote(val)
 
 		content.WriteString("export ")
 		content.WriteString(key)
 		content.WriteString("=")
-		content.WriteString(escapedVal)
+		content.WriteString(shellSingleQuote(val))
 		content.WriteString("\n")
 	}
 
-	err := os.WriteFile(tmpPath, []byte(content.String()), 0644)
-	if err != nil {
+	// 0600: this file contains the full process environment, including secrets.
+	if err := os.WriteFile(tmpPath, []byte(content.String()), 0600); err != nil {
 		slog.Error("Failed to write environment file", "path", tmpPath, "error", err)
 		return err
 	}
 	slog.Debug("Environment variables written to file", "path", tmpPath)
 	// Atomic replace
-	err = os.Rename(tmpPath, finalPath)
-	if err != nil {
+	if err := os.Rename(tmpPath, finalPath); err != nil {
 		slog.Error("Failed to rename environment file", "path", tmpPath, "error", err)
 		return err
 	}
@@ -142,18 +149,28 @@ func writeEnvFile() error {
 	return nil
 }
 
-func restartSelf() {
-	slog.Warn("Restarting process with new environment...")
-
-	// Write current environment to file so shell script can source it on next restart
-	writeEnvFile()
-
-	// Exit and let shell script restart with fresh process
-	os.Exit(0)
+// closeReaderWithTimeout closes the consumer-group reader — which sends a
+// LeaveGroup to the coordinator so the next generation isn't starved waiting
+// for this member's session to expire — without blocking shutdown longer than d.
+func closeReaderWithTimeout(reader *kafka.Reader, d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		if err := reader.Close(); err != nil {
+			slog.Error("Error closing config reader", "error", err)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		slog.Warn("Timed out waiting for config reader to close (LeaveGroup)")
+	}
 }
 
-// processCommandMessage handles a single command message
-func processCommandMessage(command TrafficAgentCommandMessage) {
+// processCommandMessage applies a single command message and reports whether
+// the process should restart. It performs no Kafka I/O and never exits, so the
+// caller can persist the effect and commit the offset before restarting.
+func processCommandMessage(command TrafficAgentCommandMessage) (restart bool) {
 	daemonPodName := getDaemonPodName()
 
 	if command.MessageType == MessageTypeRestart {
@@ -164,11 +181,10 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 		if !ok {
 			slog.Debug("Restart command not for this daemon, ignoring",
 				"thisDaemonPodName", daemonPodName)
-			return
+			return false
 		}
-		slog.Info("Restarting process...")
-		restartSelf()
-		return
+		slog.Info("Restart command received")
+		return true
 	}
 
 	if command.MessageType == MessageTypeEnvReload {
@@ -180,7 +196,7 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 		if !ok {
 			slog.Debug("ENV_RELOAD not targeted at this daemon, ignoring",
 				"thisDaemonPodName", daemonPodName)
-			return
+			return false
 		}
 
 		slog.Info("Processing ENV_RELOAD command",
@@ -189,7 +205,7 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 
 		if len(envVars) == 0 {
 			slog.Warn("ENV_RELOAD with no environment variables provided for this daemon")
-			return
+			return false
 		}
 
 		for key, value := range envVars {
@@ -202,12 +218,44 @@ func processCommandMessage(command TrafficAgentCommandMessage) {
 				os.Setenv(key, value)
 			}
 		}
-		slog.Info("Environment variables updated, restarting process...")
-		restartSelf()
-		return
+		slog.Info("Environment variables updated")
+		return true
 	}
 
 	slog.Warn("Unknown message type, ignoring", "messageType", command.MessageType)
+	return false
+}
+
+// ensureConfigTopic creates the config topic before the consumer subscribes.
+// If the consumer joins the group before the topic (and its partition) exists,
+// it gets a zero-partition assignment and silently never rebalances onto the
+// partition once it appears. Creating the topic up front makes that race
+// impossible. Uses the same TLS/SASL transport as the rest of the client.
+func ensureConfigTopic(kafkaURL, topic string) {
+	client := &kafka.Client{
+		Addr:      kafka.TCP(kafkaURL),
+		Transport: getGlobalTransport(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := client.CreateTopics(ctx, &kafka.CreateTopicsRequest{
+		Topics: []kafka.TopicConfig{{
+			Topic:             topic,
+			NumPartitions:     1,
+			ReplicationFactor: 1,
+		}},
+	})
+	if err != nil {
+		slog.Error("Failed to create config topic", "topic", topic, "error", err)
+		return
+	}
+	if topicErr := resp.Errors[topic]; topicErr != nil && !errors.Is(topicErr, kafka.TopicAlreadyExists) {
+		slog.Error("Config topic creation returned error", "topic", topic, "error", topicErr)
+		return
+	}
+	slog.Info("Config topic ensured", "topic", topic)
 }
 
 func StartConfigConsumer() {
@@ -226,15 +274,25 @@ func StartConfigConsumer() {
 
 	slog.Info("Starting config consumer", "topic", topic, "groupID", groupID, "daemonId", uniqueDaemonsetId)
 
-	// Create Kafka reader (consumer)
+	// Create the topic before subscribing to avoid the zero-partition
+	// assignment race on a not-yet-created topic.
+	ensureConfigTopic(kafka_url, topic)
+
+	// Create Kafka reader (consumer).
+	// CommitInterval 0 => synchronous commits, so an offset is durably
+	// committed before we restart. LastOffset only applies at cold-start (no
+	// committed offset); across the internal restart the same group id resumes
+	// from the committed offset, so no command is dropped.
 	readerConfig := kafka.ReaderConfig{
-		Brokers:        []string{kafka_url},
-		Topic:          topic,
-		GroupID:        groupID,
-		MinBytes:       1,
-		MaxBytes:       10e6,
-		CommitInterval: time.Second,
-		StartOffset:    kafka.LastOffset,
+		Brokers:                []string{kafka_url},
+		Topic:                  topic,
+		GroupID:                groupID,
+		MinBytes:               1,
+		MaxBytes:               10e6,
+		CommitInterval:         0,
+		StartOffset:            kafka.LastOffset,
+		WatchPartitionChanges:  true,
+		PartitionWatchInterval: 5 * time.Second,
 	}
 
 	// Apply common TLS and SASL configuration
@@ -244,34 +302,55 @@ func StartConfigConsumer() {
 
 	// Start consumer goroutine
 	go func() {
-		defer reader.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-		ctx := context.Background()
 		for {
 			msg, err := reader.FetchMessage(ctx)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				slog.Error("Error reading config update message", "error", err)
+				time.Sleep(time.Second)
 				continue
 			}
 
 			slog.Debug("Received command message", "value", string(msg.Value))
 
 			var command TrafficAgentCommandMessage
-			err = json.Unmarshal(msg.Value, &command)
-			if err != nil {
+			if err := json.Unmarshal(msg.Value, &command); err != nil {
 				slog.Error("Failed to parse command message", "error", err)
+				// Skip the poison message so it doesn't block the partition.
 				if err := reader.CommitMessages(ctx, msg); err != nil {
 					slog.Error("Failed to commit unparseable message", "error", err)
 				}
 				continue
 			}
 
+			if processCommandMessage(command) {
+				// Persist the effect (env file) BEFORE committing/leaving/exiting:
+				// once the file is written the change survives a crash, so
+				// committing after it is safe. On failure, log and keep running
+				// rather than exiting into a state the wrapper can't restore.
+				if err := writeEnvFile(); err != nil {
+					slog.Error("Failed to persist environment file, aborting restart", "error", err)
+					continue
+				}
+				if err := reader.CommitMessages(ctx, msg); err != nil {
+					slog.Error("Failed to commit message offset", "error", err)
+				}
+				// Leave the group cleanly before exiting.
+				cancel()
+				closeReaderWithTimeout(reader, 5*time.Second)
+				slog.Warn("Restarting process with new environment...")
+				os.Exit(0)
+			}
+
+			// Non-restart messages: commit and continue.
 			if err := reader.CommitMessages(ctx, msg); err != nil {
 				slog.Error("Failed to commit message offset", "error", err)
 			}
-
-			slog.Debug("Received command message", "value", string(msg.Value))
-			processCommandMessage(command)
 		}
 	}()
 
