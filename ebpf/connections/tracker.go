@@ -1,19 +1,13 @@
 package connections
 
 import (
-	"log/slog"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
-
-// fragment, msgSeqGroup, and MsgSeqPair are declared in flushPairedRequests.go
-// (the sequencing algorithm below — drainPairs et al — still lives here on
-// Tracker and operates on those types; only their declarations moved).
 
 type Tracker struct {
 	connID structs.ConnID
@@ -31,23 +25,11 @@ type Tracker struct {
 	mutex   sync.RWMutex
 	ssl     bool
 
-	// local IP-Port
-	laddr uint32
-	lport uint16
-
-	role uint32 // 0=unknown, 1=client, 2=server
+	// source IP-Port / local IP-Port
+	srcIp   uint32
+	srcPort uint16
 
 	foundHTTP bool
-
-	// msg_seq based buffering for incremental pair flushing
-	msgGroups        map[uint32]*msgSeqGroup
-	highestMsgSeq    uint32
-	lowestPendingSeq uint32
-	// seenMsgSeqs makes GroupsCreated count each unique msg_seq exactly once,
-	// even when a group is deleted (paired/orphaned/stranded) and later re-created
-	// by a late chunk. A fixed-size ring bitset (constant ~8KB, no growth) instead
-	// of an unbounded map — see utils.SeqRingBitset. Zero value is ready to use.
-	seenMsgSeqs utils.SeqRingBitset
 }
 
 func NewTracker(connID structs.ConnID) *Tracker {
@@ -58,8 +40,6 @@ func NewTracker(connID structs.ConnID) *Tracker {
 		mutex:     sync.RWMutex{},
 		ssl:       false,
 		foundHTTP: false,
-		msgGroups: make(map[uint32]*msgSeqGroup),
-		// seenMsgSeqs: zero value of utils.SeqRingBitset is ready to use.
 	}
 }
 
@@ -74,328 +54,59 @@ func (conn *Tracker) IsComplete() bool {
 	return complete
 }
 
-/*
-AddDataEvent buffers one raw data event — zero-copy.
-
-kernelBytesPtr points at the []byte the perf reader obtained from C.GoBytes for
-this event. attr and payload are VIEWS into those bytes; nothing is copied here:
-
-	kernelBytes ([]byte header) ─▶ C.GoBytes backing (one heap alloc per event)
-	                               ┌────────────┬───────────────────────────────┐
-	                               │ attr 0..67 │ payload  MsgOffset .. +n       │
-	                               └─────┬──────┴──────────────┬────────────────┘
-	                                     │                      │
-	         attr := (*Attr)(&kernelBytes[0])   payload := kernelBytes[MsgOffset : MsgOffset+n]
-	         (72B typed view, no copy)          (slice header, no copy)
-
-The retained payload keeps its backing alive. That backing is a unique per-event
-allocation that nothing recycles, so stored sub-slices can never be clobbered.
-Returns the record's msg_seq for the worker's inactivity timer.
-*/
-func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
-	// []byte view over the C.GoBytes buffer for this event; no copy.
-	var kernelBytes []byte = *kernelBytesPtr
-	attr := (*structs.SocketDataEventAttr)(unsafe.Pointer(&kernelBytes[0]))
-
+func (conn *Tracker) AddDataEvent(event structs.SocketDataEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if attr.Laddr != 0 {
-		conn.laddr = attr.Laddr
-		conn.lport = attr.Lport
-	}
-	if attr.Role != 0 && conn.role == 0 {
-		conn.role = attr.Role
-	}
-
-	// first few read/write calls in a TLS are of handshake
-	// these are extra data we don't need, once TLS established
-	// request/resp is exchanged through SSL_read/write which sends ssl=true
-	// So we reset the buffers to discard the handshake data.
-	if !conn.ssl && attr.Ssl {
-		if !metaUtils.FastIngestion {
-			for k := range conn.sentBuf {
-				conn.sentBuf[k] = []byte{}
-			}
-			for k := range conn.recvBuf {
-				conn.recvBuf[k] = []byte{}
-			}
-		} else {
-			conn.msgGroups = make(map[uint32]*msgSeqGroup)
-			conn.highestMsgSeq = 0
-			conn.lowestPendingSeq = 0
-			conn.seenMsgSeqs = utils.SeqRingBitset{}
-
+	if !conn.ssl && event.Attr.Ssl {
+		for k := range conn.sentBuf {
+			conn.sentBuf[k] = []byte{}
 		}
-
-		// Needed for both
+		for k := range conn.recvBuf {
+			conn.recvBuf[k] = []byte{}
+		}
 		conn.sentBytes = 0
 		conn.recvBytes = 0
-		conn.ssl = attr.Ssl
+		conn.ssl = event.Attr.Ssl
 	}
 
-	// Data events ssl true/false must match the conn info ssl
-	// helps to ensure we process only decrypted data for ssl requests.
-	if conn.ssl != attr.Ssl {
-		return attr.MsgSeq
+	if conn.ssl != event.Attr.Ssl {
+		return
 	}
 
-	bytesSent := attr.Bytes_sent
-	absBytes := utils.Abs(bytesSent)
+	bytesSent := event.Attr.Bytes_sent
 
-	// Payload is kernelBytes[MsgOffset : MsgOffset+absBytes], stored by reference.
-	// Guard against a truncated record so the slice bound can't panic.
-	if structs.MsgOffset+int(absBytes) > len(kernelBytes) {
-		return attr.MsgSeq
-	}
-	payload := kernelBytes[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
-
-	if metaUtils.FastIngestion {
-		// msg_seq based buffering for incremental pair flushing
-		msgSeq := attr.MsgSeq
-		// msg_seq is always >= 1 (kernel seeds it to 1); guard defensively.
-		if msgSeq == 0 {
-			return attr.MsgSeq
-		}
-		group, exists := conn.msgGroups[msgSeq]
-		if !exists {
-			if msgSeq < conn.lowestPendingSeq {
-				metaUtils.Pipeline.LateArrivals.Add(1)
-				metaUtils.Pipeline.LateArrivalDist.Observe(conn.highestMsgSeq - msgSeq)
-				if metaUtils.IsMsgSeqLogsEnabled() {
-					slog.Warn("msg_seq: late arrival below lowestPendingSeq (already flushed)",
-						"fd", conn.connID.Fd,
-						"msg_seq", msgSeq,
-						"lowestPendingSeq", conn.lowestPendingSeq)
-				}
-			} else if msgSeq < conn.highestMsgSeq {
-				metaUtils.Pipeline.OutOfOrderArrivals.Add(1)
-				metaUtils.Pipeline.OutOfOrderDist.Observe(conn.highestMsgSeq - msgSeq)
-				if metaUtils.IsMsgSeqLogsEnabled() {
-					slog.Warn("msg_seq: out-of-order group arrival",
-						"fd", conn.connID.Fd,
-						"msg_seq", msgSeq,
-						"highestMsgSeq", conn.highestMsgSeq)
-				}
-			}
-			group = &msgSeqGroup{
-				msgSeq:    msgSeq,
-				direction: attr.Direction,
-			}
-			conn.msgGroups[msgSeq] = group
-			// Count each unique msg_seq once, even if this group was
-			// previously flushed/orphaned/stranded and is now re-created
-			// by a late-arriving chunk.
-			if conn.seenMsgSeqs.MarkNew(msgSeq) {
-				metaUtils.Pipeline.GroupsCreated.Add(1)
-			}
-		}
-
-		var chunkKey int
-		if group.direction == 0 { // kEgress
-			chunkKey = int(attr.WriteEventsCount)
-		} else { // kIngress
-			chunkKey = int(attr.ReadEventsCount)
-		}
-		// chunkKey (rc/wc) is monotonic and unique per event; append is O(1)
-		// amortized and stores the payload slice by reference, no copy.
-		group.fragments = append(group.fragments, fragment{seq: chunkKey, data: payload})
-
-		if msgSeq > conn.highestMsgSeq {
-			conn.highestMsgSeq = msgSeq
-		}
-
-		if metaUtils.IsMsgSeqLogsEnabled() {
-			slog.Debug("msg_seq: chunk added",
-				"fd", conn.connID.Fd,
-				"msg_seq", msgSeq,
-				"direction", group.direction,
-				"chunk_key", chunkKey,
-				"chunk_bytes", absBytes,
-				"total_chunks", len(group.fragments),
-				"highest_msg_seq", conn.highestMsgSeq,
-				"pending_groups", len(conn.msgGroups))
-		}
+	if bytesSent > 0 {
+		conn.sentBuf[int(event.Attr.WriteEventsCount)] = append(conn.sentBuf[int(event.Attr.WriteEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
+		conn.sentBytes += uint64(utils.Abs(bytesSent))
 	} else {
-		// Old flat buffer path. rc/wc is unique per event, so assign the payload
-		// slice directly rather than appending (which would copy the bytes).
-		if bytesSent > 0 {
-			conn.sentBuf[int(attr.WriteEventsCount)] = payload
-			conn.sentBytes += uint64(absBytes)
-		} else {
-			conn.recvBuf[int(attr.ReadEventsCount)] = payload
-			conn.recvBytes += uint64(absBytes)
-		}
+		conn.recvBuf[int(event.Attr.ReadEventsCount)] = append(conn.recvBuf[int(event.Attr.ReadEventsCount)], event.Msg[:utils.Abs(bytesSent)]...)
+		conn.recvBytes += uint64(utils.Abs(bytesSent))
 	}
 
 	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
-	return attr.MsgSeq
 }
 
-// AddOpenEvent takes *SocketOpenEvent by pointer to avoid a 48-byte struct copy
-// at the call boundary (this fires once per connection, hot under connection
-// churn). Manual Unlock (no defer) and a gated log keep the critical section lean.
-func (conn *Tracker) AddOpenEvent(event *structs.SocketOpenEvent) {
-	now := uint64(time.Now().UnixNano())
+func (conn *Tracker) AddOpenEvent(event structs.SocketOpenEvent) {
 	conn.mutex.Lock()
-	if conn.openTimestamp != 0 && metaUtils.IsIngestLogsEnabled() {
+	defer conn.mutex.Unlock()
+
+	now := uint64(time.Now().UnixNano())
+	if conn.openTimestamp != 0 {
 		metaUtils.LogIngest("Changing conn open timestamp", "current", conn.openTimestamp, "new", now)
 	}
 	conn.openTimestamp = now
 	conn.lastAccessTimestamp = now
-	conn.laddr = event.Laddr
-	conn.lport = event.Lport
-	conn.mutex.Unlock()
+	conn.srcIp = event.SrcIp
+	conn.srcPort = event.SrcPort
 }
 
-// AddCloseEvent ignores the event payload entirely (only timestamps matter), so
-// it takes a pointer to skip the 40-byte copy. time.Now() is read once and reused
-// for both fields, and the read happens before the lock to shrink the hold time.
-func (conn *Tracker) AddCloseEvent(_ *structs.SocketCloseEvent) {
-	now := uint64(time.Now().UnixNano())
-	conn.mutex.Lock()
-	conn.closeTimestamp = now
-	conn.lastAccessTimestamp = now
-	conn.mutex.Unlock()
-}
-
-// GetFlushablePairs returns complete request-response pairs that are safe to flush.
-// A pair (N, N+1) is complete when msg_seq N+2 exists (next direction change started).
-// Caller must NOT hold conn.mutex — this method acquires it.
-func (conn *Tracker) GetFlushablePairs() []MsgSeqPair {
+func (conn *Tracker) AddCloseEvent(event structs.SocketCloseEvent) {
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
 
-	if len(conn.msgGroups) < 3 {
-		return nil
-	}
-
-	pairs, seq := conn.drainPairs(conn.lowestPendingSeq, func(seq uint32) bool {
-		return seq+2 <= conn.highestMsgSeq
-	})
-
-	conn.lowestPendingSeq = seq
-
-	if len(pairs) == 0 && metaUtils.IsMsgSeqLogsEnabled() {
-		slog.Debug("msg_seq: no flushable pairs",
-			"fd", conn.connID.Fd,
-			"lowest_pending", conn.lowestPendingSeq,
-			"highest", conn.highestMsgSeq,
-			"pending_groups", len(conn.msgGroups))
-	}
-
-	return pairs
-}
-
-// FlushRemainingPairs returns all remaining msg_seq groups as pairs.
-// Used on inactivity/close when no N+2 trigger is coming.
-// Caller must NOT hold conn.mutex.
-func (conn *Tracker) FlushRemainingPairs() []MsgSeqPair {
-	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
-
-	if len(conn.msgGroups) == 0 {
-		return nil
-	}
-
-	pairs, seq := conn.drainPairs(conn.lowestPendingSeq, func(seq uint32) bool {
-		return len(conn.msgGroups) > 0 && seq <= conn.highestMsgSeq
-	})
-
-	conn.lowestPendingSeq = seq
-
-	// Clean up any stranded entries that drainPairs couldn't reach
-	// (late arrivals below lowestPendingSeq that were written back into msgGroups).
-	for k, g := range conn.msgGroups {
-		metaUtils.Pipeline.GroupsStranded.Add(1)
-		if metaUtils.IsMsgSeqLogsEnabled() {
-			slog.Warn("msg_seq: stranded group discarded at final flush",
-				"fd", conn.connID.Fd,
-				"msg_seq", k,
-				"direction", g.direction,
-				"chunks", len(g.fragments))
-		}
-		delete(conn.msgGroups, k)
-	}
-
-	return pairs
-}
-
-// drainPairs walks msgGroups from lowestPendingSeq, pairing consecutive odd+even seqs.
-// Gaps are discarded as orphans. The seal func controls when to stop.
-// Caller must hold conn.mutex.
-func (conn *Tracker) drainPairs(startSeq uint32, sealed func(seq uint32) bool) ([]MsgSeqPair, uint32) {
-	seq := startSeq
-	if seq == 0 {
-		for k := range conn.msgGroups {
-			if k%2 == 1 && (seq == 0 || k < seq) {
-				seq = k
-			}
-		}
-	}
-
-	var pairs []MsgSeqPair
-	for sealed(seq) {
-		g1, ok1 := conn.msgGroups[seq]
-		g2, ok2 := conn.msgGroups[seq+1]
-
-		if !ok1 || !ok2 {
-			skippedSeq := seq
-			if ok1 {
-				metaUtils.Pipeline.GroupsOrphaned.Add(1)
-				if metaUtils.IsMsgSeqLogsEnabled() {
-					slog.Warn("msg_seq: orphaned group (partner missing)",
-						"fd", conn.connID.Fd,
-						"msg_seq", seq,
-						"direction", g1.direction,
-						"chunks", len(g1.fragments))
-				}
-				delete(conn.msgGroups, seq)
-			}
-			if ok2 {
-				metaUtils.Pipeline.GroupsOrphaned.Add(1)
-				if metaUtils.IsMsgSeqLogsEnabled() {
-					slog.Warn("msg_seq: orphaned group (partner missing)",
-						"fd", conn.connID.Fd,
-						"msg_seq", seq+1,
-						"direction", g2.direction,
-						"chunks", len(g2.fragments))
-				}
-				delete(conn.msgGroups, seq+1)
-			}
-			if seq%2 == 0 {
-				seq++
-			} else {
-				seq += 2
-			}
-			metaUtils.Pipeline.GapSkipsFired.Add(1)
-			metaUtils.Pipeline.GapSkipSeqsLost.Add(int64(seq - skippedSeq))
-			if metaUtils.IsMsgSeqLogsEnabled() {
-				slog.Warn("msg_seq: gap-skip",
-					"fd", conn.connID.Fd,
-					"skipped_from", skippedSeq,
-					"lowestPendingSeq_after", seq,
-					"highestMsgSeq", conn.highestMsgSeq)
-			}
-			continue
-		}
-
-		if metaUtils.IsMsgSeqLogsEnabled() {
-			slog.Info("msg_seq: flushing pair",
-				"fd", conn.connID.Fd,
-				"req_msg_seq", g1.msgSeq,
-				"resp_msg_seq", g2.msgSeq,
-				"req_chunks", len(g1.fragments),
-				"resp_chunks", len(g2.fragments),
-				"remaining_groups", len(conn.msgGroups)-2)
-		}
-
-		pairs = append(pairs, MsgSeqPair{ReqGroup: g1, RespGroup: g2})
-		delete(conn.msgGroups, seq)
-		delete(conn.msgGroups, seq+1)
-		seq += 2
-	}
-	return pairs, seq
+	conn.closeTimestamp = uint64(time.Now().UnixNano())
+	conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
 }
 
 func (conn *Tracker) GetSentBytes() uint64 {
