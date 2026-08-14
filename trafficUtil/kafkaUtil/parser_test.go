@@ -6,21 +6,11 @@ import (
 	bloomfilter "github.com/bits-and-blooms/bloom/v3"
 )
 
-// setupSampling enables memory sampling and resets the bloom filter + LRU cache
-// to a clean state. shouldParseBody short-circuits to true when sampling is off,
-// so the dedup behaviour under test only runs with sampling enabled. Sampling is
-// restored to its previous value on cleanup so other tests are unaffected.
-func setupSampling(t *testing.T) {
-	prev := memSamplingEnabled
-	memSamplingEnabled = true
-	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
-	lruCache = NewLRUCache(lruCacheCapacity)
-	t.Cleanup(func() { memSamplingEnabled = prev })
-}
-
 // TestShouldParseBodyFirstRequest tests that first request body is parsed
 func TestShouldParseBodyFirstRequest(t *testing.T) {
-	setupSampling(t)
+	// Reset Bloom filter for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
 	// First request should always be parsed
 	if !shouldParseBody("GET", "example.com", "/api/test") {
@@ -30,7 +20,9 @@ func TestShouldParseBodyFirstRequest(t *testing.T) {
 
 // TestShouldParseBodySkipRecent tests that recent requests skip body parsing
 func TestShouldParseBodySkipRecent(t *testing.T) {
-	setupSampling(t)
+	// Reset Bloom filter and LRU for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
 	method, host, path := "POST", "api.example.com", "/v1/submit"
 
@@ -55,7 +47,9 @@ func TestShouldParseBodySkipRecent(t *testing.T) {
 
 // TestShouldParseBodyDifferentSignatures tests different signatures are tracked separately
 func TestShouldParseBodyDifferentSignatures(t *testing.T) {
-	setupSampling(t)
+	// Reset Bloom filter and LRU for testing
+	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
+	lruCache = NewLRUCache(lruCacheCapacity)
 
 	// First signature
 	should1a := shouldParseBody("GET", "example.com", "/api/users")
@@ -90,10 +84,7 @@ func TestShouldParseBodyDifferentSignatures(t *testing.T) {
 
 // BenchmarkShouldParseBody benchmarks the shouldParseBody function
 func BenchmarkShouldParseBody(b *testing.B) {
-	// Reset + enable sampling so the bloom/LRU path actually runs.
-	prev := memSamplingEnabled
-	memSamplingEnabled = true
-	defer func() { memSamplingEnabled = prev }()
+	// Reset
 	bloomFilter = bloomfilter.NewWithEstimates(uint(bloomFilterCapacity), bloomFilterFPRate)
 	lruCache = NewLRUCache(lruCacheCapacity)
 

@@ -5,43 +5,20 @@ type ConnID struct {
 	Fd            uint32
 	Padding1      [4]byte
 	Conn_start_ns uint64
-	// remote port
-	Rport   uint16
+	// this is destination port / remote port
+	Port    uint16
 	Padding [2]byte
-	// remote IP
-	Raddr uint32
+	// this is destination IP / remote IP
+	Ip uint32
 }
 
 type SocketDataEventAttr struct {
 	ConnId           ConnID
-	Laddr            uint32
-	Lport            uint16
-	Padding2         [2]byte
 	Bytes_sent       int32
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
 	Ssl              bool
-	Padding3         [3]byte // alignment padding before role
-	Role             uint32  // endpoint_role_t: 0=unknown, 1=client, 2=server
-	Direction        uint32  // traffic_direction_t: 0=egress, 1=ingress
-	MsgSeq           uint32  // msg_seq: increments on direction change
 }
-
-// MsgOffset is the byte offset at which the payload (msg[]) begins inside a
-// submitted socket_data_event record. unsafe.Sizeof(SocketDataEventAttr) is 72,
-// but the kernel drops 3 trailing padding bytes when computing the wire offset,
-// so the payload starts at byte 68 rather than 72. Kept next to the attr struct
-// so the two stay in sync if the layout ever changes.
-const MsgOffset = 68
-
-// endpoint_role_t (from kernel/module.cc): whether the traced process is the
-// client (did connect) or server (did accept) on a connection. Populated on
-// SocketDataEventAttr.Role.
-const (
-	RoleUnknown uint32 = 0
-	RoleClient  uint32 = 1
-	RoleServer  uint32 = 2
-)
 
 /*
 u64 id;
@@ -64,9 +41,9 @@ type SocketDataEvent struct {
 
 type SocketOpenEvent struct {
 	ConnId ConnID
-	// local IP and port
-	Laddr          uint32
-	Lport          uint16
+	// source IP and port
+	SrcIp          uint32
+	SrcPort        uint16
 	Padding        [2]byte
 	Socket_open_ns uint64
 }
@@ -88,20 +65,15 @@ type SocketCloseEvent struct {
 //	u32 readEventsCount;
 //	u32 writeEventsCount;
 type ConnInfoT struct {
-	Id               uint64
-	Fd               uint32
-	Padding1         [4]byte // alignment padding for conn_start_ns
-	ConnStartNs      uint64
-	Rport            uint16
-	Padding2         [2]byte // alignment padding for raddr
-	Raddr            uint32
-	Laddr            uint32
-	Lport            uint16
-	Ssl              bool
-	Padding3         [1]byte // alignment padding for readEventsCount
+	Id              uint64
+	Fd              uint32
+	Padding1        [4]byte // alignment padding for conn_start_ns
+	ConnStartNs     uint64
+	Port            uint16
+	Padding2        [2]byte // alignment padding for ip
+	Ip              uint32
+	Ssl             bool
+	Padding3        [3]byte // alignment padding for readEventsCount
 	ReadEventsCount  uint32
 	WriteEventsCount uint32
-	Role             uint32 // endpoint_role_t: 0=unknown, 1=client, 2=server
-	MsgSeq           uint32 // msg_seq: persisted for conntrack prefill
-	PrevDirection    uint32 // prev_direction: persisted for conntrack prefill
 }

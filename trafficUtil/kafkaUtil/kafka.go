@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -286,6 +287,16 @@ func LogKafkaError() {
 	}
 }
 
+var CLIENT_IP_HEADERS = []string{
+	"x-forwarded-for",
+	"x-real-ip",
+	"x-cluster-client-ip",
+	"true-client-ip",
+	"x-original-forwarded-for",
+	"x-client-ip",
+	"client-ip",
+}
+
 func ProducePodMapping(ctx context.Context, podName string) error {
 	message := map[string]string{
 		"podName":       podName,
@@ -333,6 +344,26 @@ func Produce(ctx context.Context, value *trafficpb.HttpResponseParam) error {
 		return err
 	}
 	return nil
+}
+
+func GetSourceIp(reqHeaders map[string]*trafficpb.StringList, packetIp string) string {
+
+	for _, header := range CLIENT_IP_HEADERS {
+		if headerValues, exists := reqHeaders[header]; exists {
+			for _, headerValue := range headerValues.Values {
+				parts := strings.Split(headerValue, ",")
+				for _, part := range parts {
+					ip := strings.TrimSpace(part)
+					if ip != "" {
+						slog.Debug("Ip found in", "the header", header)
+						return ip
+					}
+				}
+			}
+		}
+	}
+
+	return packetIp
 }
 
 const (
@@ -415,11 +446,7 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 
 func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
 	topic := "akto.api.logs"
-	// checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
-
-	if KafkaDisabled{
-		return nil
-	}
+	checkDebugUrlAndPrint(url, reqHost, "begin kafka write to akto.api.logs topic")
 
 	msg := kafka.Message{
 		Topic:   topic,

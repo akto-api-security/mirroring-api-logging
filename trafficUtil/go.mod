@@ -1,9 +1,10 @@
 module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 
-go 1.26.5
+go 1.24.0
+
+toolchain go1.24.3
 
 require (
-	github.com/google/flatbuffers v25.12.19+incompatible
 	github.com/segmentio/kafka-go v0.4.25
 	go.mongodb.org/mongo-driver v1.11.3
 	google.golang.org/protobuf v1.36.6
@@ -27,7 +28,7 @@ require (
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/uuid v1.6.0
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect

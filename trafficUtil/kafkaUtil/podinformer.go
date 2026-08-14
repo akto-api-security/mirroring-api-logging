@@ -51,7 +51,7 @@ type PodInformer struct {
 	clientset        *kubernetes.Clientset
 	nodeName         string
 	podNameLabelsMap sync.Map // Maps pod names to their labels directly
-	pidHostNameMap   sync.Map // map[int32]PidInfo
+	pidHostNameMap   map[int32]PidInfo
 }
 
 func SetupPodInformer() (chan struct{}, error) {
@@ -120,41 +120,35 @@ func NewPodInformer() (*PodInformer, error) {
 		clientset:        clientset,
 		nodeName:         nodeName,
 		podNameLabelsMap: sync.Map{},
-		pidHostNameMap:   sync.Map{},
+		pidHostNameMap:   make(map[int32]PidInfo),
 	}, nil
 }
 
 func (w *PodInformer) GetPodNameByProcessId(pid int32) string {
-	if info, ok := w.pidHostNameMap.Load(pid); ok {
-		return info.(PidInfo).HostName
+	if info, ok := w.pidHostNameMap[pid]; ok {
+		return info.HostName
 	}
+
+	return ""
+}
+
+func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
+	if info, ok := w.pidHostNameMap[pid]; ok {
+		return info.ProcessName
+	}
+	// slog.Debug("Process name not found for", "processId", pid)
 	return ""
 }
 
 func (w *PodInformer) GetAllKubePids() []uint32 {
 	// TODO: should we ignore envoy pids ?
-	var pids []uint32
-	w.pidHostNameMap.Range(func(k, _ any) bool {
-		pids = append(pids, uint32(k.(int32)))
-		return true
-	})
+	pids := make([]uint32, 0, len(w.pidHostNameMap))
+	for pid := range w.pidHostNameMap {
+		pids = append(pids, uint32(pid))
+	}
 	slog.Debug("No of kube/docker pids", "found: ", len(pids))
 	return pids
 }
-
-func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
-	// nil-receiver safe: PodInformerInstance is nil when no informer is running
-	// (e.g. unit tests, or environments without pod resolution).
-	if w == nil {
-		return ""
-	}
-	if info, ok := w.pidHostNameMap.Load(pid); ok {
-		return info.(PidInfo).ProcessName
-	}
-	slog.Debug("Process name not found for", "processId", pid)
-	return ""
-}
-
 
 func (w *PodInformer) BuildPidHostNameMap() {
 
@@ -171,10 +165,10 @@ func (w *PodInformer) BuildPidHostNameMap() {
 		if len(parts) == 3 {
 			pid, err := strconv.Atoi(parts[0])
 			if err == nil {
-				w.pidHostNameMap.Store(int32(pid), PidInfo{
+				w.pidHostNameMap[int32(pid)] = PidInfo{
 					ProcessName: parts[1],
 					HostName:    parts[2],
-				})
+				}
 			}
 		}
 	}
@@ -183,7 +177,7 @@ func (w *PodInformer) BuildPidHostNameMap() {
 }
 
 func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (string, error) {
-	// checkDebugUrlAndPrint(url, reqHost, "Resolving Pod Name to labels for "+podName)
+	checkDebugUrlAndPrint(url, reqHost, "Resolving Pod Name to labels for "+podName)
 
 	// Step 1: Use the pod name as the key to find labels in podNameLabelsMap
 	// Hostname captured from PID has the format clusterName-nodeName-podName
@@ -218,14 +212,10 @@ func (w *PodInformer) logPidHostNameMap() {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "PID\tProcessName\tHostname:\n")
 
-	count := 0
-	w.pidHostNameMap.Range(func(k, v any) bool {
-		info := v.(PidInfo)
-		fmt.Fprintf(&builder, "%d\t%s\t%s\n", k.(int32), info.ProcessName, info.HostName)
-		count++
-		return true
-	})
-	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", count)
+	for pid, info := range w.pidHostNameMap {
+		fmt.Fprintf(&builder, "%d\t%s\t%s\n", pid, info.ProcessName, info.HostName)
+	}
+	fmt.Fprintf(&builder, "-------Total PIDs tracked: %d----------\n", len(w.pidHostNameMap))
 	utils.LogToSpecificFile(utils.GoPidLogFile, builder.String())
 	// slog.Debug("PID to Hostname Map logged", "map", w.pidHostNameMap)
 }
@@ -344,7 +334,7 @@ func (w *PodInformer) handlePodAdd(obj interface{}) {
 		slog.Error("Pod handler received invalid", "pod", obj)
 		return
 	}
-	// slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
+	slog.Debug("Pod added:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Store(pod.Name, pod.Labels)
 	// Build the PID to Hostname map again to ensure it is up-to-date
 	// TODO: Optimize this ? What's the rate of pod add events?
@@ -363,7 +353,7 @@ func (w *PodInformer) handlePodUpdate(oldObj, newObj interface{}) {
 		slog.Error("Pod handler received invalid", "pod", newObj)
 		return
 	}
-	// slog.Debug("Pod update:", "namespace", newPod.Namespace, "podName", newPod.Name)
+	slog.Debug("Pod update:", "namespace", newPod.Namespace, "podName", newPod.Name)
 	w.podNameLabelsMap.Delete(oldPod.Name)
 	w.podNameLabelsMap.Store(newPod.Name, newPod.Labels)
 	w.BuildPidHostNameMap()
@@ -375,7 +365,7 @@ func (w *PodInformer) handlePodDelete(obj interface{}) {
 		slog.Error("Pod handler received invalid", "pod", obj)
 		return
 	}
-	// slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
+	slog.Debug("Pod deleted:", "namespace", pod.Namespace, "podName", pod.Name)
 	w.podNameLabelsMap.Delete(pod.Name)
 	// Build the PID to Hostname map again to ensure it is up-to-date
 	// TODO: Optimize this ? What's the rate of pod add events?
