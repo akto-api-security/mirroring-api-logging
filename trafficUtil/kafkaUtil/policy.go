@@ -7,6 +7,7 @@ package kafkaUtil
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -283,16 +284,16 @@ func checkDebugUrlAndPrint(url string, host string, message string) {
 	if len(DebugStrings) > 0 {
 		for _, debugString := range DebugStrings {
 			if strings.Contains(url, debugString) {
-				// ctx := context.Background()
+				ctx := context.Background()
 				logMsg := fmt.Sprintf("url: %s, host: %s, message: %s", url, host, message)
 				utils.PrintLogDebug(logMsg)
-				// go ProduceLogs(ctx, logMsg, LogTypeInfo)
+				go ProduceLogs(ctx, logMsg, LogTypeWarn)
 				break
 			} else if strings.Contains(host, debugString) {
-				// ctx := context.Background()
+				ctx := context.Background()
 				logMsg := fmt.Sprintf("url: %s, host: %s, message: %s", url, host, message)
 				utils.PrintLogDebug(logMsg)
-				// go ProduceLogs(ctx, logMsg, LogTypeInfo)
+				go ProduceLogs(ctx, logMsg, LogTypeWarn)
 				break
 			}
 		}

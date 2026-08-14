@@ -36,7 +36,7 @@ var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
 
-var kafkaErrorThreshold = 500000
+var kafkaErrorThreshold = 500
 var kafkaReconnectIntervalMinutes = -1
 var heartbeatIntervalSeconds = 60
 var uniqueDaemonsetId = uuid.New().String()
@@ -158,7 +158,7 @@ func kafkaCompletion() func(messages []kafka.Message, err error) {
 				os.Exit(1)
 			}
 		} else {
-			// utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
+			utils.PrintLog("kafka messages sent successfully", "messagesCount", len(messages))
 		}
 	}
 }
@@ -296,7 +296,7 @@ func ProducePodMapping(ctx context.Context, podName string) error {
 
 	out, _ := json.Marshal(message)
 	slog.Debug("Producing pod mapping", "podName", podName, "message", string(out))
-	// go ProduceLogs(ctx, string(out), LogTypeDebug)
+	go ProduceLogs(ctx, string(out), LogTypeDebug)
 	return nil
 }
 
