@@ -117,6 +117,25 @@ func run() {
 	}
 	defer bpfModule.Close()
 
+	// Populate kubernetes_pids map from TRACE_PIDS env variable (comma-separated list of PIDs)
+	// Populate allowed_comms map from TRACE_COMMS env variable (comma-separated list of comm names)
+	// If both are empty, trace_all_flag is set so all processes are traced.
+	tracedPids := setupTracePids(bpfModule)
+	tracedComms := setupTraceComms(bpfModule)
+	if len(tracedPids) == 0 && len(tracedComms) == 0 {
+		slog.Warn("both TRACE_PIDS and TRACE_COMMS are empty, tracing all processes")
+		traceAllTable := bcc.NewTable(bpfModule.TableId("trace_all_flag"), bpfModule)
+		var key [4]byte
+		var val [4]byte
+		binary.LittleEndian.PutUint32(val[:], 1)
+		if err := traceAllTable.Set(key[:], val[:]); err != nil {
+			slog.Error("failed to set trace_all_flag", "error", err)
+		}
+	}
+	slog.Info("here are the traced", "pids", tracedPids, "comms", tracedComms)
+	// TODO: pids should be of K8 services only ??
+	fillExistingConnections(bpfModule, tracedPids)
+
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
 
@@ -130,7 +149,6 @@ func run() {
 	if err != nil {
 		slog.Error("Failed to setup pod watcher", "error", err)
 	}
-
 	if kafkaUtil.PodInformerInstance != nil {
 		kubePids := kafkaUtil.PodInformerInstance.GetAllKubePids()
 		fillExistingConnections(bpfModule, kubePids)
@@ -152,10 +170,10 @@ func run() {
 	}
 
 	hooks := make([]bpfwrapper.Kprobe, 0)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", connections.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", connections.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
@@ -166,7 +184,7 @@ func run() {
 
 		}
 	}
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", connections.SocketCloseEventCallback))
 	hooks = append(hooks, bpfwrapper.Level4hooks...)
 
 	if err := bpfwrapper.LaunchPerfBufferConsumers(bpfModule, connectionFactory, callbacks); err != nil {
@@ -220,6 +238,10 @@ func run() {
 
 	doProfiling := false
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
+
+	enablePprof := false
+	trafficUtils.InitVar("AKTO_ENABLE_PPROF", &enablePprof)
+	trafficUtils.StartObservabilityServer(enablePprof)
 
 	if doProfiling {
 		ticker := time.NewTicker(30 * time.Second) // Create a ticker to trigger every 30 seconds
@@ -293,9 +315,35 @@ func setupTracePids(bpfModule *bcc.Module) []uint32 {
 			}
 		}
 	} else {
-		slog.Warn("TRACE_PIDS env variable not set, no PIDs will be traced")
+		slog.Warn("TRACE_PIDS env variable not set")
 	}
 	return tracedPids
+}
+
+// Use this when specific comm name tracing is required.
+func setupTraceComms(bpfModule *bcc.Module) []string {
+	allowedCommsTable := bcc.NewTable(bpfModule.TableId("allowed_comms"), bpfModule)
+	var tracedComms []string
+	if traceComms := os.Getenv("TRACE_COMMS"); traceComms != "" {
+		for _, comm := range strings.Split(traceComms, ",") {
+			comm = strings.TrimSpace(comm)
+			if comm == "" {
+				continue
+			}
+			// BPF comm keys are fixed 16 bytes, null-padded
+			var commKey [16]byte
+			copy(commKey[:], comm)
+			if err := allowedCommsTable.Set(commKey[:], []byte{1}); err != nil {
+				slog.Error("failed to add comm to allowed_comms map", "comm", comm, "error", err)
+			} else {
+				slog.Info("added comm to allowed_comms map", "comm", comm)
+				tracedComms = append(tracedComms, comm)
+			}
+		}
+	} else {
+		slog.Warn("TRACE_COMMS env variable not set")
+	}
+	return tracedComms
 }
 
 func captureMemoryProfile() {
