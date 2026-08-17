@@ -10,6 +10,12 @@
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
 
+// MSG_PEEK (0x2): the recv() peeks data WITHOUT consuming it. Envoy's listener
+// inspectors (tls_inspector / http_inspector) peek the first bytes of each new
+// downstream connection, then read the same bytes for real. Capturing the peek
+// would duplicate the message in the msg_seq group, so recv-family probes skip it.
+#define MSG_PEEK 0x2
+
 #define ARCH_TYPE 1
 
 enum source_function_t {
@@ -888,11 +894,18 @@ int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
     return 0;
   }
 
-int syscall__probe_entry_recvfrom(struct pt_regs* ctx, int fd, char* buf, size_t count, 
+int syscall__probe_entry_recvfrom(struct pt_regs* ctx, int fd, char* buf, size_t count,
 	int flags, struct sockaddr* src_addr, socklen_t* addrlen) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (!should_trace_comm()) {
+        return 0;
+    }
+
+    // MSG_PEEK reads don't consume the socket; the real read follows and is
+    // captured. Skip the peek so it isn't recorded as a duplicate fragment.
+    if (flags & MSG_PEEK) {
+        active_read_args_map.delete(&id);
         return 0;
     }
 
@@ -984,10 +997,16 @@ int syscall__probe_ret_sendto(struct pt_regs* ctx) {
     return 0;
 }
 
-int syscall__probe_entry_recv(struct pt_regs* ctx, int fd, char* buf, size_t count) {
+int syscall__probe_entry_recv(struct pt_regs* ctx, int fd, char* buf, size_t count, int flags) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (!should_trace_comm()) {
+        return 0;
+    }
+
+    // Skip MSG_PEEK (non-consuming); the real read follows. See recvfrom above.
+    if (flags & MSG_PEEK) {
+        active_read_args_map.delete(&id);
         return 0;
     }
 
@@ -1083,10 +1102,16 @@ int syscall__probe_ret_read(struct pt_regs* ctx) {
     return 0;
 }
 
-int syscall__probe_entry_recvmsg(struct pt_regs* ctx, int fd, struct user_msghdr* msghdr) {
+int syscall__probe_entry_recvmsg(struct pt_regs* ctx, int fd, struct user_msghdr* msghdr, int flags) {
     u64 id = bpf_get_current_pid_tgid();
 
     if (!should_trace_comm()) {
+        return 0;
+    }
+
+    // Skip MSG_PEEK (non-consuming); the real read follows. See recvfrom above.
+    if (flags & MSG_PEEK) {
+        active_read_args_map.delete(&id);
         return 0;
     }
 
