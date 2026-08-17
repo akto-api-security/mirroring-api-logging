@@ -335,15 +335,11 @@ func PopulateExistingConnections(
 				Id:               (uint64(pid) << 32) | uint64(pid),
 				Fd:               conn.Fd,
 				ConnStartNs:      0, // Unknown for pre-existing connections
-				Rport:            conn.RemotePort,
-				Raddr:            conn.RemoteIP,
-				Laddr:            conn.LocalIP,
-				Lport:            conn.LocalPort,
+				Port:             conn.RemotePort,
+				Ip:               conn.RemoteIP,
 				Ssl:              false,
 				ReadEventsCount:  0,
 				WriteEventsCount: 0,
-				MsgSeq:           0, // First data event will init to 1
-				PrevDirection:    0, // Irrelevant when msg_seq=0
 			}
 
 			err := PopulateConnInfoWithRotation(
