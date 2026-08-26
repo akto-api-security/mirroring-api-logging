@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,12 +16,11 @@ import (
 	"sync"
 	"time"
 
+	http2parser "github.com/akto-api-security/gomiddleware/http2parser"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/trafficUtil/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/trafficMetrics"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/hpack"
 )
 
 var (
@@ -391,6 +391,9 @@ type http2Stream struct {
 	status           string
 	requestComplete  bool
 	responseComplete bool
+	isGRPC           bool
+	grpcStatus       string
+	grpcMessage      string
 }
 
 type trafficParams struct {
@@ -584,29 +587,42 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 		sentBuffer = sentBuffer[len(http2Preface):]
 	}
 
-	streams := make(map[uint32]*http2Stream)
+	// streams := make(map[uint32]*http2Stream)
+	opts := http2parser.NewParseOptions(
+		http2parser.WithBase64Encoding(true),
+		http2parser.WithWaitForEndStream(true),
+		http2parser.WithGRPCTrailers(true),
+	)
+	streams := make(map[uint32]*http2parser.HTTP2Stream)
 
-	parseHTTP2Frames(receiveBuffer, streams, true, shouldPrint)
-	parseHTTP2Frames(sentBuffer, streams, false, shouldPrint)
+	err := http2parser.ParseHTTP2Frames(receiveBuffer, streams, true, opts)
+	if err != nil {
+		log.Printf("Error parsing requests: %v", err)
+	}
+	// Parse responses
+	err = http2parser.ParseHTTP2Frames(sentBuffer, streams, false, opts)
+	if err != nil {
+		log.Printf("Error parsing responses: %v", err)
+	}
 
 	// Process complete request/response pairs
 	for streamID, stream := range streams {
-		if !stream.requestComplete || !stream.responseComplete {
+		if !stream.RequestComplete || !stream.ResponseComplete {
 			if shouldPrint {
-				slog.Debug("Incomplete stream", "streamID", streamID, "requestComplete", stream.requestComplete, "responseComplete", stream.responseComplete)
+				slog.Debug("Incomplete stream", "streamID", streamID, "requestComplete", stream.RequestComplete, "responseComplete", stream.ResponseComplete)
 			}
 			// Skip incomplete streams
 			continue
 		}
 
 		// Extract host for filtering
-		host := stream.requestHeaders[":authority"]
+		host := stream.RequestHeaders[":authority"]
 		if host == "" {
-			host = stream.requestHeaders["host"]
+			host = stream.RequestHeaders["host"]
 		}
 
 		reqHeaderStr := make(map[string]string)
-		for name, value := range stream.requestHeaders {
+		for name, value := range stream.RequestHeaders {
 			reqHeaderStr[name] = value
 		}
 		if host != "" {
@@ -619,21 +635,26 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 		}
 
 		respHeaderStr := make(map[string]string)
-		for name, value := range stream.responseHeaders {
+		for name, value := range stream.ResponseHeaders {
 			respHeaderStr[name] = value
+		}
+
+		protocolType := "HTTP/2.0"
+		if stream.IsGRPC {
+			protocolType = "gRPC"
 		}
 
 		// Use common production logic
 		params := trafficParams{
-			method:          stream.method,
-			path:            stream.path,
+			method:          stream.Method,
+			path:            stream.Path,
 			requestHeaders:  reqHeaderStr,
 			responseHeaders: respHeaderStr,
-			requestPayload:  string(stream.requestBody),
-			responsePayload: string(stream.responseBody),
-			statusCode:      stream.statusCode,
-			status:          stream.status,
-			protocolType:    "HTTP/2.0",
+			requestPayload:  string(stream.RequestBody),
+			responsePayload: string(stream.ResponseBody),
+			statusCode:      stream.StatusCode,
+			status:          stream.Status,
+			protocolType:    protocolType,
 			sourceIp:        sourceIp,
 			destIp:          destIp,
 			vxlanID:         vxlanID,
@@ -647,99 +668,5 @@ func ParseHTTP2AndProduce(receiveBuffer []byte, sentBuffer []byte, sourceIp stri
 		}
 
 		produceTrafficData(params)
-	}
-}
-
-func parseHTTP2Frames(buffer []byte, streams map[uint32]*http2Stream, isRequest bool, shouldPrint bool) {
-	framer := http2.NewFramer(nil, bytes.NewReader(buffer))
-	framer.SetMaxReadFrameSize(1 << 20) // 1MB max frame size
-
-	decoder := hpack.NewDecoder(4096, nil)
-
-	for {
-		frame, err := framer.ReadFrame()
-		if err != nil {
-			if err != io.EOF {
-				if shouldPrint {
-					slog.Debug("Error reading HTTP/2 frame", "error", err, "isRequest", isRequest)
-				}
-			}
-			break
-		}
-
-		streamID := frame.Header().StreamID
-
-		// Skip stream 0 (connection-level frames like SETTINGS, WINDOW_UPDATE, PING)
-		if streamID == 0 {
-			continue
-		}
-
-		// Get or create stream
-		stream, exists := streams[streamID]
-		if !exists {
-			stream = &http2Stream{
-				streamID:        streamID,
-				requestHeaders:  make(map[string]string),
-				responseHeaders: make(map[string]string),
-			}
-			streams[streamID] = stream
-		}
-
-		switch f := frame.(type) {
-		case *http2.HeadersFrame:
-			headerBlock := f.HeaderBlockFragment()
-			headers, err := decoder.DecodeFull(headerBlock)
-			if err != nil {
-				slog.Error("Failed to decode HPACK headers", "error", err, "streamID", streamID)
-				continue
-			}
-
-			if isRequest {
-				for _, hf := range headers {
-					stream.requestHeaders[hf.Name] = hf.Value
-					// Extract pseudo-headers
-					if hf.Name == ":method" {
-						stream.method = hf.Value
-					} else if hf.Name == ":path" {
-						stream.path = hf.Value
-					}
-				}
-				if f.StreamEnded() {
-					stream.requestComplete = true
-				}
-			} else {
-				for _, hf := range headers {
-					stream.responseHeaders[hf.Name] = hf.Value
-					// Extract status code
-					if hf.Name == ":status" {
-						stream.status = hf.Value
-						fmt.Sscanf(hf.Value, "%d", &stream.statusCode)
-					}
-				}
-				if f.StreamEnded() {
-					stream.responseComplete = true
-				}
-			}
-
-		case *http2.DataFrame:
-			data := f.Data()
-			if isRequest {
-				stream.requestBody = append(stream.requestBody, data...)
-				if f.StreamEnded() {
-					stream.requestComplete = true
-				}
-			} else {
-				stream.responseBody = append(stream.responseBody, data...)
-				if f.StreamEnded() {
-					stream.responseComplete = true
-				}
-			}
-
-		case *http2.RSTStreamFrame:
-			// Stream was reset
-			if shouldPrint {
-				slog.Debug("Stream reset", "streamID", streamID, "errorCode", f.ErrCode)
-			}
-		}
 	}
 }

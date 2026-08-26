@@ -1,6 +1,7 @@
 FROM alpine:3.22 AS base
 
 USER root
+RUN apk update && apk upgrade --no-cache
 RUN apk add bcc-tools bcc-dev bcc-doc linux-headers build-base
 
 FROM base AS builder
