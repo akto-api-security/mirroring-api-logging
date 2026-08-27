@@ -447,6 +447,17 @@ func TestRateSweep(t *testing.T) {
 				if err := os.MkdirAll(profDir, 0o755); err != nil {
 					t.Fatalf("mkdir %s: %v", profDir, err)
 				}
+
+				// Watermark-triggered heap dumps: catches transient peaks the 10s
+				// heap-noforce ticker below can sample between (confirmed missing a
+				// 2x spike on a 300k/json run — periodic snapshots peaked at 1.47GB
+				// while the actual death-moment HeapInuse, per stats.go's
+				// dumpHeapOnDeath, was 3.2GB). 150ms poll is cheap (ReadMemStats
+				// only); a profile is written only on a >10% new high.
+				heapWatermark := metaUtils.NewHeapWatermarkMonitor(profDir+"/heap-watermark", 150*time.Millisecond, 10)
+				heapWatermark.Start()
+				defer heapWatermark.Stop()
+
 				// CPU capture goes through our own pprof HTTP server (rsCaptureCPU),
 				// not a direct pprof.StartCPUProfile call — Go allows only one
 				// active CPU profile per process, so routing through the same
@@ -554,6 +565,7 @@ func TestRateSweep(t *testing.T) {
 
 				// ---- stop pprof capture (covers window + drain) and dump the rest ----
 				close(heapDone)
+				heapWatermark.Stop()
 				// cpuDone was sized for exactly *rsWindowFlg seconds, started at the
 				// same instant the load loop began; the drain phase above always
 				// takes longer, so this fetch has already completed — this read
