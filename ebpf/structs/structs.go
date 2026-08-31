@@ -44,6 +44,18 @@ const (
 	RoleServer  uint32 = 2
 )
 
+// protocol_t (from kernel/module.cc classify_protocol): the wire-protocol verdict
+// stamped on SocketDataEventAttr.Protocol. HTTP2 covers gRPC (the grpc-vs-h2 split
+// happens in the parser). TLS is a transient handshake state; the plaintext is
+// reclassified to HTTP/HTTP2 after the SSL flip.
+const (
+	ProtoUnknown uint32 = 0
+	ProtoHTTP1   uint32 = 1
+	ProtoHTTP2   uint32 = 2
+	ProtoTLS     uint32 = 3
+	ProtoOther   uint32 = 4
+)
+
 /*
 u64 id;
 u32 fd;

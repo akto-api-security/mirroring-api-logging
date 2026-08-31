@@ -117,6 +117,10 @@ type PipelineMetrics struct {
 	RequestBodyFailure  atomic.Int64 // req body io.ReadAll failed — std-lib slow path only (parseHTTPTraffic), and only for requests matching the body-parsing policy; pair still produced, empty body
 	ResponseBodyFailure atomic.Int64 // resp body io.ReadAll failed — same conditions as RequestBodyFailure
 
+	// HTTP/2 path (protocol==HTTP2). Distinct from the msg_seq pair counters above.
+	HTTP2StreamsProduced atomic.Int64 // completed unary h2/gRPC streams handed to produce
+	HTTP2ConnFailed      atomic.Int64 // h2 connections abandoned (byte gap or HPACK desync)
+
 	// Reset tracking
 	ResetAt time.Time
 }
@@ -154,6 +158,8 @@ type PipelineMetricsSnapshot struct {
 	PairsMismatched            int64               `json:"pairs_mismatched"`
 	RequestBodyFailure         int64               `json:"request_body_failure"`
 	ResponseBodyFailure        int64               `json:"response_body_failure"`
+	HTTP2StreamsProduced       int64               `json:"http2_streams_produced"`
+	HTTP2ConnFailed            int64               `json:"http2_conn_failed"`
 	CoveragePct                float64             `json:"coverage_pct"`
 }
 
@@ -193,6 +199,8 @@ func (m *PipelineMetrics) Snapshot() PipelineMetricsSnapshot {
 		PairsMismatched:            m.PairsMismatched.Load(),
 		RequestBodyFailure:         m.RequestBodyFailure.Load(),
 		ResponseBodyFailure:        m.ResponseBodyFailure.Load(),
+		HTTP2StreamsProduced:       m.HTTP2StreamsProduced.Load(),
+		HTTP2ConnFailed:            m.HTTP2ConnFailed.Load(),
 		CoveragePct:                coveragePct,
 	}
 }
@@ -219,5 +227,7 @@ func (m *PipelineMetrics) Reset() {
 	m.PairsMismatched.Store(0)
 	m.RequestBodyFailure.Store(0)
 	m.ResponseBodyFailure.Store(0)
+	m.HTTP2StreamsProduced.Store(0)
+	m.HTTP2ConnFailed.Store(0)
 	m.ResetAt = time.Now()
 }

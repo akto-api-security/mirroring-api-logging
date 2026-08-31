@@ -8,6 +8,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/fastparser"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
@@ -40,6 +41,14 @@ type Tracker struct {
 	// protocol is the kernel's wire-protocol verdict (structs.kProto*), delivered
 	// on every data event like role. It is the routing key for parser selection.
 	protocol uint32
+
+	// HTTP/2 path (protocol == structs.ProtoHTTP2). h2 is the persistent
+	// per-connection parser; h2egress/h2ingress resequence rc/wc-ordered chunks
+	// into the contiguous byte streams the parser must be fed in order. Nil/zero
+	// until the first HTTP/2 event. See http2.go.
+	h2        *fastparser.HTTP2Conn
+	h2egress  h2Reassembler
+	h2ingress h2Reassembler
 
 	foundHTTP bool
 
@@ -162,6 +171,16 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		return attr.MsgSeq
 	}
 	payload := kernelBytes[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
+
+	// HTTP/2 (incl. gRPC): a separate path — msg_seq direction-change pairing does
+	// not apply to multiplexed, full-duplex streams. Resequence per direction and
+	// feed the persistent parser (see http2.go). Gated on FastIngestion because the
+	// h2 flush lives in startFlushRoutine, which only runs under FastIngestion.
+	if metaUtils.FastIngestion && conn.protocol == structs.ProtoHTTP2 {
+		conn.addHTTP2Event(attr, payload)
+		conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+		return attr.MsgSeq
+	}
 
 	if metaUtils.FastIngestion {
 		// msg_seq based buffering for incremental pair flushing
