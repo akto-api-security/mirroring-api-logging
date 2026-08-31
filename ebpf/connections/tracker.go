@@ -37,6 +37,10 @@ type Tracker struct {
 
 	role uint32 // 0=unknown, 1=client, 2=server
 
+	// protocol is the kernel's wire-protocol verdict (structs.kProto*), delivered
+	// on every data event like role. It is the routing key for parser selection.
+	protocol uint32
+
 	foundHTTP bool
 
 	// msg_seq based buffering for incremental pair flushing
@@ -107,6 +111,12 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 	if attr.Role != 0 && conn.role == 0 {
 		conn.role = attr.Role
 	}
+	// Latch the kernel's protocol verdict (like role). Reset to 0 on the SSL flip
+	// below so the decrypted-plaintext verdict (HTTP/1 vs HTTP/2) re-latches over
+	// the earlier kProtoTLS seen during the handshake.
+	if attr.Protocol != 0 && conn.protocol == 0 {
+		conn.protocol = attr.Protocol
+	}
 
 	// first few read/write calls in a TLS are of handshake
 	// these are extra data we don't need, once TLS established
@@ -132,6 +142,9 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		conn.sentBytes = 0
 		conn.recvBytes = 0
 		conn.ssl = attr.Ssl
+		// Drop the handshake-era verdict (kProtoTLS); the kernel reclassifies the
+		// decrypted plaintext and re-sends the real HTTP/1-vs-HTTP/2 verdict.
+		conn.protocol = 0
 	}
 
 	// Data events ssl true/false must match the conn info ssl
