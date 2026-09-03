@@ -10,11 +10,11 @@
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
 
-// MSG_PEEK (0x2): the recv() peeks data WITHOUT consuming it. Envoy's listener
-// inspectors (tls_inspector / http_inspector) peek the first bytes of each new
-// downstream connection, then read the same bytes for real. Capturing the peek
-// would duplicate the message in the msg_seq group, so recv-family probes skip it.
-#define MSG_PEEK 0x2
+// MSG_PEEK (already defined as 2 by linux/socket.h, included above): the recv()
+// peeks data WITHOUT consuming it. Envoy's listener inspectors (tls_inspector /
+// http_inspector) peek the first bytes of each new downstream connection, then
+// read the same bytes for real. Capturing the peek would duplicate the message
+// in the msg_seq group, so recv-family probes skip it.
 
 #define ARCH_TYPE 1
 
