@@ -8,7 +8,7 @@
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
-#define LOOP_LIMIT 15
+#define LOOP_LIMIT 42
 
 // MSG_PEEK (already defined as 2 by linux/socket.h, included above): the recv()
 // peeks data WITHOUT consuming it. Envoy's listener inspectors (tls_inspector /
@@ -481,7 +481,54 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     conn_info_map.delete(&tgid_fd);    
 }
 
-static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
+// resolve_conn_state does the loop-invariant part of process_syscall_data: the
+// per-connection lookups and validity checks. Split out so the iovec loop can do
+// it ONCE per syscall instead of once per buffer.
+//
+// Why this matters: the verifier's limit that these probes hit is
+// BPF_COMPLEXITY_LIMIT_INSNS (insn_processed, ~1M), not program size — the
+// programs are ~570 insns against a 4096 cap. Every branch inside the body is
+// re-explored for each of the LOOP_LIMIT inlined copies, so branches multiply.
+// The two map lookups here are helper calls the compiler cannot dedupe across
+// iterations, and each needs its own NULL check, so leaving them in the loop
+// cost 2 lookups + 4 branches per buffer to recompute an identical answer.
+// Returns NULL when the caller should skip the syscall entirely.
+static __inline struct conn_info_t* resolve_conn_state(const struct data_args_t* args, u64 id, bool ssl,
+                                                       struct socket_data_event_t** event_out) {
+    if (args->fd < 0) {
+        return NULL;
+    }
+
+    u32 tgid = id >> 32;
+    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
+    if (conn_info == NULL) {
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, args->fd);
+      }
+      return NULL;
+    }
+
+    if (conn_info->ssl != ssl) {
+        return NULL;
+    }
+
+    u32 kZero = 0;
+    struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
+    if (socket_data_event == NULL) {
+        return NULL;
+    }
+
+    *event_out = socket_data_event;
+    return conn_info;
+}
+
+// process_syscall_data_resolved is the per-buffer half: it assumes the caller has
+// already resolved conn_info and the event buffer via resolve_conn_state.
+static __inline void process_syscall_data_resolved(struct pt_regs* ret, const struct data_args_t* args, u64 id,
+                                                   bool is_send, bool compute_meta,
+                                                   struct conn_info_t* conn_info,
+                                                   struct socket_data_event_t* socket_data_event) {
     int bytes_exchanged = PT_REGS_RC(ret);
 
     if(args->msg_len > 0){
@@ -493,30 +540,6 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     }
 
     if (bytes_exchanged <= 0) {
-        return;
-    }
-
-    if (args->fd < 0) {
-        return;
-    }
-
-    u32 tgid = id >> 32;
-    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
-    if (conn_info == NULL) {
-      if (PRINT_BPF_LOGS){
-        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, args->fd);
-      }
-      return;
-    }
-
-    if (conn_info->ssl != ssl) {
-        return;
-    }
-
-    u32 kZero = 0;
-    struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
-    if (socket_data_event == NULL) {
         return;
     }
 
@@ -568,7 +591,14 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     // event on this connection is dropped too. The flag lookup touches ONLY
     // kProtoOther connections (the ones we drop) — kept HTTP/h2/TLS traffic pays
     // just the comparison, no map lookup.
-    if (conn_info->protocol == kProtoOther) {
+    // compute_meta is a compile-time constant at each inline site, so for the
+    // iovec loop this whole block (including the map lookup) is emitted only in
+    // the i==0 copy instead of all LOOP_LIMIT of them. The verdict is a
+    // per-connection property and cannot change between iovecs of one syscall,
+    // so re-checking it per buffer was redundant anyway. process_syscall_data_vecs
+    // does the same check once before its loop, so a dropped connection skips the
+    // entire syscall rather than just this one buffer.
+    if (compute_meta && conn_info->protocol == kProtoOther) {
         u32 drop_zero = 0;
         u32* drop = drop_non_http_flag.lookup(&drop_zero);
         if (drop != NULL && *drop == 1) {
@@ -641,10 +671,43 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
 
 }
 
+// Unchanged entry point for the scalar (read/write/recv/send) probes: resolve
+// then process. Those callers inline this once, so the lookups cost nothing there.
+static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
+    struct socket_data_event_t* socket_data_event = NULL;
+    struct conn_info_t* conn_info = resolve_conn_state(args, id, ssl, &socket_data_event);
+    if (conn_info == NULL || socket_data_event == NULL) {
+        return;
+    }
+    process_syscall_data_resolved(ret, args, id, is_send, compute_meta, conn_info, socket_data_event);
+}
+
 static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_args_t* args, u64 id, bool is_send){
     int bytes_sent=0;
     int total_size = PT_REGS_RC(ret);
     const struct iovec* iov = args->iov;
+
+    // Resolve per-connection state ONCE for the whole syscall. Everything here is
+    // invariant across the iovecs of a single call, so doing it inside the loop
+    // made the verifier re-explore the same branches LOOP_LIMIT times, which is
+    // what pushed insn_processed past BPF_COMPLEXITY_LIMIT_INSNS and made these
+    // four vectored probes fail to load.
+    struct socket_data_event_t* socket_data_event = NULL;
+    struct conn_info_t* conn_info = resolve_conn_state(args, id, false /* ssl */, &socket_data_event);
+    if (conn_info == NULL || socket_data_event == NULL) {
+        return;
+    }
+
+    // Drop verdict is per-connection too: evaluating it here means a dropped
+    // connection skips all its buffers, matching the previous behaviour where
+    // each per-buffer check returned early.
+    if (conn_info->protocol == kProtoOther) {
+        u32 drop_zero = 0;
+        u32* drop = drop_non_http_flag.lookup(&drop_zero);
+        if (drop != NULL && *drop == 1) {
+            return;
+        }
+    }
     for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size ; ++i) {
         struct iovec iov_cpy;
         bpf_probe_read(&iov_cpy, sizeof(iov_cpy), &iov[i]);
@@ -658,7 +721,7 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
         // and the HTTP request/response line lives in iov[0]. i==0 is a
         // compile-time constant per unrolled copy, so the metadata code is
         // emitted once instead of LOOP_LIMIT times.
-        process_syscall_data(ret, args, id, is_send, false, /* compute_meta */ i == 0);
+        process_syscall_data_resolved(ret, args, id, is_send, /* compute_meta */ i == 0, conn_info, socket_data_event);
         bytes_sent += iov_size;
         
       }
