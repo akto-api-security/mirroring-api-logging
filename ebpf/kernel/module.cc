@@ -8,7 +8,7 @@
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
-#define LOOP_LIMIT 42
+#define LOOP_LIMIT 15
 
 // MSG_PEEK (already defined as 2 by linux/socket.h, included above): the recv()
 // peeks data WITHOUT consuming it. Envoy's listener inspectors (tls_inspector /
