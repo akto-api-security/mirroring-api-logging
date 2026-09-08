@@ -11,6 +11,7 @@ package connections
 // same fast encode+produce pipeline the HTTP/1.1 path uses (kafkaUtil.ProduceReqResp).
 
 import (
+	"bytes"
 	"log/slog"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
@@ -67,6 +68,10 @@ func (conn *Tracker) addHTTP2Event(attr *structs.SocketDataEventAttr, payload []
 		conn.h2 = fastparser.NewHTTP2Conn()
 	}
 	if conn.h2.Failed() {
+		// The connection was abandoned earlier (byte gap / HPACK desync). Everything
+		// still arriving on it is unrecoverable, but count it: this is the blast
+		// radius of the original single lost chunk, and it used to vanish silently.
+		utils.Pipeline.HTTP2EventsAfterFail.Add(1)
 		return
 	}
 
@@ -144,6 +149,27 @@ func produceHTTP2Streams(connID structs.ConnID, tracker *Tracker, streams []*fas
 		req, resp := s.ToRequestResponse()
 		utils.Pipeline.PairsAttempted.Add(1)
 		utils.Pipeline.HTTP2StreamsProduced.Add(1)
+
+		// Correctness net for multiplexed pairing, mirroring the HTTP/1 check in
+		// kafkaUtil/parser.go. HTTP/2 runs many streams concurrently on one
+		// connection and responses may return in any order, so a req/resp pair is
+		// only correct if it was matched by stream_id rather than arrival order.
+		// When a request carries x-debug-token and the peer echoes it, the token
+		// MUST appear in that stream's response body; if it doesn't, this pair
+		// intermixed with another stream's.
+		//
+		// Checked against s.RespBody (the raw body) deliberately -- for gRPC
+		// ToRequestResponse() base64-encodes resp.Body, and the token would not
+		// survive that encoding as a substring.
+		if tok := req.Header("x-debug-token"); len(tok) > 0 {
+			if !bytes.Contains(s.RespBody, tok) {
+				utils.Pipeline.PairsMismatched.Add(1)
+				if utils.IsMsgSeqLogsEnabled() {
+					slog.Warn("http2: req/resp intermix — x-debug-token not echoed in this stream's response",
+						"fd", connID.Fd, "stream", s.StreamID, "token", string(tok))
+				}
+			}
+		}
 
 		switch tracker.role {
 		case structs.RoleClient:
