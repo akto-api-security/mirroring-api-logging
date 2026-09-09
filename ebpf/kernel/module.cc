@@ -10,11 +10,11 @@
 #define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
 
-// MSG_PEEK (0x2): the recv() peeks data WITHOUT consuming it. Envoy's listener
-// inspectors (tls_inspector / http_inspector) peek the first bytes of each new
-// downstream connection, then read the same bytes for real. Capturing the peek
-// would duplicate the message in the msg_seq group, so recv-family probes skip it.
-#define MSG_PEEK 0x2
+// MSG_PEEK (already defined as 2 by linux/socket.h, included above): the recv()
+// peeks data WITHOUT consuming it. Envoy's listener inspectors (tls_inspector /
+// http_inspector) peek the first bytes of each new downstream connection, then
+// read the same bytes for real. Capturing the peek would duplicate the message
+// in the msg_seq group, so recv-family probes skip it.
 
 #define ARCH_TYPE 1
 
@@ -63,6 +63,19 @@ enum message_type_t {
   kResponse = 2,
 };
 
+// Wire protocol of a connection, derived from the first decisive bytes (see
+// classify_protocol). Persisted in conn_info_t and echoed on every data event.
+// gRPC is NOT distinguished from HTTP/2 here (its content-type lives in an
+// HPACK-compressed HEADERS frame, undecodable in the verifier budget) — the
+// grpc-vs-h2 split happens in Go.
+enum protocol_t {
+  kProtoUnknown = 0,  // unclassified, or first buffer too short → KEEP (fail-open)
+  kProtoHTTP    = 1,  // HTTP/1.x request or response
+  kProtoHTTP2   = 2,  // HTTP/2 / gRPC (cleartext preface, or decrypted plaintext)
+  kProtoTLS     = 3,  // TLS record seen; plaintext reclassified after SSL uprobe
+  kProtoOther   = 4,  // decisive non-match → DROP when drop_non_http_flag is set
+};
+
 struct conn_info_t {
     u64 id;
     u32 fd;
@@ -77,6 +90,7 @@ struct conn_info_t {
     enum endpoint_role_t role;
     u32 msg_seq;
     enum traffic_direction_t prev_direction;
+    enum protocol_t protocol;
 };
 
 union sockaddr_t {
@@ -148,6 +162,7 @@ struct socket_data_event_t {
     enum endpoint_role_t role;
     enum traffic_direction_t direction;
     u32 msg_seq;
+    enum protocol_t protocol;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -191,6 +206,13 @@ Set when both TRACE_PIDS and TRACE_COMMS are empty.
 */
 BPF_ARRAY(trace_all_flag, u32, 1);
 
+/*
+When set to 1, connections classified as kProtoOther (not HTTP/1, HTTP/2, or TLS)
+are dropped in-kernel before perf_submit. Set from Go via
+AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC (default 1).
+*/
+BPF_ARRAY(drop_non_http_flag, u32, 1);
+
 static __inline bool should_trace_comm() {
   u32 zero = 0;
   u32 *flag = trace_all_flag.lookup(&zero);
@@ -218,18 +240,56 @@ static __inline bool should_trace_tgid(u64 id) {
 }
 
 
-static __inline enum message_type_t infer_http_message(const char* buf, size_t count) {
-    if (count < 16) return kUnknown;
-    char b[8];
+// classify_protocol sniffs the first bytes of a connection ONCE and returns the
+// wire protocol. For the HTTP/1 case it also resolves message type (request vs
+// response) via *msg_type, so the same single bpf_probe_read serves both the
+// protocol gate and role inference (this replaces the old infer_http_message).
+//
+// Positive-keep signatures: TLS record (0x16 0x03), HTTP/2 preface
+// (PRI * HTTP/2.0), HTTP/1 response (HTTP/1.), HTTP/1 request methods. Methods
+// OPTIONS/TRACE/CONNECT are intentionally excluded (treated as kProtoOther).
+// Fewer than 16 bytes is too short to be decisive → kProtoUnknown (caller keeps
+// it, fail-open); a fully-present buffer matching nothing → kProtoOther (drop).
+static __inline enum protocol_t classify_protocol(const char* buf, int count,
+                                                  enum message_type_t* msg_type) {
+    *msg_type = kUnknown;
+    if (count < 16) return kProtoUnknown;
+    char b[16];
     bpf_probe_read(&b, sizeof(b), buf);
-    if (b[0]=='H' && b[1]=='T' && b[2]=='T' && b[3]=='P') return kResponse;
-    if (b[0]=='G' && b[1]=='E' && b[2]=='T')               return kRequest;
-    if (b[0]=='P' && b[1]=='O' && b[2]=='S' && b[3]=='T') return kRequest;
-    if (b[0]=='P' && b[1]=='U' && b[2]=='T')               return kRequest;
-    if (b[0]=='H' && b[1]=='E' && b[2]=='A' && b[3]=='D') return kRequest;
-    if (b[0]=='D' && b[1]=='E' && b[2]=='L' && b[3]=='E') return kRequest;
-    if (b[0]=='P' && b[1]=='A' && b[2]=='T' && b[3]=='C') return kRequest;
-    return kUnknown;
+
+    // TLS record: 0x16 (handshake content type) 0x03 (SSL3/TLS major version).
+    // Deliberately does NOT set *msg_type: a TLS connection is reclassified on its
+    // decrypted plaintext (set_conn_as_ssl resets protocol -> classify runs again
+    // on the real HTTP request/response), so role is resolved there — a better
+    // signal than ClientHello/ServerHello. Distinguishing them here would be dead
+    // weight. Role also normally comes from accept/connect.
+    if (b[0] == 0x16 && b[1] == 0x03) return kProtoTLS;
+
+    // HTTP/2 client connection preface: "PRI * HTTP/2.0", always client->server.
+    // Unlike TLS, an h2c connection is classified ONLY ONCE (its later frames are
+    // binary, not request/response lines), so the preface is the sole content role
+    // signal — hence *msg_type = kRequest here but not for TLS.
+    if (b[0]=='P'&&b[1]=='R'&&b[2]=='I'&&b[3]==' '&&b[4]=='*'&&b[5]==' '&&
+        b[6]=='H'&&b[7]=='T'&&b[8]=='T'&&b[9]=='P'&&b[10]=='/'&&b[11]=='2') {
+        *msg_type = kRequest; return kProtoHTTP2;
+    }
+
+    // HTTP/1 response line: "HTTP/1.".
+    if (b[0]=='H'&&b[1]=='T'&&b[2]=='T'&&b[3]=='P'&&b[4]=='/'&&b[5]=='1') {
+        *msg_type = kResponse; 
+        return kProtoHTTP;
+    }
+
+    // HTTP/1 request methods (method + SP). OPTIONS/TRACE/CONNECT excluded.
+    if (b[0]=='G'&&b[1]=='E'&&b[2]=='T'&&b[3]==' ')                                 { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='P'&&b[1]=='O'&&b[2]=='S'&&b[3]=='T'&&b[4]==' ')                       { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='P'&&b[1]=='U'&&b[2]=='T'&&b[3]==' ')                                 { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='H'&&b[1]=='E'&&b[2]=='A'&&b[3]=='D'&&b[4]==' ')                       { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='D'&&b[1]=='E'&&b[2]=='L'&&b[3]=='E'&&b[4]=='T'&&b[5]=='E'&&b[6]==' ') { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='P'&&b[1]=='A'&&b[2]=='T'&&b[3]=='C'&&b[4]=='H'&&b[5]==' ')            { *msg_type = kRequest; return kProtoHTTP; }
+
+    // Decisive: enough bytes, matched none of the keep signatures.
+    return kProtoOther;
 }
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
@@ -421,7 +481,54 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     conn_info_map.delete(&tgid_fd);    
 }
 
-static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
+// resolve_conn_state does the loop-invariant part of process_syscall_data: the
+// per-connection lookups and validity checks. Split out so the iovec loop can do
+// it ONCE per syscall instead of once per buffer.
+//
+// Why this matters: the verifier's limit that these probes hit is
+// BPF_COMPLEXITY_LIMIT_INSNS (insn_processed, ~1M), not program size — the
+// programs are ~570 insns against a 4096 cap. Every branch inside the body is
+// re-explored for each of the LOOP_LIMIT inlined copies, so branches multiply.
+// The two map lookups here are helper calls the compiler cannot dedupe across
+// iterations, and each needs its own NULL check, so leaving them in the loop
+// cost 2 lookups + 4 branches per buffer to recompute an identical answer.
+// Returns NULL when the caller should skip the syscall entirely.
+static __inline struct conn_info_t* resolve_conn_state(const struct data_args_t* args, u64 id, bool ssl,
+                                                       struct socket_data_event_t** event_out) {
+    if (args->fd < 0) {
+        return NULL;
+    }
+
+    u32 tgid = id >> 32;
+    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
+    if (conn_info == NULL) {
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, args->fd);
+      }
+      return NULL;
+    }
+
+    if (conn_info->ssl != ssl) {
+        return NULL;
+    }
+
+    u32 kZero = 0;
+    struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
+    if (socket_data_event == NULL) {
+        return NULL;
+    }
+
+    *event_out = socket_data_event;
+    return conn_info;
+}
+
+// process_syscall_data_resolved is the per-buffer half: it assumes the caller has
+// already resolved conn_info and the event buffer via resolve_conn_state.
+static __inline void process_syscall_data_resolved(struct pt_regs* ret, const struct data_args_t* args, u64 id,
+                                                   bool is_send, bool compute_meta,
+                                                   struct conn_info_t* conn_info,
+                                                   struct socket_data_event_t* socket_data_event) {
     int bytes_exchanged = PT_REGS_RC(ret);
 
     if(args->msg_len > 0){
@@ -436,30 +543,6 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         return;
     }
 
-    if (args->fd < 0) {
-        return;
-    }
-
-    u32 tgid = id >> 32;
-    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
-    if (conn_info == NULL) {
-      if (PRINT_BPF_LOGS){
-        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, args->fd);
-      }
-      return;
-    }
-
-    if (conn_info->ssl != ssl) {
-        return;
-    }
-
-    u32 kZero = 0;
-    struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
-    if (socket_data_event == NULL) {
-        return;
-    }
-
     socket_data_event->id = conn_info->id;
     socket_data_event->fd = conn_info->fd;
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
@@ -471,18 +554,23 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
 
     enum traffic_direction_t direction = is_send ? kEgress : kIngress;
 
-    // Role + msg_seq are per-connection/per-message properties, not per-buffer:
-    // `direction` is constant across a syscall's iovecs, and both values are
-    // cached in conn_info. Computing them is only meaningful once per syscall,
-    // so callers that inline this function many times (the iovec loop) pass
-    // compute_meta=false for all but the first buffer. Because compute_meta is
-    // a compile-time constant at each inline site, the heavy infer_http_message
+    // Protocol + role + msg_seq are per-connection/per-message properties, not
+    // per-buffer: `direction` is constant across a syscall's iovecs, and the
+    // values are cached in conn_info. Computing them is only meaningful once per
+    // syscall, so callers that inline this function many times (the iovec loop)
+    // pass compute_meta=false for all but the first buffer. Because compute_meta
+    // is a compile-time constant at each inline site, the heavy classify_protocol
     // block is dead-code-eliminated from the copies that don't need it, keeping
     // the vec probes under the BPF verifier's instruction limit.
     if (compute_meta) {
-        if (conn_info->role == kRoleUnknown && args->buf != NULL) {
-            enum message_type_t msg_type = infer_http_message(args->buf, bytes_exchanged);
-            if (msg_type != kUnknown) {
+        // Classify the connection once, on its first decisive buffer. The same
+        // single read resolves the wire protocol AND (for HTTP/1) the role
+        // fallback. protocol is reset to kProtoUnknown on the TLS->plaintext
+        // transition (set_conn_as_ssl), so decrypted traffic is reclassified.
+        if (conn_info->protocol == kProtoUnknown && args->buf != NULL) {
+            enum message_type_t msg_type = kUnknown;
+            conn_info->protocol = classify_protocol(args->buf, bytes_exchanged, &msg_type);
+            if (conn_info->role == kRoleUnknown && msg_type != kUnknown) {
                 conn_info->role = ((direction == kEgress) ^ (msg_type == kResponse))
                                       ? kRoleClient : kRoleServer;
             }
@@ -498,9 +586,30 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         }
     }
 
+    // Drop connections that are decisively not HTTP/1, HTTP/2, or TLS, before the
+    // chunk loop / perf_submit. The verdict persists in conn_info, so every later
+    // event on this connection is dropped too. The flag lookup touches ONLY
+    // kProtoOther connections (the ones we drop) — kept HTTP/h2/TLS traffic pays
+    // just the comparison, no map lookup.
+    // compute_meta is a compile-time constant at each inline site, so for the
+    // iovec loop this whole block (including the map lookup) is emitted only in
+    // the i==0 copy instead of all LOOP_LIMIT of them. The verdict is a
+    // per-connection property and cannot change between iovecs of one syscall,
+    // so re-checking it per buffer was redundant anyway. process_syscall_data_vecs
+    // does the same check once before its loop, so a dropped connection skips the
+    // entire syscall rather than just this one buffer.
+    if (compute_meta && conn_info->protocol == kProtoOther) {
+        u32 drop_zero = 0;
+        u32* drop = drop_non_http_flag.lookup(&drop_zero);
+        if (drop != NULL && *drop == 1) {
+            return;
+        }
+    }
+
     socket_data_event->role      = conn_info->role;
     socket_data_event->direction = direction;
     socket_data_event->msg_seq   = conn_info->msg_seq;
+    socket_data_event->protocol  = conn_info->protocol;
 
 //    if (PRINT_BPF_LOGS){
 //      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
@@ -562,10 +671,43 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
 
 }
 
+// Unchanged entry point for the scalar (read/write/recv/send) probes: resolve
+// then process. Those callers inline this once, so the lookups cost nothing there.
+static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
+    struct socket_data_event_t* socket_data_event = NULL;
+    struct conn_info_t* conn_info = resolve_conn_state(args, id, ssl, &socket_data_event);
+    if (conn_info == NULL || socket_data_event == NULL) {
+        return;
+    }
+    process_syscall_data_resolved(ret, args, id, is_send, compute_meta, conn_info, socket_data_event);
+}
+
 static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_args_t* args, u64 id, bool is_send){
     int bytes_sent=0;
     int total_size = PT_REGS_RC(ret);
     const struct iovec* iov = args->iov;
+
+    // Resolve per-connection state ONCE for the whole syscall. Everything here is
+    // invariant across the iovecs of a single call, so doing it inside the loop
+    // made the verifier re-explore the same branches LOOP_LIMIT times, which is
+    // what pushed insn_processed past BPF_COMPLEXITY_LIMIT_INSNS and made these
+    // four vectored probes fail to load.
+    struct socket_data_event_t* socket_data_event = NULL;
+    struct conn_info_t* conn_info = resolve_conn_state(args, id, false /* ssl */, &socket_data_event);
+    if (conn_info == NULL || socket_data_event == NULL) {
+        return;
+    }
+
+    // Drop verdict is per-connection too: evaluating it here means a dropped
+    // connection skips all its buffers, matching the previous behaviour where
+    // each per-buffer check returned early.
+    if (conn_info->protocol == kProtoOther) {
+        u32 drop_zero = 0;
+        u32* drop = drop_non_http_flag.lookup(&drop_zero);
+        if (drop != NULL && *drop == 1) {
+            return;
+        }
+    }
     for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size ; ++i) {
         struct iovec iov_cpy;
         bpf_probe_read(&iov_cpy, sizeof(iov_cpy), &iov[i]);
@@ -579,7 +721,7 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
         // and the HTTP request/response line lives in iov[0]. i==0 is a
         // compile-time constant per unrolled copy, so the metadata code is
         // emitted once instead of LOOP_LIMIT times.
-        process_syscall_data(ret, args, id, is_send, false, /* compute_meta */ i == 0);
+        process_syscall_data_resolved(ret, args, id, is_send, /* compute_meta */ i == 0, conn_info, socket_data_event);
         bytes_sent += iov_size;
         
       }
@@ -1435,7 +1577,16 @@ static void set_conn_as_ssl(u32 tgid, u32 fd){
     if(PRINT_BPF_LOGS){
       bpf_trace_printk("SSL marking ssl tgid: %d", tgid_fd);
     }
-    conn_info->ssl = true;
+    // Reclassify on the plaintext only on the false->true edge. The pre-SSL
+    // handshake bytes classified as kProtoTLS; resetting to kProtoUnknown makes
+    // the first DECRYPTED buffer (HTTP request or HTTP/2 preface) re-run
+    // classify_protocol so Go gets the real HTTP/1-vs-HTTP/2 verdict. Guarded by
+    // the edge so mid-stream SSL buffers (which don't start a message) are never
+    // reclassified as kProtoOther and wrongly dropped.
+    if (!conn_info->ssl) {
+        conn_info->ssl = true;
+        conn_info->protocol = kProtoUnknown;
+    }
 }
 
 // Shared stash for all SSL entry probes (read & write, classic & _ex). The only

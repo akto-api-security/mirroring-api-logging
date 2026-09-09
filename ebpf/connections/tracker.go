@@ -8,6 +8,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/utils"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/fastparser"
 	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
@@ -36,6 +37,18 @@ type Tracker struct {
 	lport uint16
 
 	role uint32 // 0=unknown, 1=client, 2=server
+
+	// protocol is the kernel's wire-protocol verdict (structs.kProto*), delivered
+	// on every data event like role. It is the routing key for parser selection.
+	protocol uint32
+
+	// HTTP/2 path (protocol == structs.ProtoHTTP2). h2 is the persistent
+	// per-connection parser; h2egress/h2ingress resequence rc/wc-ordered chunks
+	// into the contiguous byte streams the parser must be fed in order. Nil/zero
+	// until the first HTTP/2 event. See http2.go.
+	h2        *fastparser.HTTP2Conn
+	h2egress  h2Reassembler
+	h2ingress h2Reassembler
 
 	foundHTTP bool
 
@@ -107,6 +120,12 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 	if attr.Role != 0 && conn.role == 0 {
 		conn.role = attr.Role
 	}
+	// Latch the kernel's protocol verdict (like role). Reset to 0 on the SSL flip
+	// below so the decrypted-plaintext verdict (HTTP/1 vs HTTP/2) re-latches over
+	// the earlier kProtoTLS seen during the handshake.
+	if attr.Protocol != 0 && conn.protocol == 0 {
+		conn.protocol = attr.Protocol
+	}
 
 	// first few read/write calls in a TLS are of handshake
 	// these are extra data we don't need, once TLS established
@@ -132,6 +151,9 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		conn.sentBytes = 0
 		conn.recvBytes = 0
 		conn.ssl = attr.Ssl
+		// Drop the handshake-era verdict (kProtoTLS); the kernel reclassifies the
+		// decrypted plaintext and re-sends the real HTTP/1-vs-HTTP/2 verdict.
+		conn.protocol = 0
 	}
 
 	// Data events ssl true/false must match the conn info ssl
@@ -149,6 +171,16 @@ func (conn *Tracker) AddDataEvent(kernelBytesPtr *[]byte) uint32 {
 		return attr.MsgSeq
 	}
 	payload := kernelBytes[structs.MsgOffset : structs.MsgOffset+int(absBytes)]
+
+	// HTTP/2 (incl. gRPC): a separate path — msg_seq direction-change pairing does
+	// not apply to multiplexed, full-duplex streams. Resequence per direction and
+	// feed the persistent parser (see http2.go). Gated on FastIngestion because the
+	// h2 flush lives in startFlushRoutine, which only runs under FastIngestion.
+	if metaUtils.FastIngestion && conn.protocol == structs.ProtoHTTP2 {
+		conn.addHTTP2Event(attr, payload)
+		conn.lastAccessTimestamp = uint64(time.Now().UnixNano())
+		return attr.MsgSeq
+	}
 
 	if metaUtils.FastIngestion {
 		// msg_seq based buffering for incremental pair flushing

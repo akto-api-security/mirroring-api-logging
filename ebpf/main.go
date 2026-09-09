@@ -124,15 +124,20 @@ func run() {
 	tracedComms := setupTraceComms(bpfModule)
 	if len(tracedPids) == 0 && len(tracedComms) == 0 {
 		slog.Warn("both TRACE_PIDS and TRACE_COMMS are empty, tracing all processes")
-		traceAllTable := bcc.NewTable(bpfModule.TableId("trace_all_flag"), bpfModule)
-		var key [4]byte
-		var val [4]byte
-		binary.LittleEndian.PutUint32(val[:], 1)
-		if err := traceAllTable.Set(key[:], val[:]); err != nil {
-			slog.Error("failed to set trace_all_flag", "error", err)
-		}
+		setKernelFlag(bpfModule, "trace_all_flag", 1)
 	}
 	slog.Info("here are the traced", "pids", tracedPids, "comms", tracedComms)
+
+	// Populate drop_non_http_flag: when 1, the kernel drops connections classified
+	// as non-HTTP/1/HTTP/2/TLS before perf_submit. Default 1; set
+	// AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC=false to keep all traffic.
+	dropNonHttp := uint32(1)
+	if strings.EqualFold(os.Getenv("AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC"), "false") {
+		dropNonHttp = 0
+	}
+	setKernelFlag(bpfModule, "drop_non_http_flag", dropNonHttp)
+	slog.Info("kernel non-HTTP drop", "enabled", dropNonHttp == 1)
+
 	// TODO: pids should be of K8 services only ??
 	fillExistingConnections(bpfModule, tracedPids)
 
@@ -288,6 +293,16 @@ func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {
 		connInfoMapKeysTable,
 		maxConnectionSizeMapSize,
 	)
+}
+
+// setKernelFlag writes a single uint32 value at key 0 into the named BPF table.
+func setKernelFlag(bpfModule *bcc.Module, name string, value uint32) {
+	table := bcc.NewTable(bpfModule.TableId(name), bpfModule)
+	var key, val [4]byte
+	binary.LittleEndian.PutUint32(val[:], value)
+	if err := table.Set(key[:], val[:]); err != nil {
+		slog.Error("failed to set kernel flag", "flag", name, "error", err)
+	}
 }
 
 // Use this when specific pids tracing is required.

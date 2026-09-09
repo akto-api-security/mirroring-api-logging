@@ -160,8 +160,6 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 	defer parserPool.Put(p)
 	p.Gunzip = utils.FastParserGunzip
 	p.HandleChunkEncoding = utils.HandleChunkEncoding
-	enc := encoderPool.Get().(fastparser.Encoder)
-	defer encoderPool.Put(enc)
 
 	req, err := p.ParseRequest(receiveBuffer)
 	if err != nil {
@@ -180,6 +178,28 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 			return
 		}
 	}
+
+	produceReqResp(req, resp, ctx)
+}
+
+// ProduceReqResp is the exported entry point for callers that already hold a
+// parsed request/response pair (e.g. the HTTP/2 tracker path, whose parser emits
+// fastparser.Request/Response directly). It reuses the exact same filter + encode
+// + produce tail as the HTTP/1.1 fast path.
+func ProduceReqResp(req *fastparser.Request, resp *fastparser.Response, ctx TrafficContext) {
+	if checkAndUpdateBandwidthProcessed(0) {
+		return
+	}
+	produceReqResp(req, resp, ctx)
+}
+
+// produceReqResp is the shared tail: method/host/envoy filtering, Meta build,
+// Encode, and produce (JSON/flatbuffers + optional threat protobuf). Used by both
+// the HTTP/1.1 fast path and the HTTP/2 path so the wire format and produce plumbing
+// stay identical.
+func produceReqResp(req *fastparser.Request, resp *fastparser.Response, ctx TrafficContext) {
+	enc := encoderPool.Get().(fastparser.Encoder)
+	defer encoderPool.Put(enc)
 
 	host := string(req.Host())
 
@@ -219,7 +239,6 @@ func fastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext) {
 
 	go ProduceStr(context.Background(), string(out), string(req.Path), string(req.Host()), string(req.Method))
 
-	
 	if utils.ThreatEnabled {
 		srcIP := getSourceIpFast(req, ctx.SourceIP)
 		go Produce(context.Background(), buildProtobufPayloadFast(req, resp, ctx, srcIP))

@@ -114,6 +114,12 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 	for {
 		select {
 		case <-ticker.C:
+			// HTTP/2: emit completed unary streams (see http2.go). protocol is read
+			// unlocked, same as tracker.role/laddr below — it transitions once.
+			if tracker.protocol == structs.ProtoHTTP2 {
+				produceHTTP2Streams(connID, tracker, tracker.TakeCompleteHTTP2())
+				continue
+			}
 			pairs := tracker.GetFlushablePairs()
 			for _, pair := range pairs {
 				g1Blob := fragmentsToBytes(pair.ReqGroup.fragments)
@@ -137,6 +143,12 @@ func startFlushRoutine(connID structs.ConnID, tracker *Tracker, done <-chan stru
 			}
 
 		case <-done:
+			// HTTP/2: final flush of completed unary streams; incomplete/streaming
+			// streams are dropped (unary-only in this phase).
+			if tracker.protocol == structs.ProtoHTTP2 {
+				produceHTTP2Streams(connID, tracker, tracker.TakeCompleteHTTP2())
+				return
+			}
 			// Final flush of all remaining pairs before exit
 			if utils.IsMsgSeqLogsEnabled() {
 				slog.Info("msg_seq: flush routine exiting, final flush",
