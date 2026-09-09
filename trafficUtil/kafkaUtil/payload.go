@@ -228,7 +228,14 @@ func resolvePodLabelsTag(ctx TrafficContext, processName, url, host string) stri
 		return ""
 	}
 
-	if ctx.Direction == utils.DirectionOutbound {
+	// On outbound traffic ctx.HostName is the pod that MADE the call, so the labels below
+	// identify the caller, not the service being called. mini-runtime tells the two apart by the
+	// "direction" field: it never routes collections by labels on outbound, and reads them only
+	// to attribute the call to its calling service.
+	//
+	// Off by default: deployments without a tag whitelist would otherwise pick these up as
+	// collection tags on the callee, one per calling service.
+	if ctx.Direction == utils.DirectionOutbound && !utils.ResolveOutboundPodLabels {
 		checkDebugUrlAndPrint(url, host, fmt.Sprintf("Pod labels not resolved for outbound request, podName: %s, direction: %v", ctx.HostName, ctx.Direction))
 		return ""
 	}

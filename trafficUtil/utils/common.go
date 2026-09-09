@@ -36,6 +36,15 @@ func PrintLogDebug(val string, args ...any) {
 var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 var IgnoreEnvoyProxycalls = false
+
+// ResolveOutboundPodLabels makes the daemonset resolve pod labels for OUTBOUND traffic too,
+// where they identify the pod that MADE the call rather than the one serving it. mini-runtime
+// tells the two apart by the "direction" field: it never routes collections by labels on
+// outbound, and reads them only to attribute a call to its calling service.
+//
+// Off by default. It adds bytes to every egress event, and deployments without a tag
+// whitelist would otherwise pick these up as collection tags on the callee.
+var ResolveOutboundPodLabels = false
 var EnableGraph = true
 var ThreatEnabled = true
 
@@ -66,6 +75,7 @@ func init() {
 	InitVar("AKTO_THREAT_ENABLED", &ThreatEnabled)
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
+	InitVar("AKTO_RESOLVE_OUTBOUND_POD_LABELS", &ResolveOutboundPodLabels)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
 	InitVar("AKTO_FAST_INGESTION", &FastIngestion)
 	InitVar("AKTO_FAST_PARSER_GUNZIP", &FastParserGunzip)
