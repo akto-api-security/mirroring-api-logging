@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
 	// need an unreleased version of the gobpf library, using from a specific branch, reasoning in the thread below.
 	// https://stackoverflow.com/questions/73714654/not-enough-arguments-in-call-to-c2func-bcc-func-load
 
@@ -21,6 +21,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/conntrack"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -31,6 +32,12 @@ import (
 )
 
 var source string = ""
+
+func replaceBpfChunkSizeMacros() {
+	chunkSizeLimit := 4
+	trafficUtils.InitVar("BPF_CHUNK_SIZE_LIMIT", &chunkSizeLimit)
+	source = strings.Replace(source, "CHUNK_SIZE_LIMIT", strconv.Itoa(chunkSizeLimit), -1)
+}
 
 func replaceBpfLogsMacros() {
 
@@ -80,10 +87,15 @@ func main() {
 	// Setting GC percent as 50, uses less memory overhead.
 	// More testing needed for final release.
 	// debug.SetGCPercent(50)
+
 	run()
 }
 
 func run() {
+	slog.Debug("Go version", "version", runtime.Version())
+	slog.Debug("runtime.NumCPU()", "count", runtime.NumCPU())
+	slog.Debug("runtime.GOMAXPROCS(0)", "procs", runtime.GOMAXPROCS(0))
+
 	byteString, err := os.ReadFile("./kernel/module.cc")
 	if err != nil {
 		slog.Error("failed to read kernel module", "error", err)
@@ -92,6 +104,7 @@ func run() {
 	source = string(byteString)
 
 	replaceBpfLogsMacros()
+	replaceBpfChunkSizeMacros()
 	replaceMaxConnectionMapSize()
 	replaceArchType()
 
@@ -104,6 +117,30 @@ func run() {
 	}
 	defer bpfModule.Close()
 
+	// Populate kubernetes_pids map from TRACE_PIDS env variable (comma-separated list of PIDs)
+	// Populate allowed_comms map from TRACE_COMMS env variable (comma-separated list of comm names)
+	// If both are empty, trace_all_flag is set so all processes are traced.
+	tracedPids := setupTracePids(bpfModule)
+	tracedComms := setupTraceComms(bpfModule)
+	if len(tracedPids) == 0 && len(tracedComms) == 0 {
+		slog.Warn("both TRACE_PIDS and TRACE_COMMS are empty, tracing all processes")
+		setKernelFlag(bpfModule, "trace_all_flag", 1)
+	}
+	slog.Info("here are the traced", "pids", tracedPids, "comms", tracedComms)
+
+	// Populate drop_non_http_flag: when 1, the kernel drops connections classified
+	// as non-HTTP/1/HTTP/2/TLS before perf_submit. Default 1; set
+	// AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC=false to keep all traffic.
+	dropNonHttp := uint32(1)
+	if strings.EqualFold(os.Getenv("AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC"), "false") {
+		dropNonHttp = 0
+	}
+	setKernelFlag(bpfModule, "drop_non_http_flag", dropNonHttp)
+	slog.Info("kernel non-HTTP drop", "enabled", dropNonHttp == 1)
+
+	// TODO: pids should be of K8 services only ??
+	fillExistingConnections(bpfModule, tracedPids)
+
 	db.InitMongoClient()
 	defer db.CloseMongoClient()
 
@@ -111,9 +148,15 @@ func run() {
 	apiProcessor.InitCloudTrafficProcessor()
 	kafkaUtil.InitKafka()
 
+	kafkaUtil.StartConfigConsumer()
+
 	stopCh, err := kafkaUtil.SetupPodInformer()
 	if err != nil {
 		slog.Error("Failed to setup pod watcher", "error", err)
+	}
+	if kafkaUtil.PodInformerInstance != nil {
+		kubePids := kafkaUtil.PodInformerInstance.GetAllKubePids()
+		fillExistingConnections(bpfModule, kubePids)
 	}
 
 	connectionFactory := connections.NewFactory()
@@ -132,10 +175,10 @@ func run() {
 	}
 
 	hooks := make([]bpfwrapper.Kprobe, 0)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_open_events", connections.SocketOpenEventCallback))
 	hooks = append(hooks, bpfwrapper.Level1hooks...)
 	hooks = append(hooks, bpfwrapper.Level1hooksType2...)
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", bpfwrapper.SocketDataEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_data_events", connections.SocketDataEventCallback))
 	if len(captureSsl) == 0 || captureSsl == "false" || captureAll == "true" {
 		if len(captureEgress) > 0 && captureEgress == "true" {
 			hooks = append(hooks, bpfwrapper.Level2hooksEgress...)
@@ -146,7 +189,7 @@ func run() {
 
 		}
 	}
-	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback))
+	callbacks = append(callbacks, bpfwrapper.NewProbeChannel("socket_close_events", connections.SocketCloseEventCallback))
 	hooks = append(hooks, bpfwrapper.Level4hooks...)
 
 	if err := bpfwrapper.LaunchPerfBufferConsumers(bpfModule, connectionFactory, callbacks); err != nil {
@@ -201,8 +244,12 @@ func run() {
 	doProfiling := false
 	trafficUtils.InitVar("AKTO_DEBUG_MEM_PROFILING", &doProfiling)
 
+	enablePprof := false
+	trafficUtils.InitVar("AKTO_ENABLE_PPROF", &enablePprof)
+	trafficUtils.StartObservabilityServer(enablePprof)
+
 	if doProfiling {
-		ticker := time.NewTicker(time.Minute) // Create a ticker to trigger every minute
+		ticker := time.NewTicker(30 * time.Second) // Create a ticker to trigger every 30 seconds
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -226,15 +273,106 @@ func run() {
 		slog.Info("Stopping pod watcher")
 		close(stopCh)
 	}
-	
+
 	slog.Info("signaled to terminate")
 }
 
+func fillExistingConnections(bpfModule *bcc.Module, tracedPids []uint32) {
+	connInfoTable := bcc.NewTable(bpfModule.TableId("conn_info_map"), bpfModule)
+	connCounterTable := bcc.NewTable(bpfModule.TableId("conn_counter"), bpfModule)
+	connInfoMapKeysTable := bcc.NewTable(bpfModule.TableId("conn_info_map_keys"), bpfModule)
+
+	maxConnectionSizeMapSize := 131072
+	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
+
+	slog.Info("populating pre-existing connections", "pids", tracedPids)
+	conntrack.PopulateExistingConnections(
+		tracedPids,
+		connInfoTable,
+		connCounterTable,
+		connInfoMapKeysTable,
+		maxConnectionSizeMapSize,
+	)
+}
+
+// setKernelFlag writes a single uint32 value at key 0 into the named BPF table.
+func setKernelFlag(bpfModule *bcc.Module, name string, value uint32) {
+	table := bcc.NewTable(bpfModule.TableId(name), bpfModule)
+	var key, val [4]byte
+	binary.LittleEndian.PutUint32(val[:], value)
+	if err := table.Set(key[:], val[:]); err != nil {
+		slog.Error("failed to set kernel flag", "flag", name, "error", err)
+	}
+}
+
+// Use this when specific pids tracing is required.
+func setupTracePids(bpfModule *bcc.Module) []uint32 {
+	kubePidsTable := bcc.NewTable(bpfModule.TableId("kubernetes_pids"), bpfModule)
+	var tracedPids []uint32
+	if tracePids := os.Getenv("TRACE_PIDS"); tracePids != "" {
+		for _, pidStr := range strings.Split(tracePids, ",") {
+			pidStr = strings.TrimSpace(pidStr)
+			if pidStr == "" {
+				continue
+			}
+			pid, err := strconv.ParseUint(pidStr, 10, 32)
+			if err != nil {
+				slog.Error("invalid pid in TRACE_PIDS", "pid", pidStr, "error", err)
+				continue
+			}
+			var pidKey [4]byte
+			binary.LittleEndian.PutUint32(pidKey[:], uint32(pid))
+			if err := kubePidsTable.Set(pidKey[:], []byte{1}); err != nil {
+				slog.Error("failed to add pid to kubernetes_pids map", "pid", pid, "error", err)
+			} else {
+				slog.Info("added pid to kubernetes_pids map", "pid", pid)
+				tracedPids = append(tracedPids, uint32(pid))
+			}
+		}
+	} else {
+		slog.Warn("TRACE_PIDS env variable not set")
+	}
+	return tracedPids
+}
+
+// Use this when specific comm name tracing is required.
+func setupTraceComms(bpfModule *bcc.Module) []string {
+	allowedCommsTable := bcc.NewTable(bpfModule.TableId("allowed_comms"), bpfModule)
+	var tracedComms []string
+	if traceComms := os.Getenv("TRACE_COMMS"); traceComms != "" {
+		for _, comm := range strings.Split(traceComms, ",") {
+			comm = strings.TrimSpace(comm)
+			if comm == "" {
+				continue
+			}
+			// BPF comm keys are fixed 16 bytes, null-padded
+			var commKey [16]byte
+			copy(commKey[:], comm)
+			if err := allowedCommsTable.Set(commKey[:], []byte{1}); err != nil {
+				slog.Error("failed to add comm to allowed_comms map", "comm", comm, "error", err)
+			} else {
+				slog.Info("added comm to allowed_comms map", "comm", comm)
+				tracedComms = append(tracedComms, comm)
+			}
+		}
+	} else {
+		slog.Warn("TRACE_COMMS env variable not set")
+	}
+	return tracedComms
+}
+
 func captureMemoryProfile() {
-	f, _ := os.Create("mem.prof") // Create memory profile file
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("mem_%s.prof", timestamp)
+	f, err := os.Create(fileName)
+	if err != nil {
+		slog.Error("failed to create memory profile", "error", err)
+		return
+	}
 	defer f.Close()
 
-	pprof.WriteHeapProfile(f) // Write memory profile
+	pprof.WriteHeapProfile(f)
+	slog.Info("memory profile captured", "filename", fileName)
 }
 
 func captureCpuProfile() {

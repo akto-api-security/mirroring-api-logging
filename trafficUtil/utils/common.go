@@ -37,7 +37,26 @@ var IgnoreIpTraffic = false
 var IgnoreCloudMetadataCalls = false
 var IgnoreEnvoyProxycalls = false
 var EnableGraph = true
-var ThreatEnabled = false
+var ThreatEnabled = true
+
+// FastIngestion selects the whole processing flow, end to end. When true, the
+// connection layer uses msg_seq incremental single-pair flushing AND kafkaUtil
+// uses the zero-copy fast parser + encoder. When false, the old flow runs:
+// inactivity/threshold flat-buffer flushing + the net/http parser. The two must
+// move together — the fast parser assumes exactly one request/response pair per
+// flush, which only msg_seq flushing guarantees.
+var FastIngestion = false
+
+// FastParserGunzip, when true, makes the fast parser decompress gzip response
+// bodies (Content-Encoding: gzip) after de-chunking. Off by default because it
+// allocates (decompression expands, so the body can't alias the input buffer) —
+// the default fast path stays zero-copy/zero-alloc. Opt in when readable bodies
+// matter more than the per-message decompression cost.
+var FastParserGunzip = true
+
+// Enable disable assembling bodies in parser when Transfer-Encoding: chunked, header
+// is present. 
+var HandleChunkEncoding = true
 
 const EnvoyProxyIp = "127.0.0.6"
 
@@ -48,6 +67,9 @@ func init() {
 	InitVar("AKTO_IGNORE_CLOUD_METADATA_CALLS", &IgnoreCloudMetadataCalls)
 	InitVar("AKTO_IGNORE_ENVOY_PROXY_CALLS", &IgnoreEnvoyProxycalls)
 	InitVar("AKTO_ENABLE_GRAPH", &EnableGraph)
+	InitVar("AKTO_FAST_INGESTION", &FastIngestion)
+	InitVar("AKTO_FAST_PARSER_GUNZIP", &FastParserGunzip)
+	InitVar("AKTO_FAST_PARSER_CHUNK_ENCODING", &HandleChunkEncoding)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {
@@ -76,6 +98,5 @@ func InitVar(envVarName string, targetVar interface{}) {
 			slog.Warn("Unsupported type for targetVar", "type", v)
 		}
 	} else {
-		slog.Warn("Missing env value, using default value", "name", envVarName)
 	}
 }

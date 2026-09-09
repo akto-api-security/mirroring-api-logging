@@ -1,10 +1,9 @@
 module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 
-go 1.24.0
-
-toolchain go1.24.3
+go 1.26.5
 
 require (
+	github.com/google/flatbuffers v25.12.19+incompatible
 	github.com/segmentio/kafka-go v0.4.25
 	go.mongodb.org/mongo-driver v1.11.3
 	google.golang.org/protobuf v1.36.6
@@ -13,7 +12,10 @@ require (
 	k8s.io/client-go v0.33.0
 )
 
+require github.com/bits-and-blooms/bitset v1.24.2 // indirect
+
 require (
+	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
@@ -25,7 +27,7 @@ require (
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
@@ -43,7 +45,7 @@ require (
 	github.com/xdg-go/stringprep v1.0.3 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
 	golang.org/x/crypto v0.36.0 // indirect
-	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/net v0.38.0
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
 	golang.org/x/sys v0.31.0 // indirect
