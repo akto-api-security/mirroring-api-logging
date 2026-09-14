@@ -158,10 +158,20 @@ func (s *myStream) ReassemblyComplete() {
 }
 
 func tryReadFromBD(bd *bidi, isPending bool) {
-
-	kafkaUtil.ParseAndProduce(bd.a.bytes, bd.b.bytes,
-		bd.key.net.Src().String(), bd.key.net.Dst().String(), bd.vxlanID, isPending, bd.source, true, 1, 0, 0, "0")
-
+	ctx := kafkaUtil.TrafficContext{
+		SourceIP:            bd.key.net.Src().String(),
+		DestIP:              bd.key.net.Dst().String(),
+		VxlanID:             bd.vxlanID,
+		IsPending:           isPending,
+		TrafficSource:       bd.source,
+		IsComplete:          true,
+		Direction:           1,
+		ProcessID:           0,
+		SocketFD:            0,
+		DaemonsetIdentifier: "0",
+		HostName:            "",
+	}
+	kafkaUtil.ParseAndProduce(bd.a.bytes, bd.b.bytes, ctx)
 }
 
 // maybeFinish will wait until both directions are complete, then print out

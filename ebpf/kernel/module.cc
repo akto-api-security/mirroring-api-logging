@@ -7,7 +7,14 @@
 
 #define socklen_t size_t
 #define MAX_MSG_SIZE 30720
+#define CHUNK_LIMIT CHUNK_SIZE_LIMIT
 #define LOOP_LIMIT 42
+
+// MSG_PEEK (already defined as 2 by linux/socket.h, included above): the recv()
+// peeks data WITHOUT consuming it. Envoy's listener inspectors (tls_inspector /
+// http_inspector) peek the first bytes of each new downstream connection, then
+// read the same bytes for real. Capturing the peek would duplicate the message
+// in the msg_seq group, so recv-family probes skip it.
 
 #define ARCH_TYPE 1
 
@@ -39,15 +46,51 @@ enum source_function_t {
   kGoTLSRead
 };
 
+enum endpoint_role_t {
+  kRoleUnknown = 0,
+  kRoleClient  = 1,
+  kRoleServer  = 2,
+};
+
+enum traffic_direction_t {
+  kEgress  = 0,
+  kIngress = 1,
+};
+
+enum message_type_t {
+  kUnknown  = 0,
+  kRequest  = 1,
+  kResponse = 2,
+};
+
+// Wire protocol of a connection, derived from the first decisive bytes (see
+// classify_protocol). Persisted in conn_info_t and echoed on every data event.
+// gRPC is NOT distinguished from HTTP/2 here (its content-type lives in an
+// HPACK-compressed HEADERS frame, undecodable in the verifier budget) — the
+// grpc-vs-h2 split happens in Go.
+enum protocol_t {
+  kProtoUnknown = 0,  // unclassified, or first buffer too short → KEEP (fail-open)
+  kProtoHTTP    = 1,  // HTTP/1.x request or response
+  kProtoHTTP2   = 2,  // HTTP/2 / gRPC (cleartext preface, or decrypted plaintext)
+  kProtoTLS     = 3,  // TLS record seen; plaintext reclassified after SSL uprobe
+  kProtoOther   = 4,  // decisive non-match → DROP when drop_non_http_flag is set
+};
+
 struct conn_info_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
+    unsigned short rport;
+    u32 raddr;
+    u32 laddr;
+    unsigned short lport;
     bool ssl;
     u32 readEventsCount;
     u32 writeEventsCount;
+    enum endpoint_role_t role;
+    u32 msg_seq;
+    enum traffic_direction_t prev_direction;
+    enum protocol_t protocol;
 };
 
 union sockaddr_t {
@@ -71,6 +114,13 @@ struct data_args_t {
     const struct iovec* iov;
     int iovlen;
     int buf_size;
+    // For the SSL_*_ex family only: the caller's out-param pointer
+    // (size_t *written / *readbytes). Captured at entry, dereferenced at the
+    // _ex return probe to get the real length. NULL for every other caller.
+    const size_t* len_ptr;
+    // Resolved length for the _ex path. When > 0, process_syscall_data uses it
+    // instead of PT_REGS_RC (which for _ex is the 1/0 success flag, not a size).
+    int msg_len;
 };
 
 struct close_args_t {
@@ -81,10 +131,10 @@ struct socket_open_event_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
-    u32 src_ip;
-    unsigned short src_port;
+    unsigned short rport;
+    u32 raddr;
+    u32 laddr;
+    unsigned short lport;
     u64 socket_open_ns;
 };
 
@@ -92,8 +142,8 @@ struct socket_close_event_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
+    unsigned short rport;
+    u32 raddr;
     u64 socket_close_ns;
 };
 
@@ -101,12 +151,18 @@ struct socket_data_event_t {
     u64 id;
     u32 fd;
     u64 conn_start_ns;
-    unsigned short port;
-    u32 ip;
+    unsigned short rport;
+    u32 raddr;
+    u32 laddr;
+    unsigned short lport;
     int bytes_sent;
     u32 readEventsCount;
     u32 writeEventsCount;
     bool ssl;
+    enum endpoint_role_t role;
+    enum traffic_direction_t direction;
+    u32 msg_seq;
+    enum protocol_t protocol;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -132,10 +188,109 @@ BPF_HASH(active_ssl_read_args_map, uint64_t, struct data_args_t);
 BPF_HASH(active_ssl_write_args_map, uint64_t, struct data_args_t);
 
 /*
-Maintain a map of kubernetes pids, and only process, if data is from them. 
+Maintain a map of kubernetes pids, and only process, if data is from them.
 This should reduce the noise a lot.
 */
+BPF_HASH(kubernetes_pids, u32, u8);
 
+/*
+Map of allowed process comm names (max 16 bytes each).
+Populated from TRACE_COMMS env variable.
+*/
+typedef char comm_t[16];
+BPF_HASH(allowed_comms, comm_t, u8);
+
+/*
+When set to 1, all processes are traced regardless of kubernetes_pids or allowed_comms.
+Set when both TRACE_PIDS and TRACE_COMMS are empty.
+*/
+BPF_ARRAY(trace_all_flag, u32, 1);
+
+/*
+When set to 1, connections classified as kProtoOther (not HTTP/1, HTTP/2, or TLS)
+are dropped in-kernel before perf_submit. Set from Go via
+AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC (default 1).
+*/
+BPF_ARRAY(drop_non_http_flag, u32, 1);
+
+static __inline bool should_trace_comm() {
+  u32 zero = 0;
+  u32 *flag = trace_all_flag.lookup(&zero);
+  if (flag != NULL && *flag == 1) {
+    return true;
+  }
+  char comm[16];
+  bpf_get_current_comm(&comm, sizeof(comm));
+  u8 *enabled = allowed_comms.lookup(&comm);
+  return enabled != NULL;
+}
+
+static __inline bool should_trace_tgid(u64 id) {
+  u32 zero = 0;
+  u32 *flag = trace_all_flag.lookup(&zero);
+  if (flag != NULL && *flag == 1) {
+    return true;
+  }
+  u32 tgid = id >> 32;
+  u8 *enabled = kubernetes_pids.lookup(&tgid);
+  if (enabled == NULL) {
+    return false;
+  }
+  return true;
+}
+
+
+// classify_protocol sniffs the first bytes of a connection ONCE and returns the
+// wire protocol. For the HTTP/1 case it also resolves message type (request vs
+// response) via *msg_type, so the same single bpf_probe_read serves both the
+// protocol gate and role inference (this replaces the old infer_http_message).
+//
+// Positive-keep signatures: TLS record (0x16 0x03), HTTP/2 preface
+// (PRI * HTTP/2.0), HTTP/1 response (HTTP/1.), HTTP/1 request methods. Methods
+// OPTIONS/TRACE/CONNECT are intentionally excluded (treated as kProtoOther).
+// Fewer than 16 bytes is too short to be decisive → kProtoUnknown (caller keeps
+// it, fail-open); a fully-present buffer matching nothing → kProtoOther (drop).
+static __inline enum protocol_t classify_protocol(const char* buf, int count,
+                                                  enum message_type_t* msg_type) {
+    *msg_type = kUnknown;
+    if (count < 16) return kProtoUnknown;
+    char b[16];
+    bpf_probe_read(&b, sizeof(b), buf);
+
+    // TLS record: 0x16 (handshake content type) 0x03 (SSL3/TLS major version).
+    // Deliberately does NOT set *msg_type: a TLS connection is reclassified on its
+    // decrypted plaintext (set_conn_as_ssl resets protocol -> classify runs again
+    // on the real HTTP request/response), so role is resolved there — a better
+    // signal than ClientHello/ServerHello. Distinguishing them here would be dead
+    // weight. Role also normally comes from accept/connect.
+    if (b[0] == 0x16 && b[1] == 0x03) return kProtoTLS;
+
+    // HTTP/2 client connection preface: "PRI * HTTP/2.0", always client->server.
+    // Unlike TLS, an h2c connection is classified ONLY ONCE (its later frames are
+    // binary, not request/response lines), so the preface is the sole content role
+    // signal — hence *msg_type = kRequest here but not for TLS.
+    if (b[0]=='P'&&b[1]=='R'&&b[2]=='I'&&b[3]==' '&&b[4]=='*'&&b[5]==' '&&
+        b[6]=='H'&&b[7]=='T'&&b[8]=='T'&&b[9]=='P'&&b[10]=='/'&&b[11]=='2') {
+        *msg_type = kRequest; return kProtoHTTP2;
+    }
+
+    // HTTP/1 response line: "HTTP/1.".
+    if (b[0]=='H'&&b[1]=='T'&&b[2]=='T'&&b[3]=='P'&&b[4]=='/'&&b[5]=='1') {
+        *msg_type = kResponse; 
+        return kProtoHTTP;
+    }
+
+    // HTTP/1 request methods (method + SP). OPTIONS/TRACE/CONNECT excluded.
+    if (b[0]=='G'&&b[1]=='E'&&b[2]=='T'&&b[3]==' ')                                 { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='P'&&b[1]=='O'&&b[2]=='S'&&b[3]=='T'&&b[4]==' ')                       { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='P'&&b[1]=='U'&&b[2]=='T'&&b[3]==' ')                                 { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='H'&&b[1]=='E'&&b[2]=='A'&&b[3]=='D'&&b[4]==' ')                       { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='D'&&b[1]=='E'&&b[2]=='L'&&b[3]=='E'&&b[4]=='T'&&b[5]=='E'&&b[6]==' ') { *msg_type = kRequest; return kProtoHTTP; }
+    if (b[0]=='P'&&b[1]=='A'&&b[2]=='T'&&b[3]=='C'&&b[4]=='H'&&b[5]==' ')            { *msg_type = kRequest; return kProtoHTTP; }
+
+    // Decisive: enough bytes, matched none of the keep signatures.
+    return kProtoOther;
+}
 
 static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
@@ -144,7 +299,9 @@ static __inline u64 gen_tgid_fd(u32 tgid, int fd) {
 static __inline void process_syscall_accept(struct pt_regs* ret, const struct accept_args_t* args, u64 id, bool isConnect) {
     int ret_fd = PT_REGS_RC(ret);
 
+
     if(!isConnect && ret_fd < 0){
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: ret_fd < 0, returning early"); }
         return;
     }
     union sockaddr_t* addr;
@@ -156,15 +313,9 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     uint16_t lport = 0;
 
     if(args->addr != NULL){
-      if (PRINT_BPF_LOGS){
-        bpf_trace_printk("sock addr found, processing");
-      }
         addr = (union sockaddr_t*)args->addr;
     }
     if(args->sock_alloc_socket !=NULL){
-      if (PRINT_BPF_LOGS){
-        bpf_trace_printk("sock alloc found, processing");
-      }
         socketConn = true;
         struct sock* sk = NULL;
         bpf_probe_read_kernel(&sk, sizeof(sk),  &(args->sock_alloc_socket)->sk);
@@ -175,33 +326,24 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
         bpf_probe_read_kernel(&family, sizeof(family), &sk_common->skc_family);
         bpf_probe_read_kernel(&rport, sizeof(rport), &sk_common->skc_dport);
         bpf_probe_read_kernel(&lport, sizeof(lport), &sk_common->skc_num);
-        conn_info.port = rport;
+        conn_info.rport = rport;
         if (family == AF_INET) {
-          if (PRINT_BPF_LOGS){
-            bpf_trace_printk("sock alloc found ipv4, processing");
-          }
-          bpf_probe_read_kernel(&(conn_info.ip), sizeof(conn_info.ip), &sk_common->skc_daddr);
+          bpf_probe_read_kernel(&(conn_info.raddr), sizeof(conn_info.raddr), &sk_common->skc_daddr);
           bpf_probe_read_kernel(&(srcIp), sizeof(srcIp), &sk_common->skc_rcv_saddr);
         } else if (family == AF_INET6) {
-          if (PRINT_BPF_LOGS){
-            bpf_trace_printk("sock alloc found ipv6, processing");
-          }
           struct in6_addr in_addr;
           struct in6_addr in_addr_2;
           bpf_probe_read_kernel(&(in_addr), sizeof(in_addr), &sk_common->skc_v6_daddr);
           bpf_probe_read_kernel(&(in_addr_2), sizeof(in_addr_2), &sk_common->skc_v6_rcv_saddr);
-          conn_info.ip = (in_addr.s6_addr32)[3];
+          conn_info.raddr = (in_addr.s6_addr32)[3];
           srcIp = (in_addr_2.s6_addr32)[3];
         } else {
+          if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: unknown family %d, returning", family); }
           return;
         }
-        if (PRINT_BPF_LOGS){
-          bpf_trace_printk("sock alloc found, processed: id: %llu ip: %llu port: %d", id, conn_info.ip, conn_info.port);
-          bpf_trace_printk("sock alloc found, processed: id: %llu srcIp: %llu srcPort: %d", id, srcIp, lport);
-        }
     }
-
     if ( !socketConn && addr->sa.sa_family != AF_INET && addr->sa.sa_family != AF_INET6 ) {
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_PROCESS_ACCEPT: bad sa_family, returning"); }
         return;
     }
 
@@ -216,21 +358,46 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     if(!socketConn){
     if ( addr->sa.sa_family == AF_INET ){
         struct sockaddr_in* sock_in = (struct sockaddr_in *)addr;
-        conn_info.port = sock_in->sin_port;
+        conn_info.rport = sock_in->sin_port;
         struct in_addr *in_addr_ptr = &(sock_in->sin_addr);
-        conn_info.ip = in_addr_ptr->s_addr;
+        conn_info.raddr = in_addr_ptr->s_addr;
     } else {
         struct sockaddr_in6* sock_in = (struct sockaddr_in6 *)addr;
-        conn_info.port = sock_in->sin6_port;
+        conn_info.rport = sock_in->sin6_port;
         struct in6_addr *in_addr_ptr = &(sock_in->sin6_addr);
-        conn_info.ip = (in_addr_ptr->s6_addr32)[3];
+        conn_info.raddr = (in_addr_ptr->s6_addr32)[3];
     }
     }
 
     conn_info.ssl = false;
+    conn_info.laddr = srcIp;
+    conn_info.lport = lport;
+    // rport was read from skc_dport / sin_port — both network byte order (__be16).
+    // Canonicalize to host order here (once, covers both derivation paths above) so
+    // every downstream consumer (open/data/close events, Go FormatAddr, and the
+    // host-order port filter in eventCallbacks.go) sees it consistently with lport,
+    // which is already host order (skc_num). Cold path: runs once per connection,
+    // not in the data hot loop, so no verifier-instruction pressure.
+    // NOTE: the sockaddr fallback (socketConn == false) still leaves lport/laddr = 0;
+    // separate, rarer issue — not fixed here to keep this change minimal.
+    conn_info.rport = bpf_ntohs(conn_info.rport);
+    conn_info.role = isConnect ? kRoleClient : kRoleServer;
 
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
+
+//    if (PRINT_BPF_LOGS) {
+//      u32 fd_assigned = isConnect ? args->fd : (u32)ret_fd;
+//      u32 dip = conn_info.raddr;
+//      u32 sip = srcIp;
+//      bpf_trace_printk("new_conn: type=%s", isConnect ? "connect" : "accept");
+//      bpf_trace_printk("new_conn: ret_fd=%d assigned_fd=%d", ret_fd, fd_assigned);
+//      bpf_trace_printk("new_conn: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+//      bpf_trace_printk("new_conn: local_ip=%d.%d local_port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, lport);
+//      bpf_trace_printk("new_conn: remote_ip=%d.%d", (dip) & 0xFF, (dip >> 8) & 0xFF);
+//      bpf_trace_printk("new_conn: remote_ip=%d.%d remote_port=%d", (dip >> 16) & 0xFF, (dip >> 24) & 0xFF, bpf_ntohs(conn_info.rport));
+//      bpf_trace_printk("new_conn: role=%d", conn_info.role);
+//    }
 
     u32 tgid = id >> 32;
     u64 tgid_fd = 0;
@@ -275,16 +442,10 @@ static __inline void process_syscall_accept(struct pt_regs* ret, const struct ac
     socket_open_event.id = conn_info.id;
     socket_open_event.fd = conn_info.fd;
     socket_open_event.conn_start_ns = conn_info.conn_start_ns;
-    socket_open_event.port = conn_info.port;
-    socket_open_event.ip = conn_info.ip;
-    socket_open_event.src_ip = srcIp;
-    socket_open_event.src_port = lport;
-
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("accept call: %llu %d %d", socket_open_event.id, socket_open_event.fd, isConnect);
-      bpf_trace_printk("accept call 2: %llu %d %d", socket_open_event.ip, socket_open_event.port, isConnect);
-      bpf_trace_printk("accept call 3: %llu %d %d", socket_open_event.src_ip, socket_open_event.src_port, isConnect);
-    }
+    socket_open_event.rport = conn_info.rport;
+    socket_open_event.raddr = conn_info.raddr;
+    socket_open_event.laddr = srcIp;
+    socket_open_event.lport = lport;
 
     socket_open_event.socket_open_ns = conn_info.conn_start_ns;
     socket_open_events.perf_submit(ret, &socket_open_event, sizeof(struct socket_open_event_t));
@@ -312,18 +473,69 @@ static __inline void process_syscall_close(struct pt_regs* ret, const struct clo
     socket_close_event.id = conn_info->id;
     socket_close_event.fd = conn_info->fd;
     socket_close_event.conn_start_ns = conn_info->conn_start_ns;
-    socket_close_event.port = conn_info->port;
-    socket_close_event.ip = conn_info->ip;
+    socket_close_event.rport = conn_info->rport;
+    socket_close_event.raddr = conn_info->raddr;
 
     socket_close_event.socket_close_ns = bpf_ktime_get_ns();
     socket_close_events.perf_submit(ret, &socket_close_event, sizeof(struct socket_close_event_t));
     conn_info_map.delete(&tgid_fd);    
 }
 
-static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl) {
+// resolve_conn_state does the loop-invariant part of process_syscall_data: the
+// per-connection lookups and validity checks. Split out so the iovec loop can do
+// it ONCE per syscall instead of once per buffer.
+//
+// Why this matters: the verifier's limit that these probes hit is
+// BPF_COMPLEXITY_LIMIT_INSNS (insn_processed, ~1M), not program size — the
+// programs are ~570 insns against a 4096 cap. Every branch inside the body is
+// re-explored for each of the LOOP_LIMIT inlined copies, so branches multiply.
+// The two map lookups here are helper calls the compiler cannot dedupe across
+// iterations, and each needs its own NULL check, so leaving them in the loop
+// cost 2 lookups + 4 branches per buffer to recompute an identical answer.
+// Returns NULL when the caller should skip the syscall entirely.
+static __inline struct conn_info_t* resolve_conn_state(const struct data_args_t* args, u64 id, bool ssl,
+                                                       struct socket_data_event_t** event_out) {
+    if (args->fd < 0) {
+        return NULL;
+    }
+
+    u32 tgid = id >> 32;
+    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
+    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
+    if (conn_info == NULL) {
+      if (PRINT_BPF_LOGS){
+        bpf_trace_printk("process_syscall_data conn_info not found id=%d fd=%d", tgid, args->fd);
+      }
+      return NULL;
+    }
+
+    if (conn_info->ssl != ssl) {
+        return NULL;
+    }
+
+    u32 kZero = 0;
+    struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
+    if (socket_data_event == NULL) {
+        return NULL;
+    }
+
+    *event_out = socket_data_event;
+    return conn_info;
+}
+
+// process_syscall_data_resolved is the per-buffer half: it assumes the caller has
+// already resolved conn_info and the event buffer via resolve_conn_state.
+static __inline void process_syscall_data_resolved(struct pt_regs* ret, const struct data_args_t* args, u64 id,
+                                                   bool is_send, bool compute_meta,
+                                                   struct conn_info_t* conn_info,
+                                                   struct socket_data_event_t* socket_data_event) {
     int bytes_exchanged = PT_REGS_RC(ret);
 
-    if(args->iovlen > 0 && args->buf_size > 0){
+    if(args->msg_len > 0){
+        // SSL_*_ex path: real length came from the *written/*readbytes out-param
+        // (PT_REGS_RC is just the 1/0 success flag for _ex).
+        bytes_exchanged = args->msg_len;
+    } else if(args->iovlen > 0 && args->buf_size > 0){
         bytes_exchanged = args->buf_size;
     }
 
@@ -331,47 +543,112 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
         return;
     }
 
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 1 %d", id);
-    }
-    if (args->fd < 0) {
-        return;
-    }
-
-    u32 tgid = id >> 32;
-    u64 tgid_fd = gen_tgid_fd(tgid, args->fd);
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 2 %d %llu %lu", id, tgid_fd, tgid);
-    }
-    struct conn_info_t* conn_info = conn_info_map.lookup(&tgid_fd);
-    if (conn_info == NULL) {
-        return;
-    }
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 3 %d %llu %lu", id, tgid_fd, tgid);
-    }
-    
-    if (conn_info->ssl != ssl) {
-        return;
-    }
-
-    if (PRINT_BPF_LOGS){
-      bpf_trace_printk("SSL data 4 %llu %llu %d", id, tgid_fd, ssl);
-    }
-
-    u32 kZero = 0;
-    struct socket_data_event_t* socket_data_event = socket_data_event_buffer_heap.lookup(&kZero);
-    if (socket_data_event == NULL) {
-        return;
-    }
-
     socket_data_event->id = conn_info->id;
     socket_data_event->fd = conn_info->fd;
     socket_data_event->conn_start_ns = conn_info->conn_start_ns;
-    socket_data_event->port = conn_info->port;
-    socket_data_event->ip = conn_info->ip; 
-    socket_data_event->bytes_sent = is_send ? 1 : -1;
+    socket_data_event->rport = conn_info->rport;
+    socket_data_event->raddr = conn_info->raddr;
+    socket_data_event->laddr = conn_info->laddr;
+    socket_data_event->lport = conn_info->lport;
     socket_data_event->ssl = conn_info->ssl;
+
+    enum traffic_direction_t direction = is_send ? kEgress : kIngress;
+
+    // Protocol + role + msg_seq are per-connection/per-message properties, not
+    // per-buffer: `direction` is constant across a syscall's iovecs, and the
+    // values are cached in conn_info. Computing them is only meaningful once per
+    // syscall, so callers that inline this function many times (the iovec loop)
+    // pass compute_meta=false for all but the first buffer. Because compute_meta
+    // is a compile-time constant at each inline site, the heavy classify_protocol
+    // block is dead-code-eliminated from the copies that don't need it, keeping
+    // the vec probes under the BPF verifier's instruction limit.
+    if (compute_meta) {
+        // Classify the connection once, on its first decisive buffer. The same
+        // single read resolves the wire protocol AND (for HTTP/1) the role
+        // fallback. protocol is reset to kProtoUnknown on the TLS->plaintext
+        // transition (set_conn_as_ssl), so decrypted traffic is reclassified.
+        if (conn_info->protocol == kProtoUnknown && args->buf != NULL) {
+            enum message_type_t msg_type = kUnknown;
+            conn_info->protocol = classify_protocol(args->buf, bytes_exchanged, &msg_type);
+            if (conn_info->role == kRoleUnknown && msg_type != kUnknown) {
+                conn_info->role = ((direction == kEgress) ^ (msg_type == kResponse))
+                                      ? kRoleClient : kRoleServer;
+            }
+        }
+
+        // msg_seq: increments on direction change (HTTP message boundary)
+        if (conn_info->msg_seq == 0) {
+            conn_info->msg_seq = 1;
+            conn_info->prev_direction = direction;
+        } else if (direction != conn_info->prev_direction) {
+            conn_info->msg_seq++;
+            conn_info->prev_direction = direction;
+        }
+    }
+
+    // Drop connections that are decisively not HTTP/1, HTTP/2, or TLS, before the
+    // chunk loop / perf_submit. The verdict persists in conn_info, so every later
+    // event on this connection is dropped too. The flag lookup touches ONLY
+    // kProtoOther connections (the ones we drop) — kept HTTP/h2/TLS traffic pays
+    // just the comparison, no map lookup.
+    // compute_meta is a compile-time constant at each inline site, so for the
+    // iovec loop this whole block (including the map lookup) is emitted only in
+    // the i==0 copy instead of all LOOP_LIMIT of them. The verdict is a
+    // per-connection property and cannot change between iovecs of one syscall,
+    // so re-checking it per buffer was redundant anyway. process_syscall_data_vecs
+    // does the same check once before its loop, so a dropped connection skips the
+    // entire syscall rather than just this one buffer.
+    if (compute_meta && conn_info->protocol == kProtoOther) {
+        u32 drop_zero = 0;
+        u32* drop = drop_non_http_flag.lookup(&drop_zero);
+        if (drop != NULL && *drop == 1) {
+            return;
+        }
+    }
+
+    socket_data_event->role      = conn_info->role;
+    socket_data_event->direction = direction;
+    socket_data_event->msg_seq   = conn_info->msg_seq;
+    socket_data_event->protocol  = conn_info->protocol;
+
+//    if (PRINT_BPF_LOGS){
+//      bpf_trace_printk("data_loop_start: pid=%d fd=%d total_bytes=%d", id >> 32, conn_info->fd, bytes_exchanged);
+//      u32 ip = conn_info->raddr;
+//      bpf_trace_printk("data: remote_ip=%d.%d", (ip) & 0xFF, (ip >> 8) & 0xFF);
+//      bpf_trace_printk("data: remote_ip=%d.%d port=%d", (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, bpf_ntohs(conn_info->rport));
+//      u32 sip = conn_info->laddr;
+//      bpf_trace_printk("data: local_ip=%d.%d", (sip) & 0xFF, (sip >> 8) & 0xFF);
+//      bpf_trace_printk("data: local_ip=%d.%d port=%d", (sip >> 16) & 0xFF, (sip >> 24) & 0xFF, conn_info->lport);
+//      bpf_trace_printk("data: role=%d dir=%d msg_seq=%d", conn_info->role, direction, conn_info->msg_seq);
+//    }
+
+    int bytes_sent = 0;
+    size_t size_to_save = 0;
+    int i =0;
+  #pragma unroll
+  for (i = 0; i < CHUNK_LIMIT; ++i) {
+    const int bytes_remaining = bytes_exchanged - bytes_sent;
+
+    if (bytes_remaining <= 0) {
+        break;
+    }
+    size_t current_size = (bytes_remaining > MAX_MSG_SIZE && (i != CHUNK_LIMIT - 1)) ? MAX_MSG_SIZE : bytes_remaining;
+
+    size_t current_size_minus_1 = current_size - 1;
+    asm volatile("" : "+r"(current_size_minus_1) :);
+    current_size = current_size_minus_1 + 1;
+
+    if (current_size > MAX_MSG_SIZE) {
+        current_size = MAX_MSG_SIZE;
+    }
+
+    if (current_size_minus_1 < MAX_MSG_SIZE) {
+      bpf_probe_read(&socket_data_event->msg, current_size, args->buf + bytes_sent);
+      size_to_save = current_size;
+    } else if (current_size_minus_1 < 0x7fffffff) {
+      bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf + bytes_sent);
+      size_to_save = MAX_MSG_SIZE;
+    }
 
     if (is_send){
       conn_info->writeEventsCount = (conn_info->writeEventsCount) + 1u;
@@ -382,38 +659,55 @@ static __inline void process_syscall_data(struct pt_regs* ret, const struct data
     socket_data_event->writeEventsCount = conn_info->writeEventsCount;
     socket_data_event->readEventsCount = conn_info->readEventsCount;
 
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("pid: %d conn-id:%d, fd: %d", id, conn_info->id, conn_info->fd);
-    unsigned long tdfd = ((id & 0xffff) << 32) + conn_info->fd;
-    bpf_trace_printk("rwc: %d tdfd: %llu data: %s", (socket_data_event->readEventsCount*10000 + socket_data_event->writeEventsCount%10000),tgid_fd, socket_data_event->msg);
-  }
-    
-    size_t bytes_exchanged_minus_1 = bytes_exchanged - 1;
-    asm volatile("" : "+r"(bytes_exchanged_minus_1) :);
-    bytes_exchanged = bytes_exchanged_minus_1 + 1;
-
-    size_t size_to_save = 0;
-    if (bytes_exchanged_minus_1 < MAX_MSG_SIZE) {
-        bpf_probe_read(&socket_data_event->msg, bytes_exchanged, args->buf);
-        size_to_save = bytes_exchanged;
-        socket_data_event->msg[size_to_save] = '\\0';
-    } else if (bytes_exchanged_minus_1 < 0x7fffffff) {
-        bpf_probe_read(&socket_data_event->msg, MAX_MSG_SIZE, args->buf);
-        size_to_save = MAX_MSG_SIZE;
+    if(PRINT_BPF_LOGS){
+          bpf_trace_printk("rc: %d wc: %d data: %s", socket_data_event->readEventsCount, socket_data_event->writeEventsCount, socket_data_event->msg);
     }
-
-    
+    socket_data_event->bytes_sent = is_send ? 1 : -1;
     socket_data_event->bytes_sent *= size_to_save;
-    
     socket_data_events.perf_submit(ret, socket_data_event, sizeof(struct socket_data_event_t) - MAX_MSG_SIZE + size_to_save);
 
+    bytes_sent += current_size;
+  }
+
+}
+
+// Unchanged entry point for the scalar (read/write/recv/send) probes: resolve
+// then process. Those callers inline this once, so the lookups cost nothing there.
+static __inline void process_syscall_data(struct pt_regs* ret, const struct data_args_t* args, u64 id, bool is_send, bool ssl, bool compute_meta) {
+    struct socket_data_event_t* socket_data_event = NULL;
+    struct conn_info_t* conn_info = resolve_conn_state(args, id, ssl, &socket_data_event);
+    if (conn_info == NULL || socket_data_event == NULL) {
+        return;
+    }
+    process_syscall_data_resolved(ret, args, id, is_send, compute_meta, conn_info, socket_data_event);
 }
 
 static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_args_t* args, u64 id, bool is_send){
     int bytes_sent=0;
     int total_size = PT_REGS_RC(ret);
     const struct iovec* iov = args->iov;
+
+    // Resolve per-connection state ONCE for the whole syscall. Everything here is
+    // invariant across the iovecs of a single call, so doing it inside the loop
+    // made the verifier re-explore the same branches LOOP_LIMIT times, which is
+    // what pushed insn_processed past BPF_COMPLEXITY_LIMIT_INSNS and made these
+    // four vectored probes fail to load.
+    struct socket_data_event_t* socket_data_event = NULL;
+    struct conn_info_t* conn_info = resolve_conn_state(args, id, false /* ssl */, &socket_data_event);
+    if (conn_info == NULL || socket_data_event == NULL) {
+        return;
+    }
+
+    // Drop verdict is per-connection too: evaluating it here means a dropped
+    // connection skips all its buffers, matching the previous behaviour where
+    // each per-buffer check returned early.
+    if (conn_info->protocol == kProtoOther) {
+        u32 drop_zero = 0;
+        u32* drop = drop_non_http_flag.lookup(&drop_zero);
+        if (drop != NULL && *drop == 1) {
+            return;
+        }
+    }
     for (int i = 0; i < LOOP_LIMIT && i < args->iovlen && bytes_sent < total_size ; ++i) {
         struct iovec iov_cpy;
         bpf_probe_read(&iov_cpy, sizeof(iov_cpy), &iov[i]);
@@ -423,7 +717,11 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
         
         args->buf = iov_cpy.iov_base;
         args->buf_size = iov_size;
-        process_syscall_data(ret, args, id, is_send, false);
+        // compute_meta only on the first iovec: role/msg_seq are per-message,
+        // and the HTTP request/response line lives in iov[0]. i==0 is a
+        // compile-time constant per unrolled copy, so the metadata code is
+        // emitted once instead of LOOP_LIMIT times.
+        process_syscall_data_resolved(ret, args, id, is_send, /* compute_meta */ i == 0, conn_info, socket_data_event);
         bytes_sent += iov_size;
         
       }
@@ -433,8 +731,12 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
 int syscall__probe_entry_accept(struct pt_regs* ctx, int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_accept: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_accept: pid=%d fd=%d", id >> 32, sockfd);
   }
 
     struct accept_args_t accept_args = {};
@@ -446,14 +748,19 @@ int syscall__probe_entry_accept(struct pt_regs* ctx, int sockfd, struct sockaddr
 
 int syscall__probe_ret_accept(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
+    u32 tgid = id >> 32;
+    int ret_fd = PT_REGS_RC(ctx);
 
-    if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_accept: pid: %d", id);
-  }
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
 
     struct accept_args_t* accept_args = active_accept_args_map.lookup(&id);
 
-    if (accept_args != NULL) {
+    if (accept_args == NULL) {
+    } else {
+        if(PRINT_BPF_LOGS){ bpf_trace_printk("DEBUG_RET_ACCEPT: accept_args found, calling process_syscall_accept"); }
         process_syscall_accept(ctx, accept_args, id, false);
     }
 
@@ -463,6 +770,10 @@ int syscall__probe_ret_accept(struct pt_regs* ctx) {
 
 int probe_ret_sock_alloc(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
+
+  if (!should_trace_comm()) {
+    return 0;
+  }
   
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_ret_sock_alloc: pid: %d", id);
@@ -482,6 +793,10 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
 
 int probe_entry_tcp_connect(struct pt_regs* ctx) {
   uint64_t id = bpf_get_current_pid_tgid();
+
+  if (!should_trace_comm()) {
+    return 0;
+  }
   
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_entry_tcp_connect: pid: %d", id);
@@ -502,8 +817,12 @@ int probe_entry_tcp_connect(struct pt_regs* ctx) {
 int syscall__probe_entry_connect(struct pt_regs* ctx, int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_connect: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_connect: pid=%d fd=%d", id >> 32, sockfd);
   }
 
     struct accept_args_t accept_args = {};
@@ -516,6 +835,10 @@ int syscall__probe_entry_connect(struct pt_regs* ctx, int sockfd, struct sockadd
 
 int syscall__probe_ret_connect(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
 
     if(PRINT_BPF_LOGS){
     bpf_trace_printk("syscall__probe_ret_connect: pid: %d", id);
@@ -540,8 +863,12 @@ int syscall__probe_ret_connect(struct pt_regs* ctx) {
 int syscall__probe_entry_close(struct pt_regs* ctx, int fd) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_close: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_close: pid=%d fd=%d", id >> 32, fd);
   }
 
     struct close_args_t close_args = {};
@@ -554,8 +881,12 @@ int syscall__probe_entry_close(struct pt_regs* ctx, int fd) {
 int syscall__probe_ret_close(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_close: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_close: pid: %d", id >> 32);
   }
 
     struct close_args_t* close_args = active_close_args_map.lookup(&id);
@@ -571,8 +902,12 @@ int syscall__probe_ret_close(struct pt_regs* ctx) {
 int syscall__probe_entry_writev(struct pt_regs* ctx, int fd, const struct iovec* iov, int iovlen){
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_writev: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_writev: pid=%d fd=%d", id >> 32, fd);
   }
 
     struct data_args_t write_args = {};
@@ -593,7 +928,10 @@ int syscall__probe_entry_writev(struct pt_regs* ctx, int fd, const struct iovec*
 
 int syscall__probe_ret_writev(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
-  
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
     if(PRINT_BPF_LOGS){
     bpf_trace_printk("syscall__probe_ret_writev: pid: %d", id);
   }
@@ -601,7 +939,7 @@ int syscall__probe_ret_writev(struct pt_regs* ctx) {
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
     if (write_args != NULL && write_args->sock_event) {
         if(PRINT_BPF_LOGS){
-            bpf_trace_printk("syscall__probe_ret_writev data process: pid: %d", id);
+            bpf_trace_printk("syscall__probe_ret_writev data process: pid: %d", id >> 32);
         }
       process_syscall_data_vecs(ctx, write_args, id, true);
     }
@@ -613,9 +951,13 @@ int syscall__probe_ret_writev(struct pt_regs* ctx) {
 int syscall__probe_entry_sendmsg(struct pt_regs* ctx, int fd, struct user_msghdr* msghdr){
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
 	if (msghdr != NULL) {
       if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_sendmsg: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_sendmsg: pid=%d fd=%d", id >> 32, fd);
   }
 	
 		struct data_args_t write_args = {};
@@ -632,8 +974,12 @@ int syscall__probe_entry_sendmsg(struct pt_regs* ctx, int fd, struct user_msghdr
 int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
       if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_sendmsg: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_sendmsg: pid: %d", id >> 32);
   }
 
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
@@ -647,9 +993,12 @@ int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
 
   int syscall__probe_entry_readv(struct pt_regs* ctx, int fd, struct iovec* iov, int iovlen) {
     u64 id = bpf_get_current_pid_tgid();
-  
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
       if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_readv: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_readv: pid=%d fd=%d", id >> 32, fd);
   }
     
     struct data_args_t read_args = {};
@@ -670,9 +1019,12 @@ int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
   
   int syscall__probe_ret_readv(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
-  
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
     if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_readv: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_readv: pid: %d", id >> 32);
   }
     
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
@@ -684,17 +1036,28 @@ int syscall__probe_ret_sendmsg(struct pt_regs* ctx) {
     return 0;
   }
 
-int syscall__probe_entry_recvfrom(struct pt_regs* ctx, int fd, char* buf, size_t count, 
+int syscall__probe_entry_recvfrom(struct pt_regs* ctx, int fd, char* buf, size_t count,
 	int flags, struct sockaddr* src_addr, socklen_t* addrlen) {
     u64 id = bpf_get_current_pid_tgid();
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
+    // MSG_PEEK reads don't consume the socket; the real read follows and is
+    // captured. Skip the peek so it isn't recorded as a duplicate fragment.
+    if (flags & MSG_PEEK) {
+        active_read_args_map.delete(&id);
+        return 0;
+    }
 
   if(PRINT_BPF_LOGS){
     struct data_args_t* read_args_1 = active_read_args_map.lookup(&id);
 
     if (read_args_1 != NULL){
-      bpf_trace_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : %d", id, fd, read_args_1->fd);
+      bpf_trace_printk("syscall__probe_entry_recvfrom: pid=%d fd=%d read args fd=%d", id >> 32, fd, read_args_1->fd);
     } else {
-      bpf_trace_printk("syscall__probe_entry_recvfrom: pid: %llu fd: %d read args : NULL", id, fd);
+      bpf_trace_printk("syscall__probe_entry_recvfrom: pid=%d fd=%d read args=NULL", id >> 32, fd);
     }
   }
 
@@ -710,14 +1073,18 @@ int syscall__probe_entry_recvfrom(struct pt_regs* ctx, int fd, char* buf, size_t
 int syscall__probe_ret_recvfrom(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_recvfrom: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_recvfrom: pid: %d", id >> 32);
   }
 
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
     if (read_args != NULL) {
-        process_syscall_data(ctx, read_args, id, false, false);
+        process_syscall_data(ctx, read_args, id, false, false, true);
     }
 
     active_read_args_map.delete(&id);
@@ -728,13 +1095,17 @@ int syscall__probe_entry_sendto(struct pt_regs* ctx, int fd, char* buf, size_t c
 	int flags, const struct sockaddr* dest_addr, socklen_t addrlen) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
         struct data_args_t* write_args_1 = active_write_args_map.lookup(&id);
 
     if (write_args_1 != NULL) {
-      bpf_trace_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : %d", id, fd, write_args_1->fd);
+      bpf_trace_printk("syscall__probe_entry_sendto: pid=%d fd=%d write args fd=%d", id >> 32, fd, write_args_1->fd);
     } else {
-      bpf_trace_printk("syscall__probe_entry_sendto: pid: %llu fd: %d write args : NULL", id, fd);
+      bpf_trace_printk("syscall__probe_entry_sendto: pid=%d fd=%d write args=NULL", id >> 32, fd);
     }
   }
 
@@ -750,25 +1121,39 @@ int syscall__probe_entry_sendto(struct pt_regs* ctx, int fd, char* buf, size_t c
 int syscall__probe_ret_sendto(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_sendto: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_sendto: pid: %d", id >> 32);
   }
 
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
     if (write_args != NULL) {
-        process_syscall_data(ctx, write_args, id, true, false);
+        process_syscall_data(ctx, write_args, id, true, false, true);
     }
 
     active_write_args_map.delete(&id);
     return 0;
 }
 
-int syscall__probe_entry_recv(struct pt_regs* ctx, int fd, char* buf, size_t count) {
+int syscall__probe_entry_recv(struct pt_regs* ctx, int fd, char* buf, size_t count, int flags) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
+    // Skip MSG_PEEK (non-consuming); the real read follows. See recvfrom above.
+    if (flags & MSG_PEEK) {
+        active_read_args_map.delete(&id);
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_recv: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_recv: pid=%d fd=%d", id >> 32, fd);
   }
 
     struct data_args_t read_args = {};
@@ -783,14 +1168,18 @@ int syscall__probe_entry_recv(struct pt_regs* ctx, int fd, char* buf, size_t cou
 int syscall__probe_ret_recv(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_recv: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_recv: pid: %d", id >> 32);
   }
 
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
     if (read_args != NULL) {
-        process_syscall_data(ctx, read_args, id, false, false);
+        process_syscall_data(ctx, read_args, id, false, false, true);
     }
 
     active_read_args_map.delete(&id);
@@ -800,16 +1189,19 @@ int syscall__probe_ret_recv(struct pt_regs* ctx) {
 int syscall__probe_entry_read(struct pt_regs* ctx, int fd, char* buf, size_t count) {
     u64 id = bpf_get_current_pid_tgid();
 
+  if (!should_trace_comm()) {
+      return 0;
+  }
   if(PRINT_BPF_LOGS){
       struct data_args_t* read_args_1 = active_read_args_map.lookup(&id);
 
     if (read_args_1 != NULL)
     {
-      bpf_trace_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : %d", id, fd, read_args_1->fd);
+      bpf_trace_printk("syscall__probe_entry_read: pid=%d fd=%d read args fd=%d", id >> 32, fd, read_args_1->fd);
     }
     else
     {
-      bpf_trace_printk("syscall__probe_entry_read: pid: %llu fd: %d read args : NULL", id, fd);
+      bpf_trace_printk("syscall__probe_entry_read: pid=%d fd=%d read args=NULL", id >> 32, fd);
     }
   }
 
@@ -831,27 +1223,44 @@ int syscall__probe_entry_read(struct pt_regs* ctx, int fd, char* buf, size_t cou
 int syscall__probe_ret_read(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_read: pid: %d", id);
-  }
+    if (!should_trace_comm()) {
+        return 0;
+    }
 
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
 
     if (read_args != NULL && read_args->sock_event) {
-        process_syscall_data(ctx, read_args, id, false, false);
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_read pid=%d fd=%d sock_event=1", id >> 32, read_args->fd);
+      }
+      process_syscall_data(ctx, read_args, id, false, false, true);
+    } else if (read_args != NULL) {
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_read pid=%d fd=%d sock_event=0 skipping", id >> 32, read_args->fd);
+      }
     }
 
     active_read_args_map.delete(&id);
     return 0;
 }
 
-int syscall__probe_entry_recvmsg(struct pt_regs* ctx, int fd, struct user_msghdr* msghdr) {
+int syscall__probe_entry_recvmsg(struct pt_regs* ctx, int fd, struct user_msghdr* msghdr, int flags) {
     u64 id = bpf_get_current_pid_tgid();
+
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
+    // Skip MSG_PEEK (non-consuming); the real read follows. See recvfrom above.
+    if (flags & MSG_PEEK) {
+        active_read_args_map.delete(&id);
+        return 0;
+    }
 
 	if (msghdr != NULL) {
 
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_recvmsg: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_recvmsg: pid=%d fd=%d", id >> 32, fd);
   }
 	
 		struct data_args_t read_args = {};
@@ -868,8 +1277,12 @@ int syscall__probe_entry_recvmsg(struct pt_regs* ctx, int fd, struct user_msghdr
 int syscall__probe_ret_recvmsg(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_recvmsg: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_recvmsg: pid: %d", id >> 32);
   }
 
     struct data_args_t* read_args = active_read_args_map.lookup(&id);
@@ -885,8 +1298,12 @@ int syscall__probe_ret_recvmsg(struct pt_regs* ctx) {
 int syscall__probe_entry_send(struct pt_regs* ctx, int fd, char* buf, size_t count) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_send: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_send: pid=%d fd=%d", id >> 32, fd);
   }
 
     struct data_args_t write_args = {};
@@ -901,14 +1318,18 @@ int syscall__probe_entry_send(struct pt_regs* ctx, int fd, char* buf, size_t cou
 int syscall__probe_ret_send(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+    if (!should_trace_comm()) {
+        return 0;
+    }
+
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_send: pid: %d", id);
+    bpf_trace_printk("syscall__probe_ret_send: pid: %d", id >> 32);
   }
 
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
     if (write_args != NULL) {
-        process_syscall_data(ctx, write_args, id, true, false);
+        process_syscall_data(ctx, write_args, id, true, false, true);
     }
 
     active_write_args_map.delete(&id);
@@ -918,14 +1339,17 @@ int syscall__probe_ret_send(struct pt_regs* ctx) {
 int syscall__probe_entry_write(struct pt_regs* ctx, int fd, char* buf, size_t count) {
     u64 id = bpf_get_current_pid_tgid();
 
+  if (!should_trace_comm()) {
+      return 0;
+  }
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_entry_write: pid: %d", id);
+    bpf_trace_printk("syscall__probe_entry_write: pid=%d fd=%d", id >> 32, fd);
   }
 
     struct data_args_t write_args = {};
     write_args.buf = buf;
     write_args.fd = fd;
-	write_args.source_fn = kSyscallWrite;
+	  write_args.source_fn = kSyscallWrite;
 
     struct data_args_t* existing_write_args = active_write_args_map.lookup(&id);
     if (existing_write_args != NULL && existing_write_args->sock_event) {
@@ -939,29 +1363,103 @@ int syscall__probe_entry_write(struct pt_regs* ctx, int fd, char* buf, size_t co
 int syscall__probe_ret_write(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
+  if (!should_trace_comm()) {
+      return 0;
+  }
+
   if(PRINT_BPF_LOGS){
     struct data_args_t* write_args_1 = active_write_args_map.lookup(&id);
 
     if (write_args_1 != NULL) {
-      bpf_trace_printk("syscall__probe_ret_write: pid: %llu write args : %d", id, write_args_1->fd);
+      bpf_trace_printk("syscall__probe_ret_write: pid: %d write args : %d", id >> 32, write_args_1->fd);
     } else {
-      bpf_trace_printk("syscall__probe_ret_write: pid: %llu write args : NULL", id);
+      bpf_trace_printk("syscall__probe_ret_write: pid: %d write args : NULL", id >> 32);
     }
   }
 
     struct data_args_t* write_args = active_write_args_map.lookup(&id);
 
     if (write_args != NULL && write_args->sock_event) {
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("syscall__probe_ret_write data process: pid: %d", id);
-  }
-
-    process_syscall_data(ctx, write_args, id, true, false);
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_write data process: pid=%d fd=%d sock_event=1", id >> 32, write_args->fd);
+      }
+      process_syscall_data(ctx, write_args, id, true, false, true);
+    } else if (write_args != NULL) {
+      if(PRINT_BPF_LOGS){
+        bpf_trace_printk("syscall__probe_ret_write pid=%d fd=%d sock_event=0 skipping", id >> 32, write_args->fd);
+      }
     }
 
     active_write_args_map.delete(&id);
     return 0;
+}
+
+
+// Trace kernel function:
+// int security_socket_sendmsg(struct socket *sock, struct msghdr *msg, int size)
+// which is called by write/writev
+int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+
+  if (!should_trace_comm()) {
+    return 0;
+  }
+
+
+  struct data_args_t* write_args = active_write_args_map.lookup(&id);
+  if (write_args != NULL) {
+    write_args->sock_event = true;
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("probe_entry_security_socket_sendmsg: pid: %d, fd: %d", id >> 32, write_args->fd);
+    }
+  }
+  return 0;
+}
+
+// Trace kernel function:
+// int security_socket_recvmsg(struct socket *sock, struct msghdr *msg, int size)
+int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+
+  if (!should_trace_comm()) {
+    return 0;
+  }
+
+  
+  
+  struct data_args_t* read_args = active_read_args_map.lookup(&id);
+  if (read_args != NULL) {
+    read_args->sock_event = true;
+    if(PRINT_BPF_LOGS){
+      bpf_trace_printk("probe_entry_security_socket_recvmsg: pid: %d, fd: %d", id >> 32, read_args->fd);
+    }
+  }
+  return 0;
+}
+
+int probe_entry_setsockopt(struct pt_regs* ctx, int socket, int level, int option_name,
+       const void *option_value, socklen_t option_len) {
+  u64 id = bpf_get_current_pid_tgid();
+
+  if (!should_trace_comm()) {
+    return 0;
+  }
+
+  struct data_args_t* write_args = active_write_args_map.lookup(&id);
+  if (write_args != NULL) {
+    write_args->sock_event = true;
+  }
+  struct data_args_t* read_args = active_read_args_map.lookup(&id);
+  if (read_args != NULL) {
+    read_args->sock_event = true;
+  }
+
+  if(PRINT_BPF_LOGS){
+    int wfd = write_args != NULL ? write_args->fd : -1;
+    int rfd = read_args != NULL ? read_args->fd : -1;
+    bpf_trace_printk("probe_entry_setsockopt: pid=%d wfd=%d rfd=%d", id >> 32, wfd, rfd);
+  }
+  return 0;
 }
 
 struct node_tlswrap_symaddrs_t {
@@ -1034,21 +1532,27 @@ static u32 get_fd(void *ssl, int sslVersion, bool rw) {
         SSL_rbio_offset = 16;
     switch (sslVersion)
     {
-    case 1: 
+    case 1:
         RBIO_num_offset = 40;
-      break;
-        case 2: 
+        break;
+    case 2:
         RBIO_num_offset = 48;
-      break;
-          case 3: 
+        break;
+    case 3:
         RBIO_num_offset = 56;
-      break;
-          case 4: 
+        break;
+    case 4:
         SSL_rbio_offset = 24;
         RBIO_num_offset = 24;
-      break;
+        break;
+    case 5:
+        // OpenSSL 3.2+ : rbio moved to ssl_connection_st (ssl_st base = 64 bytes)
+        // verified on OpenSSL 3.5.5: sudo gdb -batch -ex "add-symbol-file /usr/lib64/libssl.so.3.5.5" -ex "ptype /o struct ssl_connection_st" -ex "quit"
+        SSL_rbio_offset = 80;
+        RBIO_num_offset = 56;
+        break;
     default:
-      break;
+        break;
     }
 
     const void** rbio_ptr_addr = ssl + SSL_rbio_offset;
@@ -1073,26 +1577,51 @@ static void set_conn_as_ssl(u32 tgid, u32 fd){
     if(PRINT_BPF_LOGS){
       bpf_trace_printk("SSL marking ssl tgid: %d", tgid_fd);
     }
-    conn_info->ssl = true;
+    // Reclassify on the plaintext only on the false->true edge. The pre-SSL
+    // handshake bytes classified as kProtoTLS; resetting to kProtoUnknown makes
+    // the first DECRYPTED buffer (HTTP request or HTTP/2 preface) re-run
+    // classify_protocol so Go gets the real HTTP/1-vs-HTTP/2 verdict. Guarded by
+    // the edge so mid-stream SSL buffers (which don't start a message) are never
+    // reclassified as kProtoOther and wrongly dropped.
+    if (!conn_info->ssl) {
+        conn_info->ssl = true;
+        conn_info->protocol = kProtoUnknown;
+    }
 }
 
-static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+// Shared stash for all SSL entry probes (read & write, classic & _ex). The only
+// difference between the read and write cores was the args map, so it's a bool
+// here. len_ptr is NULL for the classic API and the *written/*readbytes pointer
+// for the _ex API.
+static void ssl_entry_stash(struct pt_regs *ctx, u32 fd, const size_t* len_ptr, bool is_write){
   u64 id = bpf_get_current_pid_tgid();
   u32 tgid = id >> 32;
 
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_SSL_write_core: pid: %d %d %d", id, tgid, fd);
+    bpf_trace_printk("ssl_entry_stash: pid: %d %d fd: %d", id, tgid, fd);
   }
 
-  char* bufc = (char*)PT_REGS_PARM2(ctx);
-
-  struct data_args_t write_args = {};
-  write_args.fd = fd;
-  write_args.buf = bufc;
-  active_ssl_write_args_map.update(&id, &write_args);
+  struct data_args_t args = {};
+  args.fd = fd;
+  args.buf = (char*)PT_REGS_PARM2(ctx);
+  args.len_ptr = len_ptr;
+  if (is_write) {
+    active_ssl_write_args_map.update(&id, &args);
+  } else {
+    active_ssl_read_args_map.update(&id, &args);
+  }
 
   // Mark connection as SSL right away, so encrypted traffic does not get traced.
-  set_conn_as_ssl(tgid, write_args.fd);
+  set_conn_as_ssl(tgid, fd);
+}
+
+static void probe_entry_SSL_write_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, NULL, /* is_write */ true);
+}
+
+// _ex variant: capture the *written out-param pointer (4th arg) for the ret probe.
+static void probe_entry_SSL_write_ex_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, (const size_t*)PT_REGS_PARM4(ctx), /* is_write */ true);
 }
 
 int probe_entry_SSL_write_1_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
@@ -1119,6 +1648,35 @@ int probe_entry_SSL_write_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num
     bpf_trace_printk("probe_entry_SSL_write_3_0: fd: %d", fd);
   }
     probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_write_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 5, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_3_5: fd: %d", fd);
+  }
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+// SSL_write_ex(ssl, buf, num, size_t *written): same first 3 args as SSL_write,
+// so fd derivation is identical; only the ex core (which grabs PARM4) differs.
+int probe_entry_SSL_write_ex_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 3, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_ex_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_write_ex_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_write_ex_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    u32 fd = get_fd(ssl, 5, false);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_write_ex_3_5: fd: %d", fd);
+  }
+    probe_entry_SSL_write_ex_core(ctx, ssl, buf, num, fd);
   return 0;
 }
 
@@ -1152,30 +1710,56 @@ int probe_ret_SSL_write(struct pt_regs* ctx) {
 
   const struct data_args_t* write_args = active_ssl_write_args_map.lookup(&id);
   if (write_args != NULL) {
-    process_syscall_data(ctx, write_args, id, true, true);
+    process_syscall_data(ctx, write_args, id, true, true, true);
   }
 
   active_ssl_write_args_map.delete(&id);
   return 0;
 }
 
-static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
-    u64 id = bpf_get_current_pid_tgid();
-  u32 tgid = id >> 32;
+// SSL_write_ex return: RC is the 1/0 success flag, real length is at *written.
+// Shared body for both SSL_*_ex return probes. They differ only in the args map
+// and is_send; the map can't be passed as a value in this bcc C style, so it's
+// selected here by is_send (same approach as ssl_entry_stash). For the _ex API
+// PT_REGS_RC is the 1/0 success flag, so the real length comes from *len_ptr.
+static __inline void ssl_ret_ex(struct pt_regs* ctx, u64 id, bool is_send){
+  struct data_args_t* args = is_send
+      ? active_ssl_write_args_map.lookup(&id)
+      : active_ssl_read_args_map.lookup(&id);
 
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_SSL_read_core: pid: %d %d %d", id, tgid, fd);
+  if (args != NULL && PT_REGS_RC(ctx) == 1 && args->len_ptr != NULL) {
+    size_t n = 0;
+    bpf_probe_read_user(&n, sizeof(n), args->len_ptr);
+    if (n > MAX_MSG_SIZE) {
+      n = MAX_MSG_SIZE;
+    }
+    args->msg_len = (int)n;
+    process_syscall_data(ctx, args, id, is_send, true, true);
   }
 
-  char* bufc = (char*)PT_REGS_PARM2(ctx);
+  if (is_send) {
+    active_ssl_write_args_map.delete(&id);
+  } else {
+    active_ssl_read_args_map.delete(&id);
+  }
+}
 
-  struct data_args_t read_args = {};
-  read_args.fd = fd;
-  read_args.buf = bufc;
-  active_ssl_read_args_map.update(&id, &read_args);
+int probe_ret_SSL_write_ex(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_ret_SSL_write_ex: pid: %d", id);
+  }
+  ssl_ret_ex(ctx, id, /* is_send */ true);
+  return 0;
+}
 
-  // Mark connection as SSL right away, so encrypted traffic does not get traced.
-  set_conn_as_ssl(tgid, read_args.fd);
+static void probe_entry_SSL_read_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, NULL, /* is_write */ false);
+}
+
+// _ex variant: capture the *readbytes out-param pointer (4th arg) for the ret probe.
+static void probe_entry_SSL_read_ex_core(struct pt_regs *ctx, void *ssl, void *buf, int num, u32 fd){
+  ssl_entry_stash(ctx, fd, (const size_t*)PT_REGS_PARM4(ctx), /* is_write */ false);
 }
 
 int probe_entry_SSL_read_1_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
@@ -1202,6 +1786,34 @@ int probe_entry_SSL_read_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num)
     bpf_trace_printk("probe_entry_SSL_read_3_0: fd: %d", fd);
   }
     probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_read_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 5, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_3_5: fd: %d", fd);
+  }
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+// SSL_read_ex(ssl, buf, num, size_t *readbytes): same first 3 args as SSL_read.
+int probe_entry_SSL_read_ex_3_0(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 3, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_ex_3_0: fd: %d", fd);
+  }
+    probe_entry_SSL_read_ex_core(ctx, ssl, buf, num, fd);
+  return 0;
+}
+
+int probe_entry_SSL_read_ex_3_5(struct pt_regs *ctx, void *ssl, void *buf, int num) {
+    int32_t fd = get_fd(ssl, 5, true);
+  if(PRINT_BPF_LOGS){
+    bpf_trace_printk("probe_entry_SSL_read_ex_3_5: fd: %d", fd);
+  }
+    probe_entry_SSL_read_ex_core(ctx, ssl, buf, num, fd);
   return 0;
 }
 
@@ -1236,61 +1848,20 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
 
   const struct data_args_t* read_args = active_ssl_read_args_map.lookup(&id);
   if (read_args != NULL) {
-    process_syscall_data(ctx, read_args, id, false, true);
+    process_syscall_data(ctx, read_args, id, false, true, true);
   }
 
   active_ssl_read_args_map.delete(&id);
   return 0;
 }
 
-// Trace kernel function:
-// int security_socket_sendmsg(struct socket *sock, struct msghdr *msg, int size)
-// which is called by write/writev
-int probe_entry_security_socket_sendmsg(struct pt_regs* ctx) {
-  u64 id = bpf_get_current_pid_tgid();
-
+// SSL_read_ex return: RC is the 1/0 success flag, real length is at *readbytes.
+int probe_ret_SSL_read_ex(struct pt_regs* ctx) {
+  uint64_t id = bpf_get_current_pid_tgid();
   if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_security_socket_sendmsg: pid: %d", id);
+    bpf_trace_printk("probe_ret_SSL_read_ex: pid: %d", id);
   }
-  struct data_args_t* write_args = active_write_args_map.lookup(&id);
-  if (write_args != NULL) {
-    write_args->sock_event = true;
-  }
-  return 0;
-}
-
-// Trace kernel function:
-// int security_socket_recvmsg(struct socket *sock, struct msghdr *msg, int size)
-int probe_entry_security_socket_recvmsg(struct pt_regs* ctx) {
-  u64 id = bpf_get_current_pid_tgid();
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_security_socket_recvmsg: pid: %d", id);
-  }
-  
-  struct data_args_t* read_args = active_read_args_map.lookup(&id);
-  if (read_args != NULL) {
-    read_args->sock_event = true;
-  }
-  return 0;
-}
-
-int probe_entry_setsockopt(struct pt_regs* ctx, int socket, int level, int option_name,
-       const void *option_value, socklen_t option_len) {
-  u64 id = bpf_get_current_pid_tgid();
-
-  if(PRINT_BPF_LOGS){
-    bpf_trace_printk("probe_entry_setsockopt: pid: %d", id);
-  }
-
-  struct data_args_t* write_args = active_write_args_map.lookup(&id);
-  if (write_args != NULL) {
-    write_args->sock_event = true;
-  }
-  struct data_args_t* read_args = active_read_args_map.lookup(&id);
-  if (read_args != NULL) {
-    read_args->sock_event = true;
-  }
+  ssl_ret_ex(ctx, id, /* is_send */ false);
   return 0;
 }
 
@@ -1525,7 +2096,7 @@ static __inline int probe_return_tls_conn_write_core(struct pt_regs* ctx, uint64
   data_args.buf = args->plaintext_ptr;
   data_args.fd = fd;
 
-  process_syscall_data(ctx, &data_args, id, true, /* ssl */ true);
+  process_syscall_data(ctx, &data_args, id, true, /* ssl */ true, true);
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_return_tls_conn_write 2.3 %llu %lu", id, tgid);
@@ -1665,7 +2236,7 @@ static __inline int probe_return_tls_conn_read_core(struct pt_regs* ctx, uint64_
   data_args.buf = args->plaintext_ptr;
   data_args.fd = fd;
 
-  process_syscall_data(ctx, &data_args, id, false, /* ssl */ true);
+  process_syscall_data(ctx, &data_args, id, false, /* ssl */ true, true);
 
   if(PRINT_BPF_LOGS){
     bpf_trace_printk("probe_return_tls_conn_read 2.3 %llu %lu", id, tgid);

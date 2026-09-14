@@ -2,12 +2,13 @@ package bpfwrapper
 
 import (
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"log"
 
 	"github.com/iovisor/gobpf/bcc"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
+	metaUtils "github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 )
 
 // ProbeEventLoop is the signature for the callback functions to extract the events from the input channel.
@@ -53,6 +54,7 @@ func (probeChannel *ProbeChannel) Start(module *bcc.Module, connectionFactory *c
 		log.Printf("⚠️ Lost events on channel, starting to listen for lost events on channel %s", probeChannel.name)
 		for lost := range probeChannel.lostEventsChannel {
 			log.Printf("⚠️ Lost %d events on channel %s", lost, probeChannel.name)
+			metaUtils.Pipeline.EventsDroppedKernelRingBuf.Add(int64(lost))
 		}
 	}()
 
