@@ -24,7 +24,7 @@ func CreateAPIGatewayClients(cfg aws.Config) (*ClientSet, error) {
 }
 
 // CreateAPIGatewayClientsFromRole creates REST + HTTP API Gateway clients using STS AssumeRole for the given roleArn.
-func CreateAPIGatewayClientsFromRole(cfg aws.Config, stsSvc *sts.Client, roleArn string, sessionName string) (*ClientSet, error) {
+func CreateAPIGatewayClientsFromRole(cfg aws.Config, stsSvc *sts.Client, roleArn string, sessionName string, externalId string) (*ClientSet, error) {
 	roleArn = strings.TrimSpace(roleArn)
 	if roleArn == "" {
 		return nil, nil
@@ -32,6 +32,9 @@ func CreateAPIGatewayClientsFromRole(cfg aws.Config, stsSvc *sts.Client, roleArn
 	roleCfg := cfg.Copy()
 	creds := stscreds.NewAssumeRoleProvider(stsSvc, roleArn, func(o *stscreds.AssumeRoleOptions) {
 		o.RoleSessionName = sessionName
+		if externalId != "" {
+			o.ExternalID = aws.String(externalId)
+		}
 	})
 	roleCfg.Credentials = aws.NewCredentialsCache(creds)
 	clientSet := &ClientSet{

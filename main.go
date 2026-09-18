@@ -48,11 +48,18 @@ func main() {
 		sessionName = "aktologprocesser"
 	}
 
+	// Optional. When the cross-account role's trust policy requires an
+	// sts:ExternalId, it must be sent on every AssumeRole call.
+	externalId := strings.TrimSpace(os.Getenv("CROSS_ACCOUNT_EXTERNAL_ID"))
+	if externalId != "" {
+		log.Printf("Using external ID for assume role calls")
+	}
+
 	// Create a map of CloudWatch Logs clients per role ARN
 	clientsPerRole := make(map[string]*cloudwatchlogs.Client)
 
 	for _, roleArn := range roleArns {
-		createArnClient(roleArn, cfg, stsSvc, sessionName, clientsPerRole)
+		createArnClient(roleArn, cfg, stsSvc, sessionName, externalId, clientsPerRole)
 	}
 
 	kafkaUtil.InitKafka()
@@ -117,7 +124,7 @@ func main() {
 
 				_, exists := clientsPerRole[roleArn]
 				if !exists {
-					createArnClient(roleArn, cfg, stsSvc, sessionName, clientsPerRole)
+					createArnClient(roleArn, cfg, stsSvc, sessionName, externalId, clientsPerRole)
 				}
 
 				log.Printf("Fetching log groups for role: %s", roleArn)
@@ -166,7 +173,7 @@ func main() {
 					clientSet, ok := apiGatewayClientsPerRole[roleArn]
 					if !ok {
 						var err error
-						clientSet, err = openapiprocessor.CreateAPIGatewayClientsFromRole(cfg, stsSvc, roleArn, sessionName)
+						clientSet, err = openapiprocessor.CreateAPIGatewayClientsFromRole(cfg, stsSvc, roleArn, sessionName, externalId)
 						if err != nil {
 							utils.LogToCyborg("error", "Failed to create API Gateway clients for role "+roleArn+": "+err.Error())
 							apiMu.Unlock()
@@ -308,7 +315,7 @@ func parseRoleArns(input string) []string {
 	return result
 }
 
-func createArnClient(roleArn string, cfg aws.Config, stsSvc *sts.Client, sessionName string, clientsPerRole map[string]*cloudwatchlogs.Client) {
+func createArnClient(roleArn string, cfg aws.Config, stsSvc *sts.Client, sessionName string, externalId string, clientsPerRole map[string]*cloudwatchlogs.Client) {
 	roleArn = strings.TrimSpace(roleArn)
 	if roleArn == "" {
 		return
@@ -320,6 +327,9 @@ func createArnClient(roleArn string, cfg aws.Config, stsSvc *sts.Client, session
 	// Temporary credentials for this role
 	creds := stscreds.NewAssumeRoleProvider(stsSvc, roleArn, func(o *stscreds.AssumeRoleOptions) {
 		o.RoleSessionName = sessionName
+		if externalId != "" {
+			o.ExternalID = aws.String(externalId)
+		}
 	})
 
 	roleCfg.Credentials = aws.NewCredentialsCache(creds)
