@@ -63,6 +63,7 @@ func joinPartsMap(connID structs.ConnID, partsMap map[int][][]byte) []byte {
 	for _, k := range keys {
 		if kPrev == -1 {
 			if !sequenceCheckSkip && k != 1 {
+				utils.Pipeline.ChunkAssemblyGaps.Add(1)
 				if logEnabled {
 					utils.LogProcessing("Bad start sequence", append(structs.ConnIDLogArgs(connID), "key", k, "value", previewFirstChunk(partsMap[k]))...)
 				}
@@ -71,6 +72,7 @@ func joinPartsMap(connID structs.ConnID, partsMap map[int][][]byte) []byte {
 			kPrev = k
 		} else {
 			if kPrev+1 != k {
+				utils.Pipeline.ChunkAssemblyGaps.Add(1)
 				if logEnabled {
 					utils.LogProcessing("Missing sequence", append(structs.ConnIDLogArgs(connID), "prev", kPrev, "current", k, "value", previewFirstChunk(partsMap[k]), "prevValue", previewFirstChunk(partsMap[kPrev]))...)
 				}
@@ -117,7 +119,9 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
 
+	utils.Pipeline.ConnsFlushed.Add(1)
 	if len(tracker.sentParts) == 0 || len(tracker.recvParts) == 0 {
+		utils.Pipeline.ConnsDroppedOneSided.Add(1)
 		return
 	}
 	receiveBuffer := joinPartsMap(connID, tracker.recvParts)
@@ -142,14 +146,23 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+	sentHTTP := len(sentBuffer) >= len(httpBytes) && bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)
+	recvHTTP := len(receiveBuffer) >= len(httpBytes) && bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)
+	forwarded := false
+	if sentHTTP {
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
+		forwarded = true
 	}
-	if !disableEgress {
+	if !disableEgress && recvHTTP {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
-			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
-		}
+		tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
+		forwarded = true
+	} else if disableEgress && recvHTTP && !sentHTTP {
+		utils.Pipeline.ConnsDroppedEgressDisabled.Add(1)
+		forwarded = true
+	}
+	if !forwarded {
+		utils.Pipeline.ConnsDroppedNotHTTP.Add(1)
 	}
 }
 
@@ -409,11 +422,13 @@ func (factory *Factory) SendEvent(connectionID structs.ConnID, event interface{}
 				utils.LogProcessing("Sent event", structs.ConnIDLogArgs(connectionID)...)
 			}
 		default:
+			utils.Pipeline.EventsDroppedChannelFull.Add(1)
 			if utils.ProcessLogsEnabled() {
 				utils.LogProcessing("Dropping event Channel full", "connectionId", connectionID)
 			}
 		}
 	} else {
+		utils.Pipeline.EventsDroppedNoWorker.Add(1)
 		if utils.ProcessLogsEnabled() {
 			utils.LogProcessing("No worker found for", "connectionId", connectionID)
 		}

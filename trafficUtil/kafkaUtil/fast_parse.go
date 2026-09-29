@@ -35,6 +35,7 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 		return false
 	}
 	if KafkaDisabled() {
+		utils.Pipeline.PairsDroppedKafkaDisabled.Add(1)
 		return true // nothing to produce; treat as handled
 	}
 
@@ -66,6 +67,7 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 	host := string(req.Host())
 	reqHeaderMap := headersToStringMap(req.Headers)
 	if !shouldProcessRequestFast(string(req.Method), host, reqHeaderMap, ctx) {
+		utils.Pipeline.PairsFiltered.Add(1)
 		return true
 	}
 
@@ -97,6 +99,7 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 	out := enc.Encode(req, resp, meta)
 
 	if checkAndUpdateBandwidthProcessed(len(out)) {
+		utils.Pipeline.PairsDroppedBandwidth.Add(1)
 		return true
 	}
 
@@ -106,6 +109,7 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 
 	path := string(req.Path)
 	method := string(req.Method)
+	utils.Pipeline.PairsParseSuccess.Add(1)
 	go ProduceStr(context.Background(), string(out), path, host, method)
 
 	if utils.ThreatEnabled {

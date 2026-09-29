@@ -184,13 +184,11 @@ func replaceDisableRingSubmit(spec *ebpf.CollectionSpec) {
 	}
 }
 
-// startSocketDataSubmitStatsReporter reads BPF submit counters every 10s when
-// trafficUtil/utils.TrafficLogBpfSocketDataSubmits is true. The kernel increments these around
-// ringbuf_output, so failures indicate event loss before userspace can read.
+// startSocketDataSubmitStatsReporter reads BPF submit counters every 10s.
+// socket_data submit failures are added to pipeline metrics. The warn log is
+// emitted only when TRAFFIC_LOG_BPF_SOCKET_DATA_SUBMITS is true.
 func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
-	if !trafficUtils.TrafficLogBpfSocketDataSubmits {
-		return
-	}
+	logStats := trafficUtils.TrafficLogBpfSocketDataSubmits
 
 	type counterSpec struct {
 		name string
@@ -234,6 +232,15 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 				if counters[i].seen {
 					delta = total - counters[i].prev
 				}
+				if counters[i].seen && delta > 0 {
+					switch counters[i].name {
+					case "socket_data_submit_total":
+						trafficUtils.Pipeline.KernelCaptured.Add(int64(delta))
+					case "socket_data_submit_failed_total":
+						trafficUtils.Pipeline.KernelSubmitFailed.Add(int64(delta))
+					default:
+					}
+				}
 				counters[i].prev = total
 				counters[i].seen = true
 				args = append(args,
@@ -241,7 +248,7 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 					counters[i].name+"Total", total,
 				)
 			}
-			if len(args) == 0 {
+			if !logStats || len(args) == 0 {
 				continue
 			}
 			slog.Warn("BPF ringbuf submit stats", args...)
@@ -345,6 +352,10 @@ func run() {
 	// Baseline host kernel CPU (P90) before BPF load or any other run() work, so limits reflect the
 	// machine without this module's collection, probes, or consumers.
 	cpuLimits := determineHostSystemCPULimitsBeforeBPF()
+
+	enablePprof := true
+	trafficUtils.InitVar("AKTO_ENABLE_PPROF", &enablePprof)
+	trafficUtils.StartObservabilityServer(enablePprof)
 
 	// -----------------------------------------------------------------------
 	// Load the pre-compiled BPF object.

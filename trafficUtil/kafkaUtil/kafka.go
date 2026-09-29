@@ -488,6 +488,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost, method string
 	err := writer.WriteMessages(ctx, msg)
 
 	if err != nil {
+		utils.Pipeline.KafkaProduceFailure.Add(1)
 		slog.Error("ERROR while writing messages", "topic", topic, "error", err)
 		return err
 	}

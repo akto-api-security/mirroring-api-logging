@@ -108,16 +108,20 @@ func noteSocketDataInboundBeforeSend() {
 const eventAttributesLogicalSize = 45
 
 func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory) {
+	metaUtils.Pipeline.UserspaceReceived.Add(1)
 	if metaUtils.SystemCPUIngestPaused() {
+		metaUtils.Pipeline.EventsDroppedIngestPaused.Add(1)
 		return
 	}
 
 	if !(connectionFactory.CanBeFilled() && connections.BufferCheck()) {
+		metaUtils.Pipeline.EventsDroppedConnLimit.Add(1)
 		metaUtils.LogIngest("Connections filled")
 		return
 	}
 
 	if len(data) < eventAttributesSize {
+		metaUtils.Pipeline.EventsDroppedShortRecord.Add(1)
 		slog.Error("socket data event too short", "len", len(data), "need", eventAttributesSize)
 		return
 	}
@@ -130,6 +134,7 @@ func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory
 	connId := attr.ConnId
 	_, ok := ignorePortsMap[connId.Port]
 	if ignorePorts && ok {
+		metaUtils.Pipeline.EventsDroppedIgnorePort.Add(1)
 		if metaUtils.IngestLogsEnabled() {
 			metaUtils.LogIngest("Ignoring data for ignore port",
 				"fd", connId.Fd,
@@ -145,6 +150,7 @@ func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory
 	var payload []byte
 	if n > 0 {
 		if len(data) < msgOff+n {
+			metaUtils.Pipeline.EventsDroppedShortRecord.Add(1)
 			slog.Error("socket data ring record too short", "len", len(data), "need", msgOff+n)
 			return
 		}
@@ -170,6 +176,7 @@ func SocketDataEventCallback(data []byte, connectionFactory *connections.Factory
 	}
 
 	noteSocketDataInboundBeforeSend()
+	metaUtils.Pipeline.EventsReceived.Add(1)
 	connectionFactory.SendEvent(connId, &structs.SocketDataPayload{Attr: attr, Data: payload})
 	connections.UpdateBufferSize(uint64(n))
 }

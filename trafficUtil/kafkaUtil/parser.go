@@ -541,6 +541,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 		if parseBody {
 			body, err = io.ReadAll(req.Body)
 			if err != nil {
+				utils.Pipeline.RequestBodyFailure.Add(1)
 				utils.PrintLog(fmt.Sprintf("Got body err: %s\n", err))
 				body = []byte{}
 			}
@@ -582,7 +583,9 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 
 		if shouldParseRespBody {
 			body, err = io.ReadAll(resp.Body)
+			bodyReadOK := err == nil
 			if err != nil {
+				utils.Pipeline.ResponseBodyFailure.Add(1)
 				utils.PrintLog(fmt.Sprintf("Got err reading resp body: %s\n", err))
 				body = []byte{}
 			}
@@ -593,6 +596,9 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 			if len(encoding) > 0 && (encoding[0] == "gzip" || encoding[0] == "deflate") {
 				r, err = gzip.NewReader(r)
 				if err != nil {
+					if bodyReadOK {
+						utils.Pipeline.ResponseBodyFailure.Add(1)
+					}
 					utils.PrintLog(fmt.Sprintf("HTTP-gunzip "+"Failed to gzip decode: %s", err))
 					body = []byte{}
 				}
@@ -600,6 +606,7 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 			if err == nil {
 				body, err = io.ReadAll(r)
 				if err != nil {
+					utils.Pipeline.ResponseBodyFailure.Add(1)
 					utils.PrintLog(fmt.Sprintf("Failed to read decompressed body: %s\n", err))
 					body = []byte{}
 				}
@@ -630,11 +637,13 @@ func parseHTTPTraffic(reqBuffer, respBuffer []byte, shouldPrint bool, ctx Traffi
 }
 
 func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext) {
+	utils.Pipeline.PairsAttempted.Add(1)
 	if parserMetricsEnabled {
 		noteParserEvent(len(receiveBuffer), len(sentBuffer))
 	}
 
 	if checkAndUpdateBandwidthProcessed(0) {
+		utils.Pipeline.PairsDroppedBandwidth.Add(1)
 		return
 	}
 
@@ -648,11 +657,13 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 	}
 
 	if KafkaDisabled() {
+		utils.Pipeline.PairsDroppedKafkaDisabled.Add(1)
 		return
 	}
 
 	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
 	if parsed == nil {
+		utils.Pipeline.PairsParseFailure.Add(1)
 		return
 	}
 
@@ -668,6 +679,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 				"lenReceiveBuffer", len(receiveBuffer), "lenSentBuffer", len(sentBuffer), "isComplete", ctx.IsComplete)...)
 		}
 		if ctx.IsComplete {
+			utils.Pipeline.PairsDroppedIncomplete.Add(1)
 			return
 		}
 		correctLen := len(requests)
@@ -693,6 +705,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		headers := convertHeaders(req, resp, shouldPrint)
 
 		if !shouldProcessRequest(req, headers.Request.StringMap, ctx) {
+			utils.Pipeline.PairsFiltered.Add(1)
 			continue
 		}
 
@@ -739,6 +752,7 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		outgoingBytes := len(out)
 
 		if checkAndUpdateBandwidthProcessed(outgoingBytes) {
+			utils.Pipeline.PairsDroppedBandwidth.Add(1)
 			return
 		}
 
@@ -753,6 +767,10 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 			}
 		}
 
+		if headers.DebugID != "" && !strings.Contains(responsesContent[i], headers.DebugID) {
+			utils.Pipeline.PairsMismatched.Add(1)
+		}
+		utils.Pipeline.PairsParseSuccess.Add(1)
 		sendMetrics(headers, ctx, outgoingBytes, shouldPrint, responsesContent, i, out)
 	}
 }
