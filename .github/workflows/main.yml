@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '^1.22' # The Go version to download (if necessary) and use.
       - name: install required packages
-        run: sudo apt install libpcap-dev expect
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev expect
       - run: go build -o ./mirroring-api-logging
 
       - name: Configure AWS credentials
@@ -85,7 +85,7 @@ jobs:
         with:
           go-version: '^1.22' # The Go version to download (if necessary) and use.
       - name: install required packages
-        run: sudo apt install libpcap-dev expect
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev expect
       - run: go build -o ./mirroring-api-logging
 
       - name: DockerHub login
