@@ -2,10 +2,14 @@ package process
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/host"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/cilium/ebpf"
@@ -44,11 +48,20 @@ func NewFactory() *ProcessFactory {
 }
 
 var (
-	probeAllPid = false
+	probeAllPid       = false
+	probeProcessNames []string
 )
 
 func init() {
 	utils.InitVar("PROBE_ALL_PID", &probeAllPid)
+	var rawNames string
+	utils.InitVar("PROBE_PROCESS_NAMES", &rawNames)
+	for _, part := range strings.Split(rawNames, ",") {
+		name := strings.TrimSpace(part)
+		if name != "" {
+			probeProcessNames = append(probeProcessNames, name)
+		}
+	}
 }
 
 func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collection) {
@@ -83,7 +96,6 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collecti
 	slog.Debug("Attempt for processes", "count", len(pidSet))
 	skippedPids := make(map[int32]bool)
 	for pid := range pidSet {
-		time.Sleep(200 * time.Millisecond)
 		_, ok := processFactory.unattachedProcess[pid]
 		if ok {
 			skippedPids[pid] = true
@@ -102,11 +114,18 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collecti
 				continue
 			}
 
+			if !processNameAllowed(pid) {
+				processFactory.unattachedProcess[pid] = true
+				continue
+			}
+
+			time.Sleep(200 * time.Millisecond)
+
 			containers, err := CheckProcessCGroupBelongToKube(pid)
-			// probe only k8s processes
+			// probe only k8s processes, unless PROBE_ALL_PID or PROBE_PROCESS_NAMES is set
 			// TODO: check this once again.
 			if err != nil {
-				if !probeAllPid {
+				if !probeAllPid && len(probeProcessNames) == 0 {
 					slog.Debug("No libraries for process", "pid", pid, "error", err)
 					processFactory.unattachedProcess[pid] = true
 					continue
@@ -174,6 +193,35 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(coll *ebpf.Collecti
 	if len(skippedPids) > 0 {
 		slog.Debug("Skipped unattached processes", "count", len(skippedPids), "pids", skippedPids)
 	}
+}
+
+// processNameAllowed reports whether pid should be uprobed.
+// An empty PROBE_PROCESS_NAMES list allows every process. Otherwise the
+// /proc/<pid>/comm name or the executable base name must match an entry.
+func processNameAllowed(pid int32) bool {
+	if len(probeProcessNames) == 0 {
+		return true
+	}
+	comm, exe := processNames(pid)
+	for _, name := range probeProcessNames {
+		if strings.EqualFold(comm, name) || strings.EqualFold(exe, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func processNames(pid int32) (comm string, exe string) {
+	commPath := host.GetFileInHost("/proc/" + strconv.FormatInt(int64(pid), 10) + "/comm")
+	raw, err := os.ReadFile(commPath)
+	if err == nil {
+		comm = strings.TrimSpace(string(raw))
+	}
+	exePath, err := ssl.GetExeSymLinkHostPath(pid)
+	if err == nil {
+		exe = filepath.Base(exePath)
+	}
+	return comm, exe
 }
 
 func checkSelf(pid int32) bool {
