@@ -30,6 +30,8 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux
+# Same default as workflow_dispatch EbpfTag in .github/workflows/main.yml.
+ARG IMAGE_TAG=k8s_ebpf
 
 WORKDIR /src
 COPY ebpf ./ebpf
@@ -37,7 +39,9 @@ COPY trafficUtil ./trafficUtil
 
 WORKDIR /src/ebpf
 RUN go mod download
-RUN GOARCH=${TARGETARCH} GOOS=${TARGETOS} go build -o ebpf-logging
+RUN GOARCH=${TARGETARCH} GOOS=${TARGETOS} go build \
+      -ldflags "-X github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil.aktoImageVersion=aktosecurity/mirror-api-logging:${IMAGE_TAG}" \
+      -o ebpf-logging
 
 # ── Final image (no toolchain, just the binary + BPF object) ────────────────
 FROM alpine:3.22

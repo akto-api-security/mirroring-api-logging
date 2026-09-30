@@ -249,10 +249,7 @@ func getDaemonPodName() string {
 }
 
 func getImageVersion() string {
-	if aktoImageVersion != "" {
-		return aktoImageVersion
-	}
-	return "aktosecurity/mirror-api-logging:k8s-ebpf"
+	return aktoImageVersion
 }
 
 // Heartbeat and config consumer functions moved to ebpf_telemetry.go
