@@ -1820,6 +1820,15 @@ static void set_conn_as_ssl(u32 tgid, u32 fd) {
     if (conn_info == NULL) {
         return;
     }
+    /*
+     * Handshake ciphertext is already counted on this fd. Userspace drops
+     * those bytes when the connection flips to TLS, and it only parses a
+     * chunk sequence that starts at 1. Start the plaintext sequence over.
+     */
+    if (!conn_info->ssl) {
+        conn_info->readEventsCount = 0;
+        conn_info->writeEventsCount = 0;
+    }
     conn_info->ssl = true;
     if (print_bpf_logs) {
         bpf_printk("SSL marking ssl tgid: %d", tgid_fd);
