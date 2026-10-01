@@ -2,3 +2,4 @@ mirroring-api-logging
 .idea/
 **/.vscode/
 
+dist/

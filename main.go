@@ -8,8 +8,6 @@
 // the unidirectional streams provided by gopacket/tcpassembly.
 package main
 
-import "C"
-
 import (
 	"bufio"
 	"bytes"
@@ -40,7 +38,6 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 	"github.com/segmentio/kafka-go"
 
@@ -66,10 +63,7 @@ var filterHeaderValueMap = make(map[string]string)
 var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
 var threatEnabled = true
-var (
-	handle *pcap.Handle
-	err    error
-)
+var err error
 
 // key is used to map bidirectional streams to each other.
 type key struct {
@@ -716,12 +710,7 @@ func flushAll() {
 	}
 }
 
-func run(handle *pcap.Handle, apiCollectionId int, source string) {
-
-	if err := handle.SetBPFFilter("tcp && not (port 9092 or port 22)"); err != nil { // optional
-		log.Fatal(err)
-		return
-	}
+func run(packets <-chan gopacket.Packet, apiCollectionId int, source string) {
 
 	printLog("reading in packets")
 
@@ -779,8 +768,7 @@ func run(handle *pcap.Handle, apiCollectionId int, source string) {
 	// Read in packets, pass to assembler.
 	var bytesIn = 0
 	var bytesInEpoch = time.Now()
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	for packet := range packetSource.Packets() {
+	for packet := range packets {
 
 		innerPacket := packet
 		vxlanID := apiCollectionId
@@ -992,21 +980,6 @@ func logKafkaStats() {
 	//log.Println(kafkaWriter.Stats())
 }
 
-//export readTcpDumpFile
-func readTcpDumpFile(filepath string, kafkaURL string, apiCollectionId int) {
-	os.Setenv("AKTO_KAFKA_BROKER_URL", kafkaURL)
-	os.Setenv("AKTO_TRAFFIC_BATCH_SIZE", "1")
-	os.Setenv("AKTO_TRAFFIC_BATCH_TIME_SECS", "1")
-
-	initKafka()
-
-	if handle, err := pcap.OpenOffline(filepath); err != nil {
-		log.Fatal(err)
-	} else {
-		run(handle, apiCollectionId, "PCAP")
-	}
-}
-
 func getKafkaUrl() string {
 	kafka_url := os.Getenv("AKTO_KAFKA_BROKER_MAL")
 	if len(kafka_url) == 0 {
@@ -1018,9 +991,8 @@ func getKafkaUrl() string {
 
 var credential Credential
 
-const collectorIdFile = "/collector_id_file"
-
 func getCollectorId() (string, error) {
+	collectorIdFile := collectorIdFilePath()
 	data, err := os.ReadFile(collectorIdFile)
 	if err == nil {
 		// File exists and was read successfully
@@ -1057,6 +1029,10 @@ var groupId = uuid.New().String()
 var collectorId string
 
 func main() {
+	platformMain(appMain)
+}
+
+func appMain() {
 	collectorId, err = getCollectorId()
 	if err != nil {
 		log.Println(err.Error())
@@ -1124,12 +1100,12 @@ func main() {
 	}
 	initKafka()
 	for {
-		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
+		if packets, closeCapture, err := openLiveCapture(interfaceName); err != nil {
 			log.Fatal(err)
 		} else {
-			run(handle, -1, "MIRRORING")
+			run(packets, -1, "MIRRORING")
 			log.Println("closing pcap connection....")
-			handle.Close()
+			closeCapture()
 			log.Println("sleeping....")
 			assemblerMap = make(map[int]*tcpassembly.Assembler)
 			incomingCountMap = make(map[string]utils.IncomingCounter)
