@@ -109,3 +109,18 @@ jobs:
           docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
        
+
+  build-windows:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Windows exe and package it with the install scripts
+        run: ./windows/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: akto-traffic-mirroring-windows-amd64
+          path: dist/akto-traffic-mirroring-windows-amd64/
