@@ -66,6 +66,7 @@ var filterHeaderValueMap = make(map[string]string)
 var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
 var threatEnabled = true
+var injectTags = ""
 var (
 	handle *pcap.Handle
 	err    error
@@ -394,6 +395,9 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 			value["time"] = fmt.Sprint(time.Now().Unix())
 			value["is_pending"] = fmt.Sprint(isPending)
 			value["source"] = bd.source
+			if len(injectTags) > 0 {
+				value["tag"] = injectTags
+			}
 			out, _ := json.Marshal(value)
 			ctx := context.Background()
 
@@ -617,6 +621,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
 			"is_pending":      fmt.Sprint(isPending),
 			"source":          bd.source,
+		}
+		if len(injectTags) > 0 {
+			value["tag"] = injectTags
 		}
 
 		out, _ := json.Marshal(value)
@@ -1106,6 +1113,11 @@ func main() {
 		log.Println("ignoreCloudMetadataCalls: ", ignoreCloudMetadataCalls)
 	} else {
 		log.Println("ignoreCloudMetadataCalls: missing. defaulting to false")
+	}
+
+	injectTags = utils.ParseInjectTags(os.Getenv("AKTO_INJECT_TAGS"))
+	if len(injectTags) > 0 {
+		log.Println("injectTags: ", injectTags)
 	}
 
 	// Set up a ticker to run every 2 minutes
