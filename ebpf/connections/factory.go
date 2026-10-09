@@ -113,6 +113,12 @@ func init() {
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
 }
 
+// isHTTPTraffic reports whether a window looks like HTTP/1 (response starts with "HTTP")
+// or HTTP/2 (request starts with the client connection preface).
+func isHTTPTraffic(reqBuf, respBuf []byte) bool {
+	return bytes.HasPrefix(respBuf, httpBytes) || kafkaUtil.IsHTTP2(reqBuf)
+}
+
 func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool) {
 	tracker.mutex.Lock()
 	defer tracker.mutex.Unlock()
@@ -142,12 +148,12 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		hostName = kafkaUtil.PodInformerInstance.GetPodNameByProcessId(int32(connID.Id >> 32))
 	}
 
-	if len(sentBuffer) >= len(httpBytes) && (bytes.Equal(sentBuffer[:len(httpBytes)], httpBytes)) {
+	if isHTTPTraffic(receiveBuffer, sentBuffer) {
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
 	}
 	if !disableEgress {
 		// attempt to parse the egress as well by switching the recv and sent buffers.
-		if len(receiveBuffer) >= len(httpBytes) && (bytes.Equal(receiveBuffer[:len(httpBytes)], httpBytes)) {
+		if isHTTPTraffic(sentBuffer, receiveBuffer) {
 			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
 		}
 	}

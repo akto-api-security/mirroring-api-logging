@@ -643,7 +643,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
 	}
 
-	if tryFastParseAndProduce(receiveBuffer, sentBuffer, ctx) {
+	isHTTP2 := IsHTTP2(receiveBuffer)
+	if !isHTTP2 && tryFastParseAndProduce(receiveBuffer, sentBuffer, ctx) {
 		return
 	}
 
@@ -651,7 +652,12 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		return
 	}
 
-	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
+	var parsed *ParsedTraffic
+	if isHTTP2 {
+		parsed = parseHTTP2Traffic(receiveBuffer, sentBuffer, ctx)
+	} else {
+		parsed = parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
+	}
 	if parsed == nil {
 		return
 	}

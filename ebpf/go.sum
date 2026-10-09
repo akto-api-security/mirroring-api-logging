@@ -1,3 +1,5 @@
+github.com/akto-api-security/gomiddleware v0.1.5 h1:8BKsYSaz3zwdxCBRgVMvd1sN+mQu6e0IudOwVX/6X4Q=
+github.com/akto-api-security/gomiddleware v0.1.5/go.mod h1:zDsxe1UTr+rGvHt6r1h+c8RkBBzy/A7iTMGoXiTZ5oI=
 github.com/bits-and-blooms/bitset v1.24.2 h1:M7/NzVbsytmtfHbumG+K2bremQPMJuqv1JD3vOaFxp0=
 github.com/bits-and-blooms/bitset v1.24.2/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
 github.com/bits-and-blooms/bloom/v3 v3.7.1 h1:WXovk4TRKZttAMJfoQx6K2DM0zNIt8w+c67UqO+etV0=
