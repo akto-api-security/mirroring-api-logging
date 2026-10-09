@@ -2,6 +2,7 @@ package kafkaUtil
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"testing"
 
@@ -84,11 +85,37 @@ func TestParseHTTP2Traffic_Get(t *testing.T) {
 	if r.Header["x-custom"][0] != "abc" {
 		t.Errorf("missing request header, got %v", r.Header)
 	}
-	if s.StatusCode != 200 || s.Header["content-type"][0] != "application/json" {
-		t.Errorf("unexpected response: status=%d headers=%v", s.StatusCode, s.Header)
+	if s.StatusCode != 200 || s.Status != "200 OK" || s.Header["content-type"][0] != "application/json" {
+		t.Errorf("unexpected response: code=%d status=%q headers=%v", s.StatusCode, s.Status, s.Header)
 	}
-	if got := parsed.ResponseBodies[0]; got != base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)) {
-		t.Errorf("unexpected response body: %s", got)
+	if got := parsed.ResponseBodies[0]; got != `{"ok":true}` {
+		t.Errorf("expected plain-text response body, got: %s", got)
+	}
+}
+
+func TestParseHTTP2Traffic_GzipResponse(t *testing.T) {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	zw.Write([]byte(`{"compressed":true}`))
+	zw.Close()
+
+	req := newH2Writer(true)
+	req.headers(t, 1, false, ":method", "POST", ":scheme", "http", ":path", "/items", ":authority", "svc", "content-type", "application/json")
+	req.data(t, 1, true, []byte(`{"id":1}`))
+
+	resp := newH2Writer(false)
+	resp.headers(t, 1, false, ":status", "200", "content-encoding", "gzip")
+	resp.data(t, 1, true, gz.Bytes())
+
+	parsed := parseHTTP2Traffic(req.buf.Bytes(), resp.buf.Bytes(), TrafficContext{})
+	if parsed == nil || len(parsed.Requests) != 1 {
+		t.Fatalf("expected 1 pair, got %+v", parsed)
+	}
+	if got := parsed.RequestBodies[0]; got != `{"id":1}` {
+		t.Errorf("unexpected request body: %s", got)
+	}
+	if got := parsed.ResponseBodies[0]; got != `{"compressed":true}` {
+		t.Errorf("expected gunzipped response body, got: %s", got)
 	}
 }
 
@@ -165,5 +192,30 @@ func TestParseHTTP2Traffic_NoCompleteStreams(t *testing.T) {
 
 	if parsed := parseHTTP2Traffic(req.buf.Bytes(), nil, TrafficContext{}); parsed != nil {
 		t.Fatalf("expected nil, got %+v", parsed)
+	}
+}
+
+func TestParseHTTP2Traffic_CookiesAndInterimResponse(t *testing.T) {
+	req := newH2Writer(true)
+	req.headers(t, 1, true, ":method", "GET", ":scheme", "https", ":path", "/me", ":authority", "svc", "cookie", "a=1", "cookie", "b=2")
+
+	resp := newH2Writer(false)
+	resp.headers(t, 1, false, ":status", "103", "link", "</x.css>; rel=preload")
+	resp.headers(t, 1, true, ":status", "200")
+
+	parsed := parseHTTP2Traffic(req.buf.Bytes(), resp.buf.Bytes(), TrafficContext{})
+	if parsed == nil || len(parsed.Requests) != 1 {
+		t.Fatalf("expected 1 pair, got %+v", parsed)
+	}
+	headers := convertHeaders(&parsed.Requests[0], &parsed.Responses[0], false)
+	if got := headers.Request.StringMap["cookie"]; got != "a=1; b=2" {
+		t.Errorf("expected all cookies, got %q", got)
+	}
+	if _, ok := headers.Response.StringMap["link"]; ok {
+		t.Error("headers from the 103 interim response should not be kept")
+	}
+	payload := buildJSONPayload(PayloadInput{Request: &parsed.Requests[0], Response: &parsed.Responses[0], Headers: headers})
+	if payload["status"] != "200 OK" || payload["statusCode"] != "200" {
+		t.Errorf("expected final status, got status=%q statusCode=%q", payload["status"], payload["statusCode"])
 	}
 }

@@ -22,7 +22,7 @@ require (
 )
 
 require (
-	github.com/akto-api-security/gomiddleware v0.1.5 // indirect
+	github.com/akto-api-security/gomiddleware v0.1.6 // indirect
 	github.com/bits-and-blooms/bitset v1.24.2 // indirect
 	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect

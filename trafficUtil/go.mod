@@ -3,7 +3,7 @@ module github.com/akto-api-security/mirroring-api-logging/trafficUtil
 go 1.25.8
 
 require (
-	github.com/akto-api-security/gomiddleware v0.1.5
+	github.com/akto-api-security/gomiddleware v0.1.6
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/google/uuid v1.6.0
 	github.com/segmentio/kafka-go v0.4.50
