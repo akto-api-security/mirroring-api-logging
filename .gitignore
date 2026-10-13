@@ -12,3 +12,5 @@ ebpf/module_bpf*.go
 ebpf/module_bpf*.o
 # Compiled BPF object — rebuilt by `make bpf`; commit if shipping pre-built binaries.
 ebpf/kernel/module.bpf.o
+
+ebpf/docs/**

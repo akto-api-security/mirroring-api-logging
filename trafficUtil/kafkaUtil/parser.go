@@ -294,13 +294,13 @@ var (
 
 	EventChanBuffSize = 4096
 
-	lruCache            *LRUCache
-	lruCacheCapacity    = 100000
-	bloomFilterCapacity = 1000000
-	bloomFilterFPRate   = 0.01
-	timeBucketDuration       = 10 * time.Minute
-	memSamplingEnabled       = false
-	parserMetricsEnabled     = true
+	lruCache             *LRUCache
+	lruCacheCapacity     = 100000
+	bloomFilterCapacity  = 1000000
+	bloomFilterFPRate    = 0.01
+	timeBucketDuration   = 10 * time.Minute
+	memSamplingEnabled   = false
+	parserMetricsEnabled = true
 )
 
 var bloomFilter *bloomfilter.BloomFilter
@@ -643,11 +643,21 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
 	}
 
+	isHTTP2 := IsHTTP2(receiveBuffer)
+	if !isHTTP2 && tryFastParseAndProduce(receiveBuffer, sentBuffer, ctx) {
+		return
+	}
+
 	if KafkaDisabled() {
 		return
 	}
 
-	parsed := parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
+	var parsed *ParsedTraffic
+	if isHTTP2 {
+		parsed = parseHTTP2Traffic(receiveBuffer, sentBuffer, ctx)
+	} else {
+		parsed = parseHTTPTraffic(receiveBuffer, sentBuffer, shouldPrint, ctx)
+	}
 	if parsed == nil {
 		return
 	}
