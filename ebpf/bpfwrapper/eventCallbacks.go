@@ -2,6 +2,7 @@ package bpfwrapper
 
 import (
 	"log/slog"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -30,6 +31,9 @@ var (
 
 func init() {
 	metaUtils.InitVar("TRAFFIC_IGNORE_DEFAULT_PORTS", &ignorePorts)
+	if metaUtils.TrafficLogBpfSocketDataSubmits {
+		startSocketDataInboundMetricsFlushLoop()
+	}
 }
 
 func SocketOpenEventCallback(data []byte, connectionFactory *connections.Factory) {
@@ -74,32 +78,29 @@ func SocketCloseEventCallback(data []byte, connectionFactory *connections.Factor
 
 const socketDataInboundLogInterval = 10 * time.Second
 
-var (
-	socketDataInboundCount   uint64
-	socketDataInboundLastLog time.Time
-)
+var socketDataInboundEvents atomic.Uint64
+
+func startSocketDataInboundMetricsFlushLoop() {
+	go func() {
+		ticker := time.NewTicker(socketDataInboundLogInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			n := socketDataInboundEvents.Swap(0)
+			if n == 0 {
+				continue
+			}
+			slog.Warn("socket_data events reaching eventCallback",
+				"countInWindow", n,
+				"window", socketDataInboundLogInterval.String())
+		}
+	}()
+}
 
 func noteSocketDataInboundBeforeSend() {
-
 	if !metaUtils.TrafficLogBpfSocketDataSubmits {
 		return
 	}
-
-	socketDataInboundCount++
-	now := time.Now()
-	if socketDataInboundLastLog.IsZero() {
-		socketDataInboundLastLog = now
-		return
-	}
-	d := now.Sub(socketDataInboundLastLog)
-	if d < socketDataInboundLogInterval {
-		return
-	}
-	slog.Warn("socket_data events reaching eventCallback",
-		"countInWindow", socketDataInboundCount,
-		"window", d.String())
-	socketDataInboundCount = 0
-	socketDataInboundLastLog = now
+	socketDataInboundEvents.Add(1)
 }
 
 // eventAttributesLogicalSize is the C-side offset of the msg field in socket_data_event_t.

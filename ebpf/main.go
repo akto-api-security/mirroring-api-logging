@@ -256,9 +256,6 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 		return
 	}
 
-	interval := 120 * time.Second
-	trafficUtils.InitVar("TRAFFIC_EBPF_MAP_MEMORY_INTERVAL", &interval)
-
 	// Ringbufs, per-CPU scratch buffers, and maps with large values or
 	// many entries — omit single-slot counters/flags and small pointer maps.
 	mapNames := []string{
@@ -282,13 +279,6 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 	}
 
 	logEBPFMapMemorySnapshot(coll, mapNames)
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			logEBPFMapMemorySnapshot(coll, mapNames)
-		}
-	}()
 }
 
 func logEBPFMapMemorySnapshot(coll *ebpf.Collection, mapNames []string) {

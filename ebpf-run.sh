@@ -2,7 +2,7 @@
 #
 # MEM_LIMIT (optional): memory cap in integer MiB (mebibytes, 1024-based "MB").
 #   When set, it overrides cgroup/host detection for MEM_LIMIT_MB and drives
-#   GOMEMLIMIT, cgroup % kill, and Akto AKTO_MEM_* exports below.
+#   GOMEMLIMIT, process RSS % kill, and Akto AKTO_MEM_* exports below.
 #   Example: 52 GiB cap -> MEM_LIMIT=53248 (52 * 1024).
 #   Omit MEM_LIMIT to auto-detect from cgroup memory.max (Docker/K8s) or host RAM.
 #
@@ -16,7 +16,7 @@ LOG_FILE=${LOG_FILE:-/tmp/dump.log}
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-10485760}  # Default to 10 MB if not set (10 MB = 10 * 1024 * 1024 bytes)
 CHECK_INTERVAL=${CHECK_INTERVAL:-60}
 CHECK_INTERVAL_MEM=${CHECK_INTERVAL_MEM:-5}     # Check interval in seconds (configurable via env)
-MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-85} # Kill process at this % memory usage (configurable via env)
+MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-85} # Kill ebpf-logging when its RSS reaches this % of MEM_LIMIT (configurable via env)
 GOMEMLIMIT_PERCENT=${GOMEMLIMIT_PERCENT:-60} # GOMEMLIMIT as % of container memory limit (configurable via env)
 AKTO_SUPPRESS_TRACE=${AKTO_SUPPRESS_TRACE:-true}
 CRASH_RESTART_BACKOFF_SECONDS=${CRASH_RESTART_BACKOFF_SECONDS:-10}
@@ -45,35 +45,25 @@ rotate_log() {
     fi
 }
 
-# Function to check memory usage and kill process if threshold exceeded
+# Function to check ebpf-logging RSS and kill if threshold exceeded
 check_memory_and_kill() {
-    # Resolve container's cgroup path (needed when hostPID: true shifts cgroup root)
-    CGROUP_BASE=$(cut -d: -f3 /proc/self/cgroup | head -1)
+    CURRENT_MEM=0
+    for pid in $(pgrep -x ebpf-logging 2>/dev/null); do
+        rss_kb=$(awk '/^VmRSS:/ {print $2; exit}' "/proc/$pid/status" 2>/dev/null) || continue
+        [ -n "$rss_kb" ] || continue
+        CURRENT_MEM=$((CURRENT_MEM + rss_kb * 1024))
+    done
 
-    # Get current memory usage in bytes
-    if [ -f "/sys/fs/cgroup${CGROUP_BASE}/memory.current" ]; then
-        # cgroup v2 with hostPID
-        CURRENT_MEM=$(cat "/sys/fs/cgroup${CGROUP_BASE}/memory.current")
-    elif [ -f /sys/fs/cgroup/memory.current ]; then
-        # cgroup v2 normal
-        CURRENT_MEM=$(cat /sys/fs/cgroup/memory.current)
-    elif [ -f "/sys/fs/cgroup${CGROUP_BASE}/memory.usage_in_bytes" ]; then
-        # cgroup v1 with hostPID
-        CURRENT_MEM=$(cat "/sys/fs/cgroup${CGROUP_BASE}/memory.usage_in_bytes")
-    elif [ -f /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
-        # cgroup v1 normal
-        CURRENT_MEM=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)
-    else
+    if [ "$CURRENT_MEM" -eq 0 ]; then
         return
     fi
 
-    # Calculate percentage used
     PERCENT_USED=$((CURRENT_MEM * 100 / MEM_LIMIT_BYTES))
 
-    echo "Memory usage: ${PERCENT_USED}% (${CURRENT_MEM} / ${MEM_LIMIT_BYTES} bytes)"
+    echo "ebpf-logging memory usage: ${PERCENT_USED}% (${CURRENT_MEM} / ${MEM_LIMIT_BYTES} bytes)"
 
     if [ "$PERCENT_USED" -ge "$MEMORY_THRESHOLD" ]; then
-        echo "Memory threshold ${MEMORY_THRESHOLD}% exceeded (${PERCENT_USED}%), killing ebpf-logging process"
+        echo "ebpf-logging memory threshold ${MEMORY_THRESHOLD}% exceeded (${PERCENT_USED}%), killing process"
         pkill -9 ebpf-logging
     fi
 }
