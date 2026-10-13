@@ -2,7 +2,6 @@ package ssl
 
 import (
 	"fmt"
-	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"log/slog"
 	"os/exec"
 	"regexp"
@@ -10,6 +9,9 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
+
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 )
 
 var (
@@ -44,6 +46,13 @@ func TryOpensslProbes(m map[string]bool, coll *ebpf.Collection) (bool, error) {
 		return false, fmt.Errorf("the OpenSSL library not complete, libCrypto: %s, libssl: %s", libCryptoPath, libSslPath)
 	}
 
+	// pid -1 attaches every process that maps this file, so later workers
+	// sharing the same libssl must not attach again.
+	if uprobeAlreadyAttached(libSslPath) {
+		slog.Debug("SSL uprobe already attached", "path", libSslPath)
+		return true, nil
+	}
+
 	addresses, err := buildOpenSSLSymAddrConfig(libCryptoPath)
 	if err != nil {
 		return false, err
@@ -53,22 +62,27 @@ func TryOpensslProbes(m map[string]bool, coll *ebpf.Collection) (bool, error) {
 	}
 
 	slog.Debug("Attaching on", "path", libSslPath)
+	var links []link.Link
 	switch addresses.version {
 	case V_1_0:
-		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_1_0); err != nil {
-			slog.Error("failed to attach SSL uprobe", "error", err)
-		}
+		links, err = bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_1_0)
 	case V_1_1:
-		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_1_1); err != nil {
-			slog.Error("failed to attach SSL uprobe", "error", err)
-		}
+		links, err = bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_1_1)
 	case V_3_0:
-		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_3_0); err != nil {
+		var extra []link.Link
+		links, err = bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_3_0)
+		if err != nil {
 			slog.Error("failed to attach SSL uprobe", "error", err)
 		}
-		if _, err := bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_3_0_ex); err != nil {
-			slog.Error("failed to attach SSL uprobe", "error", err)
-		}
+		extra, err = bpfwrapper.AttachUprobes(libSslPath, -1, coll, bpfwrapper.SslHooks_3_0_ex)
+		links = append(links, extra...)
+	}
+	if err != nil {
+		slog.Error("failed to attach SSL uprobe", "error", err)
+	}
+	keepUprobeLinks(libSslPath, links)
+	if len(links) > 0 {
+		slog.Warn("attached SSL uprobe", "path", libSslPath, "links", len(links))
 	}
 
 	return true, nil
