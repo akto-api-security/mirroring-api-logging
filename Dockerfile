@@ -17,11 +17,12 @@ COPY db ./db
 COPY api ./api
 COPY utils ./utils
 
-RUN go build -o /mirroring-api-logging
+# Same default as workflow_dispatch Tag in .github/workflows/main.yml.
+ARG IMAGE_TAG=latest
 
-# Image version reported in heartbeats; set by the release workflow (--build-arg IMAGE_TAG=<tag>)
-ARG IMAGE_TAG=local
-ENV AKTO_IMAGE_VERSION=aktosecurity/mirror-api-logging:${IMAGE_TAG}
+RUN go build \
+      -ldflags "-X main.aktoImageVersion=aktosecurity/mirror-api-logging:${IMAGE_TAG}" \
+      -o /mirroring-api-logging
 
 EXPOSE 4789/udp
 

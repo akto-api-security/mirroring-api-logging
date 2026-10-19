@@ -24,6 +24,9 @@ const heartbeatModuleType = "TRAFFIC_COLLECTOR"
 
 var heartbeatIntervalSeconds = 60
 
+// Set at build time: -ldflags "-X main.aktoImageVersion=aktosecurity/mirror-api-logging:<tag>" (see Dockerfile)
+var aktoImageVersion string
+
 // Env keys the dashboard shows for TRAFFIC_COLLECTOR modules (ModuleInfoConstants.ALLOWED_ENV_KEYS_BY_MODULE).
 // Only these are sent, so secrets in the environment (e.g. KAFKA_PASSWORD) never leave the collector.
 var heartbeatEnvAllowlist = []string{
@@ -44,6 +47,7 @@ var (
 
 func init() {
 	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
+	utils.InitVar("AKTO_IMAGE_VERSION", &aktoImageVersion)
 }
 
 func getDaemonPodName() string {
@@ -62,10 +66,7 @@ func getDaemonPodName() string {
 }
 
 func getImageVersion() string {
-	if imageVersion := os.Getenv("AKTO_IMAGE_VERSION"); imageVersion != "" {
-		return imageVersion
-	}
-	return "aktosecurity/mirror-api-logging:k8s_agent"
+	return aktoImageVersion
 }
 
 func getHeartbeatEnv() map[string]string {
