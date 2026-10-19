@@ -18,7 +18,7 @@ COPY api ./api
 COPY utils ./utils
 
 # Same default as workflow_dispatch Tag in .github/workflows/main.yml.
-ARG IMAGE_TAG=latest
+ARG IMAGE_TAG=k8s_agent
 
 RUN go build \
       -ldflags "-X main.aktoImageVersion=aktosecurity/mirror-api-logging:${IMAGE_TAG}" \
