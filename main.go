@@ -1135,6 +1135,7 @@ func main() {
 		interfaceName = "any"
 	}
 	initKafka()
+	startKafkaHeartbeat()
 	for {
 		if handle, err := pcap.OpenLive(interfaceName, 128*1024, true, pcap.BlockForever); err != nil {
 			log.Fatal(err)
