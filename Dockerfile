@@ -19,6 +19,10 @@ COPY utils ./utils
 
 RUN go build -o /mirroring-api-logging
 
+# Image version reported in heartbeats; set by the release workflow (--build-arg IMAGE_TAG=<tag>)
+ARG IMAGE_TAG=local
+ENV AKTO_IMAGE_VERSION=aktosecurity/mirror-api-logging:${IMAGE_TAG}
+
 EXPOSE 4789/udp
 
 CMD ["./run.sh"]
