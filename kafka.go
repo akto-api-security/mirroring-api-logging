@@ -14,6 +14,7 @@ import (
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/aws_msk_iam_v2"
@@ -45,6 +46,13 @@ const saslMechanismAwsMskIam = "AWS_MSK_IAM"
 
 var kafkaSaslMechanism = ""
 
+var heartbeatIntervalSeconds = 60
+var uniqueDaemonsetId = uuid.New().String()
+var moduleType = "TRAFFIC_COLLECTOR"
+
+// Set at build time: -ldflags "-X main.aktoImageVersion=aktosecurity/mirror-api-logging:<tag>" (see Dockerfile)
+var aktoImageVersion string
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -57,6 +65,53 @@ func init() {
 	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
 	utils.InitVar("AKTO_KAFKA_SASL_MECHANISM", &kafkaSaslMechanism)
 
+	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
+	utils.InitVar("AKTO_IMAGE_VERSION", &aktoImageVersion)
+}
+
+func getDaemonPodName() string {
+	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
+	podName := os.Getenv("POD_NAME")
+	nodeName := os.Getenv("NODE_NAME")
+
+	if aktoAgentName != "" {
+		return fmt.Sprintf("akto-tc:%s", aktoAgentName)
+	}
+
+	if podName != "" && nodeName != "" {
+		return fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
+	}
+
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		hostname = fmt.Sprintf("daemon-%s", uniqueDaemonsetId[:8])
+	}
+	return fmt.Sprintf("akto-tc:%s", hostname)
+}
+
+func getImageVersion() string {
+	return aktoImageVersion
+}
+
+func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) error {
+	out, err := json.Marshal(heartbeatData)
+	if err != nil {
+		return err
+	}
+
+	topic := "akto.daemonset.producer.heartbeats"
+	msg := kafka.Message{
+		Topic: topic,
+		Value: []byte(string(out)),
+	}
+
+	err = kafkaWriter.WriteMessages(ctx, msg)
+
+	if err != nil {
+		slog.Error("ERROR while writing heartbeat messages", "topic", topic, "error", err)
+		return err
+	}
+	return nil
 }
 
 func isMskIamAuth() bool {
