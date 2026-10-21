@@ -199,10 +199,12 @@ func discoverHTTPAPIs(
 }
 
 // shouldSendSpec checks if the spec has changed since last discovery
-// Returns true if this is a new API or the spec content changed
+// Returns true if this is a new API, the spec content changed, or the last
+// upload is older than SPEC_HARD_REFRESH_AFTER
 func shouldSendSpec(roleArn, apiID, stage string, specContent []byte) bool {
 	key := fmt.Sprintf("%s|%s|%s", roleArn, apiID, stage)
 	checksum := fmt.Sprintf("%x", md5.Sum(specContent))
+	now := time.Now()
 
 	tracker := GetTracker()
 	tracker.mu.Lock()
@@ -215,12 +217,21 @@ func shouldSendSpec(roleArn, apiID, stage string, specContent []byte) bool {
 			APIID:          apiID,
 			Stage:          stage,
 			SpecChecksum:   checksum,
-			LastDiscovered: time.Now().Unix(),
+			LastDiscovered: now.Unix(),
+			LastSent:       now.Unix(),
 		}
 		return true
 	}
 
 	// Update last discovered time even if unchanged
-	existing.LastDiscovered = time.Now().Unix()
+	existing.LastDiscovered = now.Unix()
+
+	// Hard refresh - resend unchanged spec periodically
+	if now.Sub(time.Unix(existing.LastSent, 0)) >= SPEC_HARD_REFRESH_AFTER {
+		utils.LogToCyborg("info", fmt.Sprintf("Hard refreshing unchanged spec for API %s stage %s. role %s, last sent at %s",
+			apiID, stage, roleArn, time.Unix(existing.LastSent, 0).UTC().Format(time.RFC3339)))
+		existing.LastSent = now.Unix()
+		return true
+	}
 	return false // No change, skip
 }

@@ -12,6 +12,7 @@ import (
 // Constants for OpenAPI discovery
 const (
 	DISCOVERY_POLL_DURATION = 15 * time.Minute // 15 minutes polling interval
+	SPEC_HARD_REFRESH_AFTER = 6 * time.Hour    // Resend an unchanged spec after this long
 	API_TYPE_REST           = "REST_API"
 	API_TYPE_HTTP           = "HTTP_API"
 	EXPORT_FORMAT_OAS30     = "oas30" // OpenAPI 3.0 format
@@ -30,6 +31,7 @@ type DiscoveredAPI struct {
 	Stage          string // Empty for HTTP APIs (no stages)
 	SpecChecksum   string // MD5 hash of spec content for change detection
 	LastDiscovered int64  // Unix timestamp
+	LastSent       int64  // Unix timestamp of last upload, used for hard refresh
 }
 
 // DiscoveryTracker manages global deduplication state
