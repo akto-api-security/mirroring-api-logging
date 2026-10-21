@@ -27,7 +27,6 @@ $DisplayName = "Akto Traffic Mirroring"
 $FirewallRule = "Akto Traffic Mirroring"
 $ExeName = "mirroring-api-logging.exe"
 $InstallDir = Join-Path $env:ProgramFiles "Akto\TrafficMirroring"
-$SourceExe = Join-Path $PSScriptRoot $ExeName
 $TargetExe = Join-Path $InstallDir $ExeName
 $LogFile = Join-Path $env:ProgramData "Akto\logs\mirroring.log"
 
@@ -38,8 +37,20 @@ function Invoke-Sc {
     }
 }
 
+if (-not [Environment]::Is64BitOperatingSystem) {
+    throw "64-bit Windows is required"
+}
+
+# the package has one exe per CPU architecture. Win32_Processor reports the real CPU even when
+# PowerShell runs under x64 emulation on ARM64, where $env:PROCESSOR_ARCHITECTURE says AMD64.
+# Architecture 12 is ARM64.
+$Arch = "amd64"
+if (@(Get-CimInstance Win32_Processor)[0].Architecture -eq 12) {
+    $Arch = "arm64"
+}
+$SourceExe = Join-Path $PSScriptRoot "mirroring-api-logging-$Arch.exe"
 if (-not (Test-Path $SourceExe)) {
-    throw "$ExeName not found next to install.ps1"
+    throw "mirroring-api-logging-$Arch.exe not found next to install.ps1"
 }
 
 # remove an existing install first, so this script also handles upgrades
@@ -55,7 +66,7 @@ if ($existing) {
     }
 }
 
-Write-Host "Copying $ExeName to $InstallDir"
+Write-Host "Copying mirroring-api-logging-$Arch.exe to $TargetExe"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 # the old process can take a moment to exit after the service stops
 for ($i = 0; $i -lt 10; $i++) {

@@ -38,7 +38,6 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 	"github.com/segmentio/kafka-go"
 
@@ -65,10 +64,7 @@ var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
 var threatEnabled = true
 var injectTags = ""
-var (
-	handle *pcap.Handle
-	err    error
-)
+var err error
 
 // key is used to map bidirectional streams to each other.
 type key struct {

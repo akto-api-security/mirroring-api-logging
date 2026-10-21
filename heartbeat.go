@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -36,11 +35,7 @@ func getEnvData() map[string]string {
 }
 
 func getCPUUsage() (cpuPercent float64, cpuCoresUsed float64) {
-	var rusage syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &rusage)
-
-	totalCPUSec := float64(rusage.Utime.Sec+rusage.Stime.Sec) +
-		float64(rusage.Utime.Usec+rusage.Stime.Usec)/1000000
+	totalCPUSec := processCPUSeconds()
 
 	cpuMutex.Lock()
 	defer cpuMutex.Unlock()

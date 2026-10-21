@@ -84,6 +84,10 @@ func getDaemonPodName() string {
 
 	hostname := os.Getenv("HOSTNAME")
 	if hostname == "" {
+		// Windows sets COMPUTERNAME instead of HOSTNAME
+		hostname = os.Getenv("COMPUTERNAME")
+	}
+	if hostname == "" {
 		hostname = fmt.Sprintf("daemon-%s", uniqueDaemonsetId[:8])
 	}
 	return fmt.Sprintf("akto-tc:%s", hostname)

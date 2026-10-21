@@ -7,7 +7,7 @@ Capture uses Windows raw sockets (`SIO_RCVALL`), so there is nothing else to ins
 The exe opens a raw socket per network adapter and IP version, and feeds the packets into the same
 parsing and Kafka code used on Linux.
 
-Requirements: Windows 10 / Server 2016 or newer, 64-bit, and Administrator rights.
+Requirements: Windows 10 / Server 2016 or newer, 64-bit (x64 or ARM64), and Administrator rights.
 
 Limitations compared to Linux:
 
@@ -26,12 +26,13 @@ On macOS or Linux, from the repo root:
 ./windows/build.sh
 ```
 
-This creates `dist/akto-traffic-mirroring-windows-amd64.zip` with:
+This creates `dist/akto-traffic-mirroring-windows.zip` with:
 
 | File | Purpose |
 |---|---|
-| `mirroring-api-logging.exe` | The module |
-| `install.ps1` | Installs or upgrades the Windows service |
+| `mirroring-api-logging-amd64.exe` | The module for x64 machines |
+| `mirroring-api-logging-arm64.exe` | The module for ARM64 machines |
+| `install.ps1` | Installs or upgrades the Windows service, with the exe matching the machine's CPU |
 | `uninstall.ps1` | Removes the service |
 
 ## Test on a Windows machine
@@ -47,9 +48,9 @@ folder, then reconnect. Then, in an **Administrator** PowerShell:
 
 ```powershell
 cd $env:USERPROFILE\Desktop
-Copy-Item "\\tsclient\dist\akto-traffic-mirroring-windows-amd64.zip" .\akto.zip
+Copy-Item "\\tsclient\dist\akto-traffic-mirroring-windows.zip" .\akto.zip
 Expand-Archive akto.zip -DestinationPath . -Force
-cd akto-traffic-mirroring-windows-amd64
+cd akto-traffic-mirroring-windows
 Get-ChildItem | Unblock-File
 Set-ExecutionPolicy -Scope Process Bypass -Force
 ```
@@ -66,15 +67,17 @@ Test-NetConnection <mini-runtime-ip> -Port 9092
 
 ### 3. Capture in the console
 
+Use `mirroring-api-logging-arm64.exe` instead on an ARM64 machine.
+
 ```powershell
 # raw sockets only see inbound packets the firewall lets through to the exe
-New-NetFirewallRule -DisplayName "Akto Traffic Mirroring (test)" -Direction Inbound -Program "$PWD\mirroring-api-logging.exe" -Action Allow
+New-NetFirewallRule -DisplayName "Akto Traffic Mirroring (test)" -Direction Inbound -Program "$PWD\mirroring-api-logging-amd64.exe" -Action Allow
 
 $env:AKTO_KAFKA_BROKER_URL = "<mini-runtime-ip>:9092"
 $env:AKTO_TRAFFIC_BATCH_SIZE = "100"
 $env:AKTO_TRAFFIC_BATCH_TIME_SECS = "10"
 $env:DEBUG_URLS = "/some/path"
-cmd /c "mirroring-api-logging.exe > capture.log 2>&1"
+cmd /c "mirroring-api-logging-amd64.exe > capture.log 2>&1"
 ```
 
 `DEBUG_URLS` logs each step for requests whose path or host contains the value. `cmd /c` is used
@@ -96,7 +99,7 @@ For a cloud VM, requests from outside also need the port allowed in its network 
 In a second PowerShell, check the log:
 
 ```powershell
-cd $env:USERPROFILE\Desktop\akto-traffic-mirroring-windows-amd64
+cd $env:USERPROFILE\Desktop\akto-traffic-mirroring-windows
 Select-String -Path .\capture.log -Pattern "capturing on interface|kafka successfully|IP header"
 Select-String -Path .\capture.log -Pattern "Kafka write"
 ```

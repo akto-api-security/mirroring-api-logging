@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/utils"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -65,6 +66,20 @@ func scheduleRestart() {
 		log.Printf("restarting after %d minutes", minutes)
 		os.Exit(1)
 	})
+}
+
+// processCPUSeconds is the user plus kernel CPU time this process has used
+func processCPUSeconds() float64 {
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(windows.CurrentProcess(), &creation, &exit, &kernel, &user); err != nil {
+		return 0
+	}
+	// a Filetime counts 100 nanosecond intervals
+	return float64(filetimeTicks(kernel)+filetimeTicks(user)) / 1e7
+}
+
+func filetimeTicks(ft windows.Filetime) uint64 {
+	return uint64(ft.HighDateTime)<<32 | uint64(ft.LowDateTime)
 }
 
 func aktoDataDir() string {

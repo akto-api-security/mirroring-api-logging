@@ -118,9 +118,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build Windows exe and package it with the install scripts
+      - name: Build Windows exe for amd64 and arm64 and package it with the install scripts
         run: ./windows/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: akto-traffic-mirroring-windows-amd64
-          path: dist/akto-traffic-mirroring-windows-amd64/
+          name: akto-traffic-mirroring-windows
+          path: dist/akto-traffic-mirroring-windows/
