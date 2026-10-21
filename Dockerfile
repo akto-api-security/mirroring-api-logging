@@ -17,7 +17,12 @@ COPY db ./db
 COPY api ./api
 COPY utils ./utils
 
-RUN go build -o /mirroring-api-logging
+# Same default as workflow_dispatch Tag in .github/workflows/main.yml.
+ARG IMAGE_TAG=k8s_agent
+
+RUN go build \
+      -ldflags "-X main.aktoImageVersion=aktosecurity/mirror-api-logging:${IMAGE_TAG}" \
+      -o /mirroring-api-logging
 
 EXPOSE 4789/udp
 

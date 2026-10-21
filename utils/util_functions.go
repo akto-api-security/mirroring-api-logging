@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,6 +29,28 @@ func init() {
 			<-ticker.C
 		}
 	}()
+}
+
+func ParseInjectTags(env string) string {
+	tags := map[string]string{}
+	for _, pair := range strings.Split(env, ";") {
+		pair = strings.TrimSpace(pair)
+		if idx := strings.IndexByte(pair, '='); idx > 0 {
+			k := strings.TrimSpace(pair[:idx])
+			v := strings.TrimSpace(pair[idx+1:])
+			if k != "" {
+				tags[k] = v
+			}
+		}
+	}
+	if len(tags) == 0 {
+		return ""
+	}
+	out, err := json.Marshal(tags)
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {
@@ -109,7 +132,6 @@ func UpdateDebugStringsFromFile() {
 func CheckIfIpHost(host string) bool {
 	return strings.ToLower(host) == strings.ToUpper(host)
 }
-
 
 func CheckDebugUrlAndPrint(url string, host string, message string) {
 	// url or host. [array string]

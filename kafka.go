@@ -13,7 +13,11 @@ import (
 
 	trafficpb "github.com/akto-api-security/mirroring-api-logging/protobuf/traffic_payload"
 	"github.com/akto-api-security/mirroring-api-logging/utils"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
+	"github.com/segmentio/kafka-go/sasl/aws_msk_iam_v2"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,6 +40,19 @@ var isAuthImplemented = false
 var kafkaUsername = ""
 var kafkaPassword = ""
 
+// AKTO_KAFKA_SASL_MECHANISM=AWS_MSK_IAM authenticates to Amazon MSK with the AWS identity of the
+// process (e.g. the ECS task role) instead of a username/password. Same variable as mini-runtime.
+const saslMechanismAwsMskIam = "AWS_MSK_IAM"
+
+var kafkaSaslMechanism = ""
+
+var heartbeatIntervalSeconds = 60
+var uniqueDaemonsetId = uuid.New().String()
+var moduleType = "TRAFFIC_COLLECTOR"
+
+// Set at build time: -ldflags "-X main.aktoImageVersion=aktosecurity/mirror-api-logging:<tag>" (see Dockerfile)
+var aktoImageVersion string
+
 func init() {
 
 	utils.InitVar("USE_TLS", &useTLS)
@@ -46,7 +63,72 @@ func init() {
 	utils.InitVar("IS_AUTH_IMPLEMENTED", &isAuthImplemented)
 	utils.InitVar("KAFKA_USERNAME", &kafkaUsername)
 	utils.InitVar("KAFKA_PASSWORD", &kafkaPassword)
+	utils.InitVar("AKTO_KAFKA_SASL_MECHANISM", &kafkaSaslMechanism)
 
+	utils.InitVar("KAFKA_HEARTBEAT_INTERVAL_SECONDS", &heartbeatIntervalSeconds)
+	utils.InitVar("AKTO_IMAGE_VERSION", &aktoImageVersion)
+}
+
+func getDaemonPodName() string {
+	aktoAgentName := os.Getenv("AKTO_AGENT_NAME")
+	podName := os.Getenv("POD_NAME")
+	nodeName := os.Getenv("NODE_NAME")
+
+	if aktoAgentName != "" {
+		return fmt.Sprintf("akto-tc:%s", aktoAgentName)
+	}
+
+	if podName != "" && nodeName != "" {
+		return fmt.Sprintf("akto-tc:%s:%s", podName, nodeName)
+	}
+
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		hostname = fmt.Sprintf("daemon-%s", uniqueDaemonsetId[:8])
+	}
+	return fmt.Sprintf("akto-tc:%s", hostname)
+}
+
+func getImageVersion() string {
+	return aktoImageVersion
+}
+
+func ProduceHeartbeat(ctx context.Context, heartbeatData map[string]string) error {
+	out, err := json.Marshal(heartbeatData)
+	if err != nil {
+		return err
+	}
+
+	topic := "akto.daemonset.producer.heartbeats"
+	msg := kafka.Message{
+		Topic: topic,
+		Value: []byte(string(out)),
+	}
+
+	err = kafkaWriter.WriteMessages(ctx, msg)
+
+	if err != nil {
+		slog.Error("ERROR while writing heartbeat messages", "topic", topic, "error", err)
+		return err
+	}
+	return nil
+}
+
+func isMskIamAuth() bool {
+	return strings.EqualFold(kafkaSaslMechanism, saslMechanismAwsMskIam)
+}
+
+// mskIamAuth returns the SASL mechanism and TLS config for Amazon MSK IAM. Credentials come from the
+// default AWS chain (ECS task role, instance profile, env) and are refreshed on each connection.
+// The IAM listener is TLS only; MSK certificates are publicly trusted, so system roots are used.
+func mskIamAuth() (sasl.Mechanism, *tls.Config) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	if err != nil {
+		slog.Error("Failed to load AWS config for MSK IAM authentication", "error", err)
+		return nil, tlsConfig
+	}
+	return aws_msk_iam_v2.NewMechanism(awsCfg), tlsConfig
 }
 
 func Produce(kafkaWriter *kafka.Writer, ctx context.Context, value *trafficpb.HttpResponseParam) error {
@@ -150,6 +232,13 @@ func GetKafkaWriter(kafkaURL, topic string, batchSize int, batchTimeout time.Dur
 	// Configure transport with TLS and/or SASL authentication
 	transport := &kafka.Transport{}
 
+	if isMskIamAuth() {
+		slog.Info("Configuring AWS MSK IAM authentication")
+		transport.SASL, transport.TLS = mskIamAuth()
+		kafkaWriter.Transport = transport
+		return &kafkaWriter
+	}
+
 	if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
 		transport.TLS = tlsConfig
@@ -182,13 +271,16 @@ func GetCredential(kafkaURL string, groupID string, topic string) Credential {
 	// Configure dialer with TLS and/or SASL authentication
 	dialer := &kafka.Dialer{}
 
-	if useTLS {
+	if isMskIamAuth() {
+		slog.Info("Configuring AWS MSK IAM authentication for reader")
+		dialer.SASLMechanism, dialer.TLS = mskIamAuth()
+	} else if useTLS {
 		tlsConfig, _ := NewTLSConfig(tlsCACertPath)
 		dialer.TLS = tlsConfig
 	}
 
 	// Add SASL authentication if enabled
-	if isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
+	if !isMskIamAuth() && isAuthImplemented && kafkaUsername != "" && kafkaPassword != "" {
 		slog.Info("Configuring SASL plain authentication for reader", "username", kafkaUsername)
 		dialer.SASLMechanism = plain.Mechanism{
 			Username: kafkaUsername,

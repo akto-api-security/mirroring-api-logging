@@ -38,6 +38,7 @@ import (
 	"github.com/akto-api-security/mirroring-api-logging/utils"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/tcpassembly"
 	"github.com/segmentio/kafka-go"
 
@@ -63,7 +64,11 @@ var filterHeaderValueMap = make(map[string]string)
 var ignoreCloudMetadataCalls = false
 var ignoreIpTraffic = false
 var threatEnabled = true
-var err error
+var injectTags = ""
+var (
+	handle *pcap.Handle
+	err    error
+)
 
 // key is used to map bidirectional streams to each other.
 type key struct {
@@ -388,6 +393,9 @@ func tryParseAsHttp2Request(bd *bidi, isPending bool) {
 			value["time"] = fmt.Sprint(time.Now().Unix())
 			value["is_pending"] = fmt.Sprint(isPending)
 			value["source"] = bd.source
+			if len(injectTags) > 0 {
+				value["tag"] = injectTags
+			}
 			out, _ := json.Marshal(value)
 			ctx := context.Background()
 
@@ -611,6 +619,9 @@ func tryReadFromBD(bd *bidi, isPending bool) {
 			"akto_vxlan_id":   fmt.Sprint(bd.vxlanID),
 			"is_pending":      fmt.Sprint(isPending),
 			"source":          bd.source,
+		}
+		if len(injectTags) > 0 {
+			value["tag"] = injectTags
 		}
 
 		out, _ := json.Marshal(value)
@@ -1084,6 +1095,11 @@ func appMain() {
 		log.Println("ignoreCloudMetadataCalls: missing. defaulting to false")
 	}
 
+	injectTags = utils.ParseInjectTags(os.Getenv("AKTO_INJECT_TAGS"))
+	if len(injectTags) > 0 {
+		log.Println("injectTags: ", injectTags)
+	}
+
 	// Set up a ticker to run every 2 minutes
 	ticker := time.NewTicker(2 * time.Minute)
 
@@ -1099,6 +1115,7 @@ func appMain() {
 		interfaceName = "any"
 	}
 	initKafka()
+	go sendKafkaHeartbeat()
 	for {
 		if packets, closeCapture, err := openLiveCapture(interfaceName); err != nil {
 			log.Fatal(err)
