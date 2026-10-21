@@ -7,8 +7,14 @@ func TestDaemonPodName(t *testing.T) {
 	t.Setenv("POD_NAME", "")
 	t.Setenv("NODE_NAME", "")
 	t.Setenv("HOSTNAME", "")
+	t.Setenv("COMPUTERNAME", "")
 	if got, want := getDaemonPodName(), "akto-tc:daemon-"+uniqueDaemonsetId[:8]; got != want {
 		t.Errorf("fallback: got %q, want %q", got, want)
+	}
+
+	t.Setenv("COMPUTERNAME", "WIN-SERVER1")
+	if got := getDaemonPodName(); got != "akto-tc:WIN-SERVER1" {
+		t.Errorf("computer name: got %q", got)
 	}
 
 	t.Setenv("HOSTNAME", "ip-10-0-1-5")
