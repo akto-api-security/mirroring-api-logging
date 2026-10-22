@@ -33,6 +33,13 @@ var httpMethodRegex = regexp.MustCompile(`"httpMethod"\s*:\s*"([^"]+)"`)
 var pathRegex = regexp.MustCompile(`"path"\s*:\s*"([^"]+)"`)
 var statusCodeRegex = regexp.MustCompile(`"statusCode"\s*:\s*(\d+)`)
 
+// skipOptionsRequests drops OPTIONS (CORS preflight) requests instead of producing them.
+var skipOptionsRequests = true
+
+func init() {
+	utils.InitVar("SKIP_OPTIONS_REQUESTS", &skipOptionsRequests)
+}
+
 // extractMap extracts a JSON-like map from a log message.
 func extractMap(log string, prefix string) map[string]string {
 	utils.DebugLog("extractMap: log: , %s | prefix: %s", log, prefix)
@@ -240,6 +247,11 @@ func HostFromLogGroupIdentifier(identifier string) string {
 }
 
 func ParseAndProduce(log LogEntry) {
+	if skipOptionsRequests && strings.EqualFold(log.HTTPMethod, "OPTIONS") {
+		utils.DebugLog("ParseAndProduce: skipping OPTIONS request for path: %s", log.ResourcePath)
+		return
+	}
+
 	log.ResourcePath = normalizePathTrailingSlash(log.ResourcePath)
 	utils.DebugLog("ParseAndProduce: log: %+v", log)
 
