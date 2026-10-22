@@ -190,13 +190,33 @@ func normalizePathTrailingSlash(p string) string {
 	return "/"
 }
 
+// hasHostHeader reports whether headers carry a usable host value.
+// A host cut off by log truncation (e.g. "subs [TRUNCATED]") is not usable.
 func hasHostHeader(headers map[string]string) bool {
-	for k := range headers {
-		if strings.EqualFold(k, "host") {
+	for k, v := range headers {
+		if strings.EqualFold(k, "host") && !strings.Contains(v, "[TRUNCATED]") {
 			return true
 		}
 	}
 	return false
+}
+
+// ensureHostHeader fills in a host derived from the log group when headers lack a usable one.
+func ensureHostHeader(headers map[string]string, logGroupIdentifier string) {
+	if hasHostHeader(headers) {
+		return
+	}
+	host := HostFromLogGroupIdentifier(logGroupIdentifier)
+	if host == "" {
+		return
+	}
+	// Drop any truncated host entry (e.g. lowercase "host") so it doesn't coexist with "Host".
+	for k := range headers {
+		if strings.EqualFold(k, "host") {
+			delete(headers, k)
+		}
+	}
+	headers["Host"] = host
 }
 
 // HostFromLogGroupIdentifier derives a host value from a log group ARN or name.
@@ -230,11 +250,7 @@ func ParseAndProduce(log LogEntry) {
 		log.ResponseHeaders = make(map[string]string)
 	}
 
-	if !hasHostHeader(log.RequestHeaders) {
-		if host := HostFromLogGroupIdentifier(log.LogGroupIdentifier); host != "" {
-			log.RequestHeaders["Host"] = host
-		}
-	}
+	ensureHostHeader(log.RequestHeaders, log.LogGroupIdentifier)
 
 	if log.RequestBodyTruncated {
 		log.RequestHeaders["x-akto-payload-truncated"] = "true"
