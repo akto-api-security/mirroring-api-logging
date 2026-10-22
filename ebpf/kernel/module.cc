@@ -213,6 +213,18 @@ AKTO_KERNEL_DROP_NON_HTTP_TRAFFIC (default 1).
 */
 BPF_ARRAY(drop_non_http_flag, u32, 1);
 
+/*
+When set to 1, connections classified as kProtoHTTP (HTTP/1.x) are dropped
+in-kernel before perf_submit, leaving HTTP/2 (incl. gRPC), TLS and unclassified.
+Set from Go via AKTO_KERNEL_DROP_HTTP1_TRAFFIC (default 0 — everything is kept).
+
+For isolating HTTP/2 on a host where HTTP/1 dominates. Dropping here rather than
+in userspace also removes the perf-buffer copy and the per-event allocation,
+which is the point when the agent is memory constrained. Opt-in, because unlike
+drop_non_http_flag this discards traffic we can otherwise parse.
+*/
+BPF_ARRAY(drop_http1_flag, u32, 1);
+
 static __inline bool should_trace_comm() {
   u32 zero = 0;
   u32 *flag = trace_all_flag.lookup(&zero);
@@ -606,6 +618,16 @@ static __inline void process_syscall_data_resolved(struct pt_regs* ret, const st
         }
     }
 
+    // Same shape, opt-in: only kProtoHTTP connections pay the map lookup, and
+    // only when someone asked to isolate HTTP/2. Default 0 keeps HTTP/1.
+    if (compute_meta && conn_info->protocol == kProtoHTTP) {
+        u32 h1_zero = 0;
+        u32* drop_h1 = drop_http1_flag.lookup(&h1_zero);
+        if (drop_h1 != NULL && *drop_h1 == 1) {
+            return;
+        }
+    }
+
     socket_data_event->role      = conn_info->role;
     socket_data_event->direction = direction;
     socket_data_event->msg_seq   = conn_info->msg_seq;
@@ -705,6 +727,16 @@ static __inline void process_syscall_data_vecs(struct pt_regs* ret, struct data_
         u32 drop_zero = 0;
         u32* drop = drop_non_http_flag.lookup(&drop_zero);
         if (drop != NULL && *drop == 1) {
+            return;
+        }
+    }
+
+    // Same, for the opt-in HTTP/1 drop: skip the whole syscall rather than
+    // re-checking per iovec.
+    if (conn_info->protocol == kProtoHTTP) {
+        u32 h1_zero = 0;
+        u32* drop_h1 = drop_http1_flag.lookup(&h1_zero);
+        if (drop_h1 != NULL && *drop_h1 == 1) {
             return;
         }
     }
