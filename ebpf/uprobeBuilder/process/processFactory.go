@@ -118,6 +118,10 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			// openssl probes here are being attached on dynamically linked SSL libraries only.
 			attached, err := ssl.TryOpensslProbes(libraries, bpfModule)
 
+			if len(containers) == 0 {
+				containers = append(containers, "unknown")
+			}
+
 			if attached {
 				p := Process{
 					pid:         pid,
@@ -158,9 +162,7 @@ func (processFactory *ProcessFactory) AddNewProcessesToProbe(bpfModule *bcc.Modu
 			} else if err != nil {
 				slog.Error("Node probing error", "pid", pid, "error", err)
 			}
-
 			processFactory.unattachedProcess[pid] = true
-
 		}
 	}
 }
