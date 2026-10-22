@@ -138,6 +138,18 @@ func run() {
 	setKernelFlag(bpfModule, "drop_non_http_flag", dropNonHttp)
 	slog.Info("kernel non-HTTP drop", "enabled", dropNonHttp == 1)
 
+	// Populate drop_http1_flag: when 1, the kernel drops HTTP/1.x connections
+	// before perf_submit, leaving HTTP/2 (incl. gRPC) and TLS. Default 0 — every
+	// protocol is processed; set AKTO_KERNEL_DROP_HTTP1_TRAFFIC=true to isolate
+	// HTTP/2 on a host where HTTP/1 volume is drowning it out. Opposite default to
+	// the flag above, because this one discards traffic we can otherwise parse.
+	dropHttp1 := uint32(0)
+	if strings.EqualFold(os.Getenv("AKTO_KERNEL_DROP_HTTP1_TRAFFIC"), "true") {
+		dropHttp1 = 1
+	}
+	setKernelFlag(bpfModule, "drop_http1_flag", dropHttp1)
+	slog.Info("kernel HTTP/1 drop", "enabled", dropHttp1 == 1)
+
 	// TODO: pids should be of K8 services only ??
 	fillExistingConnections(bpfModule, tracedPids)
 
