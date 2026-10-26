@@ -14,8 +14,8 @@ rotate_log() {
     fi
 }
 
-# Log rotation monitoring (only if ENABLE_LOGS is false)
-if [[ "${ENABLE_LOGS}" == "false" ]]; then
+# Log rotation monitoring (only if ENABLE_LOGS is false and logs aren't disabled)
+if [[ "${ENABLE_LOGS}" == "false" && "${DISABLE_LOGS}" != "true" ]]; then
     while true; do
         rotate_log   # Check and rotate logs if necessary
         sleep "$CHECK_INTERVAL"
@@ -25,7 +25,10 @@ fi
 while :
 do
     # Start the mirroring module in the background
-    if [[ "${ENABLE_LOGS}" == "false" ]]; then
+    # DISABLE_LOGS=true discards all output; takes precedence over ENABLE_LOGS
+    if [[ "${DISABLE_LOGS}" == "true" ]]; then
+        /mirroring-api-logging > /dev/null 2>&1 &
+    elif [[ "${ENABLE_LOGS}" == "false" ]]; then
         /mirroring-api-logging >> "$LOG_FILE" 2>&1 &
     else
         /mirroring-api-logging &
