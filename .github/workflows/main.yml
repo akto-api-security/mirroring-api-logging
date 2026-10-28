@@ -36,7 +36,16 @@ on:
         options: 
           - legacy
           - ebpf
-        default: legacy  
+        default: legacy
+      Architecture:
+        description: "The target architecture(s) for the Docker image."
+        required: true
+        type: choice
+        options:
+          - both
+          - arm64
+          - amd64
+        default: both
       
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -82,11 +91,19 @@ jobs:
           ECR_REPOSITORY: akto-api-security
           REGISTRY_ALIAS: p7q3h0z2
           IMAGE_TAG: ${{ github.event.inputs.Tag }}
+          ARCH_INPUT: ${{ github.event.inputs.Architecture }}
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          echo "Building and Pushing image to ECR..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG . --push
+          if [ "$ARCH_INPUT" == "arm64" ]; then
+            PLATFORM="linux/arm64/v8"
+          elif [ "$ARCH_INPUT" == "amd64" ]; then
+            PLATFORM="linux/amd64"
+          else
+            PLATFORM="linux/arm64/v8,linux/amd64"
+          fi
+          echo "Building and Pushing image to ECR with platform: $PLATFORM"
+          docker buildx build --platform $PLATFORM -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG . --push
           echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG"
 
       - name: Build, tag, and push the image to Amazon ECR -ebpf
@@ -97,11 +114,19 @@ jobs:
           ECR_REPOSITORY: akto-api-security
           REGISTRY_ALIAS: p7q3h0z2
           IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
+          ARCH_INPUT: ${{ github.event.inputs.Architecture }}
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          echo "Building and Pushing image to ECR..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
+          if [ "$ARCH_INPUT" == "arm64" ]; then
+            PLATFORM="linux/arm64/v8"
+          elif [ "$ARCH_INPUT" == "amd64" ]; then
+            PLATFORM="linux/amd64"
+          else
+            PLATFORM="linux/arm64/v8,linux/amd64"
+          fi
+          echo "Building and Pushing image to ECR with platform: $PLATFORM"
+          docker buildx build --platform $PLATFORM -t $ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
           echo "::set-output name=image::$ECR_REGISTRY/$REGISTRY_ALIAS/mirror-api-logging:$IMAGE_TAG"
 
   build-docker:
@@ -136,11 +161,19 @@ jobs:
         env:
           ECR_REGISTRY: aktosecurity
           IMAGE_TAG: ${{ github.event.inputs.Tag }}
+          ARCH_INPUT: ${{ github.event.inputs.Architecture }}
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          echo "Building and Pushing image to DockerHub..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG . --push
+          if [ "$ARCH_INPUT" == "arm64" ]; then
+            PLATFORM="linux/arm64/v8"
+          elif [ "$ARCH_INPUT" == "amd64" ]; then
+            PLATFORM="linux/amd64"
+          else
+            PLATFORM="linux/arm64/v8,linux/amd64"
+          fi
+          echo "Building and Pushing image to DockerHub with platform: $PLATFORM"
+          docker buildx build --platform $PLATFORM -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"
        
       - name: Build, tag, and push the image to DockerHub - ebpf
@@ -149,9 +182,17 @@ jobs:
         env:
           ECR_REGISTRY: aktosecurity
           IMAGE_TAG: ${{ github.event.inputs.EbpfTag }}
+          ARCH_INPUT: ${{ github.event.inputs.Architecture }}
         run: |
           # Build a docker container and push it to DockerHub 
           docker buildx create --use
-          echo "Building and Pushing image to DockerHub..."
-          docker buildx build --platform linux/arm64/v8,linux/amd64 -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
+          if [ "$ARCH_INPUT" == "arm64" ]; then
+            PLATFORM="linux/arm64/v8"
+          elif [ "$ARCH_INPUT" == "amd64" ]; then
+            PLATFORM="linux/amd64"
+          else
+            PLATFORM="linux/arm64/v8,linux/amd64"
+          fi
+          echo "Building and Pushing image to DockerHub with platform: $PLATFORM"
+          docker buildx build --platform $PLATFORM -t $ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG -f Dockerfile.eBPF . --push
           echo "::set-output name=image::$ECR_REGISTRY/mirror-api-logging:$IMAGE_TAG"

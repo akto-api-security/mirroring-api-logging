@@ -1,0 +1,62 @@
+BEGIN {
+    @intervals = 0;
+    @sum_reads = 0;
+    @sum_writes = 0;
+    @max_reads = 0;
+    @max_writes = 0;
+}
+
+kprobe:tcp_v4_connect { @connects_v4 = @connects_v4 + 1; }
+kprobe:tcp_v6_connect { @connects_v6 = @connects_v6 + 1; }
+
+kretprobe:inet_csk_accept /retval != 0/ {
+    $sk = (struct sock *)retval;
+    if ($sk->__sk_common.skc_family == 2) {
+        @accepts_v4 = @accepts_v4 + 1;
+    } else if ($sk->__sk_common.skc_family == 10) {
+        @accepts_v6 = @accepts_v6 + 1;
+    }
+}
+
+kprobe:tcp_sendmsg { @writes = @writes + 1; }
+kretprobe:tcp_recvmsg /(int32)retval > 0/ { @reads = @reads + 1; }
+
+interval:s:1 {
+    time("%H:%M:%S ");
+    printf("connects_v4=%d connects_v6=%d accepts_v4=%d accepts_v6=%d reads=%d writes=%d\n",
+        @connects_v4, @connects_v6, @accepts_v4, @accepts_v6, @reads, @writes);
+
+    @intervals = @intervals + 1;
+    @sum_reads = @sum_reads + @reads;
+    @sum_writes = @sum_writes + @writes;
+    if (@reads > @max_reads)   { @max_reads = @reads; }
+    if (@writes > @max_writes) { @max_writes = @writes; }
+
+    clear(@connects_v4);
+    clear(@connects_v6);
+    clear(@accepts_v4);
+    clear(@accepts_v6);
+    clear(@reads);
+    clear(@writes);
+}
+
+END {
+    clear(@connects_v4);
+    clear(@connects_v6);
+    clear(@accepts_v4);
+    clear(@accepts_v6);
+    clear(@reads);
+    clear(@writes);
+
+    if (@intervals > 0) {
+        printf("\n--- summary over %d seconds ---\n", @intervals);
+        printf("reads/sec  avg=%d max=%d\n", @sum_reads / @intervals, @max_reads);
+        printf("writes/sec avg=%d max=%d\n", @sum_writes / @intervals, @max_writes);
+    }
+
+    clear(@intervals);
+    clear(@sum_reads);
+    clear(@sum_writes);
+    clear(@max_reads);
+    clear(@max_writes);
+}
