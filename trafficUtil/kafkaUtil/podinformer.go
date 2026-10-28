@@ -151,7 +151,6 @@ func (w *PodInformer) GetProcessNameByProcessId(pid int32) string {
 	if info, ok := w.pidHostNameMap.Load(pid); ok {
 		return info.(PidInfo).ProcessName
 	}
-	slog.Debug("Process name not found for", "processId", pid)
 	return ""
 }
 
@@ -199,9 +198,7 @@ func (w *PodInformer) ResolvePodLabels(podName string, url, reqHost string) (str
 	})
 
 	if len(labelsMap) == 0 {
-		err := fmt.Errorf("pod labels cache miss for pod name: %s", podName)
-		checkDebugUrlAndPrint(url, reqHost, err.Error())
-		return "", err
+		return "", fmt.Errorf("pod labels cache miss for pod name: %s", podName)
 	}
 
 	labelsJSON, err := json.Marshal(labelsMap)

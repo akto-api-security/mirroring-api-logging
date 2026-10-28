@@ -246,8 +246,6 @@ func resolvePodLabelsTag(ctx TrafficContext, processName, url, host string) stri
 	}
 
 	if ctx.HostName == "" {
-		checkDebugUrlAndPrint(url, host, "Failed to resolve pod name, hostName is empty for processId "+fmt.Sprint(ctx.ProcessID))
-		slog.Debug("Failed to resolve pod name, hostName is empty for ", "processId", ctx.ProcessID, "hostName", ctx.HostName)
 		return ""
 	}
 

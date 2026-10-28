@@ -167,6 +167,19 @@ func (factory *Factory) StartWorker(connectionID structs.ConnID, tracker *Tracke
 				return
 
 			case <-inactivityTimer.C:
+				// HTTP/2 is exempt. Its parser state (HPACK's dynamic table) lives on the
+				// tracker and is only meaningful from the connection's first byte onward.
+				// Pooled upstream connections — envoy to the app, for instance — sit idle
+				// for minutes between requests while the socket stays open, so evicting on
+				// inactivity throws away the table underneath a live connection: the next
+				// request rebuilds the parser mid-stream, where it can never resynchronise,
+				// and every later stream on that connection is silently lost. These are
+				// terminated by the socket-close path above instead. HTTP/1.1 is stateless
+				// per message and keeps the existing behaviour.
+				if tracker.protocol == structs.ProtoHTTP2 {
+					resetTimer(inactivityTimer, inactivityThreshold)
+					continue
+				}
 				utils.LogProcessing("Inactivity threshold reached, marking connection as inactive and processing", "fd", connID.Fd, "id", connID.Id, "timestamp", connID.Conn_start_ns, "ip", connID.Raddr, "port", connID.Rport)
 				if utils.FastIngestion {
 					if utils.IsMsgSeqLogsEnabled() {
