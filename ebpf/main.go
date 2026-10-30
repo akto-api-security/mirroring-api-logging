@@ -184,6 +184,29 @@ func replaceDisableRingSubmit(spec *ebpf.CollectionSpec) {
 	}
 }
 
+// trafficDisableEgress reports TRAFFIC_DISABLE_EGRESS, default true. When on,
+// connect()-originated sockets (this process as a TCP client, e.g. nginx ->
+// upstream) are not registered in conn_info_map, so their bytes never reach
+// the ring buffer or the Go tracker.
+func trafficDisableEgress() bool {
+	disable := true
+	trafficUtils.InitVar("TRAFFIC_DISABLE_EGRESS", &disable)
+	return disable
+}
+
+// replaceDisableEgressCapture sets the BPF global disable_egress_capture.
+// TRAFFIC_DISABLE_EGRESS also gates the userspace parse swap in
+// ebpf/connections/factory.go.
+func replaceDisableEgressCapture(spec *ebpf.CollectionSpec) {
+	disableEgressCapture := trafficDisableEgress()
+	if v, ok := spec.Variables["disable_egress_capture"]; ok {
+		if err := v.Set(disableEgressCapture); err != nil {
+			slog.Warn("failed to set disable_egress_capture variable", "error", err)
+		}
+	}
+	slog.Info("BPF egress capture", "disableEgressCapture", disableEgressCapture)
+}
+
 // startSocketDataSubmitStatsReporter reads BPF submit counters every 10s when
 // trafficUtil/utils.TrafficLogBpfSocketDataSubmits is true. The kernel increments these around
 // ringbuf_output, so failures indicate event loss before userspace can read.
@@ -376,6 +399,7 @@ func run() {
 	replaceRingBufSizes(spec)
 	replaceStrictRemotePortFilter(spec)
 	replaceDisableRingSubmit(spec)
+	replaceDisableEgressCapture(spec)
 
 	// If the kernel supports uprobe_multi (6.6+), mark all SEC("uprobe")
 	// programs with the multi attach type so they can be attached via

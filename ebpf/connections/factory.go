@@ -85,6 +85,9 @@ func joinPartsMap(connID structs.ConnID, partsMap map[int][][]byte) []byte {
 }
 
 var (
+	// When true (TRAFFIC_DISABLE_EGRESS, default), do not parse this process's
+	// outbound (connect) hop. The kernel also skips those sockets before they
+	// reach the ring (disable_egress_capture in module.bpf.c).
 	disableEgress        = true
 	maxActiveConnections = 4096
 	inactivityThreshold  = 7 * time.Second
@@ -154,7 +157,9 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
 	}
 	if !disableEgress {
-		// attempt to parse the egress as well by switching the recv and sent buffers.
+		// Kernel already skipped connect()-originated sockets when
+		// TRAFFIC_DISABLE_EGRESS is on (disable_egress_capture). This swap
+		// is the parse-side counterpart for when egress capture is enabled.
 		if isHTTPTraffic(sentBuffer, receiveBuffer) {
 			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
 		}
