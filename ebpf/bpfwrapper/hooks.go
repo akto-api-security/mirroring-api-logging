@@ -52,6 +52,11 @@ var (
 		},
 	}
 
+	// connect / tcp_connect stay in Level1hooks even when TRAFFIC_DISABLE_EGRESS
+	// is on. The BPF program does not register those sockets, but the connect
+	// return probe still clears active_accept_args_map so a sock_alloc from
+	// connect() cannot leak into a later accept() on the same thread.
+
 	Level1hooksType2 = []Kprobe{
 		{
 			FunctionToHook: "security_socket_sendmsg",

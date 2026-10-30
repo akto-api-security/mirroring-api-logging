@@ -51,11 +51,14 @@ var (
 	kafkaBrokerURL     string
 	kafkaBatchSize     = 100
 	kafkaBatchTimeSecs = 10
-	aktoAgentName      string
-	kubePodName        string
-	kubeNodeName       string
-	kubeHostname       string
-	aktoImageVersion   string
+	// kafka-go rejects a produce larger than Writer.BatchBytes. The library
+	// default is 1 MiB; a value below 1 is put back to that.
+	kafkaBatchBytes  = 1 << 20
+	aktoAgentName    string
+	kubePodName      string
+	kubeNodeName     string
+	kubeHostname     string
+	aktoImageVersion string
 )
 
 func init() {
@@ -78,6 +81,10 @@ func init() {
 	utils.InitVar("AKTO_BYTES_IN_THRESHOLD", &BytesInThreshold)
 	utils.InitVar("AKTO_TRAFFIC_BATCH_SIZE", &kafkaBatchSize)
 	utils.InitVar("AKTO_TRAFFIC_BATCH_TIME_SECS", &kafkaBatchTimeSecs)
+	utils.InitVar("AKTO_KAFKA_BATCH_BYTES", &kafkaBatchBytes)
+	if kafkaBatchBytes < 1 {
+		kafkaBatchBytes = 1 << 20
+	}
 	utils.InitVar("AKTO_AGENT_NAME", &aktoAgentName)
 	utils.InitVar("POD_NAME", &kubePodName)
 	utils.InitVar("NODE_NAME", &kubeNodeName)
@@ -124,7 +131,7 @@ func InitKafka() {
 
 	for {
 		kafkaWriterMutex.Lock()
-		kafkaWriter = getKafkaWriter(kafka_url, kafkaBatchSize, kafka_batch_time_secs_duration*time.Second)
+		kafkaWriter = getKafkaWriter(kafka_url, kafkaBatchSize, kafkaBatchBytes, kafka_batch_time_secs_duration*time.Second)
 		kafkaWriterMutex.Unlock()
 
 		utils.LogMemoryStats()
@@ -195,7 +202,7 @@ func periodicKafkaReconnect(kafka_url string, kafka_batch_size int, kafka_batch_
 		slog.Info("Starting periodic Kafka reconnection", "interval_minutes", kafkaReconnectIntervalMinutes)
 
 		// Create new writer
-		newWriter := getKafkaWriter(kafka_url, kafka_batch_size, kafka_batch_time_secs_duration)
+		newWriter := getKafkaWriter(kafka_url, kafka_batch_size, kafkaBatchBytes, kafka_batch_time_secs_duration)
 		newWriter.Completion = kafkaCompletion()
 
 		// Test the new connection
@@ -547,10 +554,11 @@ func getGlobalTransport() *kafka.Transport {
 	return globalTransport
 }
 
-func getKafkaWriter(kafkaURL string, batchSize int, batchTimeout time.Duration) *kafka.Writer {
+func getKafkaWriter(kafkaURL string, batchSize int, batchBytes int, batchTimeout time.Duration) *kafka.Writer {
 	kafkaWriter := kafka.Writer{
 		Addr:         kafka.TCP(kafkaURL),
 		BatchSize:    batchSize,
+		BatchBytes:   int64(batchBytes),
 		BatchTimeout: batchTimeout,
 		MaxAttempts:  1,
 		ReadTimeout:  batchTimeout,

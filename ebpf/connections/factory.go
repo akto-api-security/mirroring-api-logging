@@ -85,6 +85,9 @@ func joinPartsMap(connID structs.ConnID, partsMap map[int][][]byte) []byte {
 }
 
 var (
+	// When true (TRAFFIC_DISABLE_EGRESS, default), do not parse this process's
+	// outbound (connect) hop. The kernel also skips those sockets before they
+	// reach the ring (disable_egress_capture in module.bpf.c).
 	disableEgress        = true
 	maxActiveConnections = 4096
 	inactivityThreshold  = 7 * time.Second
@@ -92,11 +95,13 @@ var (
 	bufferMemThreshold = 400
 
 	// unique id of daemonset
-	uniqueDaemonsetId          = uuid.New().String()
-	trackerDataProcessInterval = 100
+	uniqueDaemonsetId = uuid.New().String()
 
 	socketDataEventBytesThreshold = 10 * 1024 * 1024
 	sequenceCheckSkip             = false
+	// Per-connection event queue. SendEvent drops when this is full, and the
+	// missing sequence makes joinPartsMap discard the rest of the connection.
+	connEventChanSize = 10
 )
 
 func init() {
@@ -109,8 +114,8 @@ func init() {
 	utils.InitVar("TRAFFIC_INACTIVITY_THRESHOLD", &inactivityThreshold)
 	utils.InitVar("TRAFFIC_BUFFER_THRESHOLD", &bufferMemThreshold)
 	utils.InitVar("AKTO_MEM_SOFT_LIMIT", &bufferMemThreshold)
-	utils.InitVar("TRACKER_DATA_PROCESS_INTERVAL", &trackerDataProcessInterval)
 	utils.InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &socketDataEventBytesThreshold)
+	utils.InitVar("TRAFFIC_CONN_EVENT_CHAN_SIZE", &connEventChanSize)
 }
 
 // isHTTPTraffic reports whether a window looks like HTTP/1 (response starts with "HTTP")
@@ -152,7 +157,9 @@ func ProcessTrackerData(connID structs.ConnID, tracker *Tracker, isComplete bool
 		tryReadFromBD(destIpStr, srcIpStr, receiveBuffer, sentBuffer, isComplete, 1, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
 	}
 	if !disableEgress {
-		// attempt to parse the egress as well by switching the recv and sent buffers.
+		// Kernel already skipped connect()-originated sockets when
+		// TRAFFIC_DISABLE_EGRESS is on (disable_egress_capture). This swap
+		// is the parse-side counterpart for when egress capture is enabled.
 		if isHTTPTraffic(sentBuffer, receiveBuffer) {
 			tryReadFromBD(srcIpStr, destIpStr, sentBuffer, receiveBuffer, isComplete, 2, connID.Id, connID.Fd, uniqueDaemonsetId, hostName, connID)
 		}
@@ -233,7 +240,11 @@ func (factory *Factory) CreateIfNotExists(connectionID structs.ConnID) {
 		now := uint64(time.Now().UnixNano())
 		tracker.openTimestamp = now
 		factory.connections[connectionID] = tracker
-		ch := make(chan interface{}, 10)
+		chanSize := connEventChanSize
+		if chanSize < 1 {
+			chanSize = 10
+		}
+		ch := make(chan interface{}, chanSize)
 		factory.processor[connectionID] = ch
 		factory.StartWorker(connectionID, tracker, ch)
 	}

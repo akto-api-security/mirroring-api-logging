@@ -116,6 +116,13 @@ volatile const bool filter_strict_remote_port = false;
 volatile const __u16 strict_remote_port = 10275;
 /* When true (env TRAFFIC_DISABLE_PERF_SUBMIT), skip all ringbuf_output calls. */
 volatile const bool disable_ring_submit = false;
+/* When true (env TRAFFIC_DISABLE_EGRESS, default on), skip registering conn_info_map
+ * entries for connect()-originated sockets — this process acting as a TCP client
+ * (e.g. nginx -> upstream). Userspace already discards this side when building Kafka
+ * messages (ebpf/connections/factory.go); doing it here means those sockets never
+ * reach conn_info_map, the data/open/close ring buffers, or the Go tracker at all.
+ * accept()-originated (ingress) sockets are unaffected. */
+volatile const bool disable_egress_capture = true;
 
 /*
  * CHUNK_SIZE_LIMIT must be a compile-time constant because it is used as the
@@ -654,6 +661,11 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     if (args_in == NULL) {
         return;
     }
+
+    if (isConnect && disable_egress_capture) {
+        return;
+    }
+
     struct accept_args_t args = *args_in;
 
     int ret_fd = PT_REGS_RC(ctx);
@@ -1169,6 +1181,10 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
 
 SEC("kprobe")
 int probe_entry_tcp_connect(struct pt_regs* ctx) {
+    if (disable_egress_capture) {
+        return 0;
+    }
+
     uint64_t id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
@@ -1191,6 +1207,10 @@ int probe_entry_tcp_connect(struct pt_regs* ctx) {
 
 SEC("kprobe")
 int syscall__probe_entry_connect(struct pt_regs* ctx) {
+    if (disable_egress_capture) {
+        return 0;
+    }
+
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
@@ -1211,6 +1231,13 @@ int syscall__probe_entry_connect(struct pt_regs* ctx) {
 SEC("kprobe")
 int syscall__probe_ret_connect(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
+
+    if (disable_egress_capture) {
+        // sock_alloc may have inserted an entry for this thread; drop it so
+        // a later accept() on the same thread does not inherit it.
+        bpf_map_delete_elem(&active_accept_args_map, &id);
+        return 0;
+    }
 
     if (print_bpf_logs) {
         bpf_printk("syscall__probe_ret_connect: pid: %d", id);
