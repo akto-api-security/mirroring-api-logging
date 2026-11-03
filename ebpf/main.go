@@ -18,6 +18,7 @@ import (
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/bpfwrapper"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
+	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/process"
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/uprobeBuilder/ssl"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/apiProcessor"
@@ -82,7 +83,7 @@ func localTrafficIPv4ToLE(s string) uint32 {
 func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 	maxConnectionSizeMapSize := 131072
 	trafficUtils.InitVar("TRAFFIC_MAX_CONNECTION_MAP_SIZE", &maxConnectionSizeMapSize)
-	for _, mapName := range []string{"conn_info_map", "conn_info_map_keys"} {
+	for _, mapName := range []string{"conn_info_map"} {
 		if m, ok := spec.Maps[mapName]; ok {
 			m.MaxEntries = uint32(maxConnectionSizeMapSize)
 		}
@@ -116,33 +117,6 @@ func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
 		}
 	}
 
-	type rbConf struct {
-		envVar    string
-		mapName   string
-		defaultMB int
-	}
-	confs := []rbConf{
-		{"TRAFFIC_RINGBUF_OPEN_MB", "socket_open_events", 64},
-		{"TRAFFIC_RINGBUF_CLOSE_MB", "socket_close_events", 64},
-	}
-	for _, c := range confs {
-		sizeMB := c.defaultMB
-		trafficUtils.InitVar(c.envVar, &sizeMB)
-		if sizeMB <= 0 {
-			continue
-		}
-		m, ok := spec.Maps[c.mapName]
-		if !ok {
-			continue
-		}
-		sizeBytes := uint32(sizeMB) * 1024 * 1024
-		if sizeBytes&(sizeBytes-1) != 0 {
-			slog.Warn("ring buffer size must be a power of 2, ignoring", "map", c.mapName, "sizeMB", sizeMB)
-			continue
-		}
-		m.MaxEntries = sizeBytes
-		slog.Info("ring buffer size overridden", "map", c.mapName, "sizeMB", sizeMB)
-	}
 }
 
 // replaceStrictRemotePortFilter gates socket_data on conn_info->port (remote / dest port in BPF).
@@ -209,7 +183,8 @@ func replaceDisableEgressCapture(spec *ebpf.CollectionSpec) {
 
 // startSocketDataSubmitStatsReporter reads BPF submit counters every 10s when
 // trafficUtil/utils.TrafficLogBpfSocketDataSubmits is true. The kernel increments these around
-// ringbuf_output, so failures indicate event loss before userspace can read.
+// ringbuf_output, so failures indicate event loss before userspace can read. The same line
+// carries the userspace capture counters (connections.StatsArgs).
 func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 	if !trafficUtils.TrafficLogBpfSocketDataSubmits {
 		return
@@ -238,10 +213,6 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 		}
 		counters = append(counters, counterSpec{name: name, m: m})
 	}
-	if len(counters) == 0 {
-		return
-	}
-
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -264,9 +235,9 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 					counters[i].name+"Total", total,
 				)
 			}
-			if len(args) == 0 {
-				continue
-			}
+			// Userspace capture counters (pairs emitted and why traffic was
+			// dropped) ride on the same line.
+			args = append(args, connections.StatsArgs()...)
 			slog.Warn("BPF ringbuf submit stats", args...)
 		}
 	}()
@@ -290,11 +261,8 @@ func startEBPFMapMemoryReporter(coll *ebpf.Collection) {
 		"socket_data_events_5",
 		"socket_data_events_6",
 		"socket_data_events_7",
-		"socket_open_events",
-		"socket_close_events",
 		"socket_data_event_buffer_heap",
 		"conn_info_map",
-		"conn_info_map_keys",
 		"active_ssl_read_args_map",
 		"active_ssl_write_args_map",
 		"go_symaddrs_table",
@@ -453,7 +421,15 @@ func run() {
 		slog.Error("Failed to setup pod watcher", "error", err)
 	}
 
-	connectionFactory := connections.NewFactory()
+	connectionFactory := connections.NewFactory(socketDataRingbufShardCount)
+	if m, ok := coll.Maps["conn_info_map"]; ok {
+		// Connections that will never be parsed (not HTTP, ignored ports) are
+		// dropped from the kernel map so the probes stop copying their bytes.
+		connections.SetKernelIgnore(func(id structs.ConnID) {
+			key := (id.Id>>32)<<32 | uint64(id.Fd)
+			_ = m.Delete(key)
+		})
+	}
 
 	trafficMetrics.InitTrafficMaps()
 	trafficMetrics.StartMetricsTicker()
@@ -461,19 +437,14 @@ func run() {
 	// -----------------------------------------------------------------------
 	// Ring-buffer consumers — launched before kprobes so buffers are ready.
 	// -----------------------------------------------------------------------
-	callbacks := []*bpfwrapper.ProbeChannel{
-		bpfwrapper.NewProbeChannel("socket_open_events", bpfwrapper.SocketOpenEventCallback),
-		bpfwrapper.NewProbeChannel("socket_close_events", bpfwrapper.SocketCloseEventCallback),
-	}
+	// One reader per data ring; each owns the connections hashed to it
+	// (open, data and close records of a connection share a ring).
 	for i := 0; i < socketDataRingbufShardCount; i++ {
-		callbacks = append(callbacks, bpfwrapper.NewProbeChannel(
-			fmt.Sprintf("socket_data_events_%d", i),
-			bpfwrapper.SocketDataEventCallback,
-		))
-	}
-	if err := bpfwrapper.LaunchPerfBufferConsumers(coll, connectionFactory, callbacks); err != nil {
-		slog.Error("failed to launch perf buffer consumers", "error", err)
-		panic(err)
+		r := bpfwrapper.NewShardReader(fmt.Sprintf("socket_data_events_%d", i), connectionFactory.Shard(i))
+		if err := r.Start(coll); err != nil {
+			slog.Error("failed to start ring buffer reader", "error", err)
+			panic(err)
+		}
 	}
 
 	// -----------------------------------------------------------------------

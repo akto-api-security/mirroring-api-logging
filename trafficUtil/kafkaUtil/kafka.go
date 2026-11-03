@@ -473,6 +473,12 @@ func buildCollectionDetailsHeader(host, method, url string) []kafka.Header {
 }
 
 func ProduceStr(ctx context.Context, message string, url, reqHost, method string) error {
+	return ProduceBytes(ctx, []byte(message), url, reqHost, method)
+}
+
+// ProduceBytes is ProduceStr without the string round trip. value must not be
+// modified after the call.
+func ProduceBytes(ctx context.Context, value []byte, url, reqHost, method string) error {
 	if !KafkaWriteAvailable() {
 		return nil
 	}
@@ -481,7 +487,7 @@ func ProduceStr(ctx context.Context, message string, url, reqHost, method string
 
 	msg := kafka.Message{
 		Topic:   topic,
-		Value:   []byte(message),
+		Value:   value,
 		Headers: buildCollectionDetailsHeader(reqHost, method, url),
 	}
 

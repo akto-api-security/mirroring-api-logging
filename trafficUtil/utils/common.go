@@ -61,6 +61,11 @@ var FastParserGunzip = true
 // FastParserChunkEncoding handles Transfer-Encoding: chunked on the fast path.
 var FastParserChunkEncoding = true
 
+// SocketDataEventBytesThreshold is the most body bytes kept for one request or
+// response (SOCKET_DATA_EVENT_BYTES_THRESHOLD). Longer bodies are emitted
+// truncated to this size; start line and headers are always kept whole.
+var SocketDataEventBytesThreshold = 10 * 1024 * 1024
+
 const EnvoyProxyIp = "127.0.0.6"
 
 // HostMappingPath is the root where the real host filesystem is visible (Docker: "/host"
@@ -100,6 +105,7 @@ func init() {
 	InitVar("AKTO_FAST_PARSER", &FastParser)
 	InitVar("AKTO_FAST_PARSER_GUNZIP", &FastParserGunzip)
 	InitVar("AKTO_FAST_PARSER_CHUNK_ENCODING", &FastParserChunkEncoding)
+	InitVar("SOCKET_DATA_EVENT_BYTES_THRESHOLD", &SocketDataEventBytesThreshold)
 }
 
 func InitVar(envVarName string, targetVar interface{}) {

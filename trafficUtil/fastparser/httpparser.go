@@ -112,6 +112,11 @@ type Parser struct {
 	Gunzip bool
 
 	HandleChunkEncoding bool
+
+	// AllowTruncatedBody accepts a chunked body that ends early (the capture
+	// kept only a prefix of the message) and returns the decoded prefix.
+	// Framing errors other than running out of bytes still fail.
+	AllowTruncatedBody bool
 }
 
 func NewFastParser() *Parser { return &Parser{} }
@@ -148,7 +153,7 @@ func (p *Parser) ParseRequest(buf []byte) (*Request, error) {
 	}
 	body := buf[i:n]
 	if p.HandleChunkEncoding && isChunked(r.Headers) {
-		body, err = decodeChunkedInPlace(body)
+		body, err = decodeChunked(body, p.AllowTruncatedBody)
 		if err != nil {
 			return nil, err
 		}
@@ -202,7 +207,7 @@ func (p *Parser) ParseResponse(buf []byte) (*Response, error) {
 	// Decoding order mirrors the wire order in reverse: on the wire the body is
 	// gzipped first, then chunk-framed, so we de-chunk first, then gunzip.
 	if p.HandleChunkEncoding && isChunked(r.Headers) {
-		body, err = decodeChunkedInPlace(body)
+		body, err = decodeChunked(body, p.AllowTruncatedBody)
 		if err != nil {
 			return nil, err
 		}
@@ -337,6 +342,12 @@ func gunzipBody(body []byte) ([]byte, error) {
 // (bad hex size, truncated chunk, missing CRLF, no terminator) returns
 // ErrMalformed rather than panicking.
 func decodeChunkedInPlace(body []byte) ([]byte, error) {
+	return decodeChunked(body, false)
+}
+
+// decodeChunked is decodeChunkedInPlace; with allowTruncated, running out of
+// input returns the bytes decoded so far (including a partial last chunk).
+func decodeChunked(body []byte, allowTruncated bool) ([]byte, error) {
 	n := len(body)
 	w, r := 0, 0
 	for {
@@ -358,6 +369,9 @@ func decodeChunkedInPlace(body []byte) ([]byte, error) {
 			r++
 		}
 		if digits == 0 {
+			if allowTruncated && r == n {
+				return body[:w], nil
+			}
 			return nil, ErrMalformed // size line had no hex digit
 		}
 		// skip optional chunk extension: everything up to CR
@@ -366,6 +380,9 @@ func decodeChunkedInPlace(body []byte) ([]byte, error) {
 		}
 		// require CRLF ending the size line
 		if r+1 >= n || body[r] != '\r' || body[r+1] != '\n' {
+			if allowTruncated && r+1 >= n {
+				return body[:w], nil
+			}
 			return nil, ErrMalformed
 		}
 		r += 2
@@ -377,6 +394,11 @@ func decodeChunkedInPlace(body []byte) ([]byte, error) {
 
 		// ---- chunk data: exactly `size` bytes, then CRLF ----
 		if r+size+2 > n { // data + trailing CRLF must fit
+			if allowTruncated {
+				k := min(size, n-r)
+				copy(body[w:w+k], body[r:r+k])
+				return body[:w+k], nil
+			}
 			return nil, ErrMalformed
 		}
 		// compact leftward; copy handles w<r safely (and w==r is a no-op copy).

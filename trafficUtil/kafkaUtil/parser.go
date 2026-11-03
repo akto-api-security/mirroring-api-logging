@@ -267,8 +267,6 @@ func shouldProcessRequest(req *http.Request, reqHeaders map[string]string, ctx T
 }
 
 var (
-	goodRequests               = 0
-	badRequests                = 0
 	debugMode                  = false
 	dataPrintMode              = false
 	outputBandwidthLimitPerMin = -1
@@ -772,15 +770,26 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 	trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
 
 	if shouldPrint {
-		if strings.Contains(responsesContent[i], headers.DebugID) {
-			goodRequests++
-		} else {
-			slog.Debug("req-resp.String()", append(TrafficConnIDLogArgs(ctx.ConnID), "out", string(out))...)
-			badRequests++
-		}
+		countDebugPair(headers.DebugID, responsesContent[i], ctx, out)
+	}
+}
 
-		if goodRequests%10 == 0 || badRequests%10 == 0 {
-			slog.Debug("Good requests", append(TrafficConnIDLogArgs(ctx.ConnID), "count", goodRequests, "badRequests", badRequests)...)
-		}
+// Pairs checked by countDebugPair. Pairs are produced from several goroutines.
+var goodRequests, badRequests atomic.Int64
+
+// countDebugPair checks a pair whose request carried an x-debug-token header
+// (DEBUG_MODE) against an echo server: the response body must contain the same
+// token, otherwise the request was paired with another exchange's response.
+func countDebugPair(debugID, responseBody string, ctx TrafficContext, out []byte) {
+	var good, bad int64
+	if strings.Contains(responseBody, debugID) {
+		good, bad = goodRequests.Add(1), badRequests.Load()
+	} else {
+		slog.Debug("req-resp.String()", append(TrafficConnIDLogArgs(ctx.ConnID), "out", string(out))...)
+		good, bad = goodRequests.Load(), badRequests.Add(1)
+	}
+
+	if good%10 == 0 || bad%10 == 0 {
+		slog.Debug("Good requests", append(TrafficConnIDLogArgs(ctx.ConnID), "count", good, "badRequests", bad)...)
 	}
 }
