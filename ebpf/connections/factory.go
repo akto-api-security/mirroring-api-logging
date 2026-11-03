@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/structs"
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/kafkaUtil"
 	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"github.com/google/uuid"
 )
@@ -295,7 +296,7 @@ var (
 
 // StatsArgs returns the capture counters as slog key/value pairs and resets them.
 func StatsArgs() []any {
-	return []any{
+	args := []any{
 		"connections", activeConns.Load(),
 		"held_kb", heldBytes.Load() / 1024,
 		"pairs", pairsEmitted.Swap(0),
@@ -314,4 +315,9 @@ func StatsArgs() []any {
 		"unanswered_at_end", unansweredAtEnd.Swap(0),
 		"tls_without_plaintext", tlsWithoutPlaintext.Swap(0),
 	}
+	if good, bad, on := kafkaUtil.DebugPairCounts(); on {
+		// x-debug-token check (DEBUG_MODE), totals since start.
+		args = append(args, "debug_good_total", good, "debug_bad_total", bad)
+	}
+	return args
 }

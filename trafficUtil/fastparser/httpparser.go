@@ -60,6 +60,9 @@ func (r *Request) Host() []byte { return headerValue(r.Headers, "Host") }
 // Header returns the first matching header value (case-insensitive), or nil.
 func (r *Request) Header(name string) []byte { return headerValue(r.Headers, name) }
 
+// Header returns the first value of the named header (case-insensitive), or nil.
+func (r *Response) Header(name string) []byte { return headerValue(r.Headers, name) }
+
 func headerValue(hs []Header, name string) []byte {
 	for i := range hs {
 		if asciiEqualFold(hs[i].Name, name) {

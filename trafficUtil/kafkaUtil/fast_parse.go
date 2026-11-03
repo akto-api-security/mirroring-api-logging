@@ -141,8 +141,8 @@ func produceFast(req *fastparser.Request, resp *fastparser.Response, ctx Traffic
 	checkDebugUrlAndPrint(path, host, "URL,host found in fastParseAndProduce")
 
 	if debugMode {
-		if token := req.Header("x-debug-token"); token != nil {
-			countDebugPair(string(token), string(resp.Body), ctx, out)
+		if token := req.Header("x-debug-token"); len(token) > 0 {
+			countDebugPair(string(token), string(resp.Header("x-debug-token")), string(resp.Body), ctx, out)
 		}
 	}
 }
