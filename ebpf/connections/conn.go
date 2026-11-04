@@ -44,7 +44,6 @@ type conn struct {
 	id     structs.ConnID
 	laddr  uint32
 	lport  uint16 // local port, host byte order (id.Port is the remote port, network order)
-	opened bool   // the open event was seen, so laddr/lport are known
 
 	ssl    bool
 	state  connState
@@ -297,14 +296,18 @@ func requestLineStart(b []byte) int {
 	return -1
 }
 
+// remotePort is the peer's port in host byte order (the kernel keeps it as the
+// network sent it, big-endian).
+func (c *conn) remotePort() uint16 { return c.id.Port>>8 | c.id.Port<<8 }
+
 // ignoredPort reports whether the server side of the connection listens on an
 // ignored port. reqDir tells which side is the server: requests read by the
 // traced process mean it accepted the connection on its local port.
 func (c *conn) ignoredPort(reqDir uint8) bool {
 	if reqDir == dirRecv {
-		return c.opened && ignoredServerPort(c.lport)
+		return c.lport != 0 && ignoredServerPort(c.lport)
 	}
-	return ignoredServerPort(c.id.Port>>8 | c.id.Port<<8)
+	return ignoredServerPort(c.remotePort())
 }
 
 func (c *conn) classify(dir uint8, data []byte, attr *structs.SocketDataEventAttr) {

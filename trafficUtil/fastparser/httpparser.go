@@ -312,7 +312,7 @@ func isChunked(hs []Header) bool {
 
 // isGzip reports whether the body is gzip-compressed via Content-Encoding.
 // Last Content-Encoding header wins; the WHOLE value (after OWS trim) must be
-// "gzip". 
+// "gzip".
 // TODO: Coding lists like "gzip, br" are left alone — decoding a stacked
 // encoding is out of scope.
 func isGzip(hs []Header) bool {

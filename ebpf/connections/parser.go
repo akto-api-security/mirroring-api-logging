@@ -33,7 +33,7 @@ func (c *conn) trafficContext() (*kafkaUtil.TrafficContext, bool) {
 	if c.ctx != nil {
 		return c.ctx, true
 	}
-	remote := formatAddr(c.id.Ip, c.id.Port)
+	remote := formatAddr(c.id.Ip, c.remotePort())
 	local := formatAddr(c.laddr, c.lport)
 	ctx := &kafkaUtil.TrafficContext{
 		SourceIP:            remote,

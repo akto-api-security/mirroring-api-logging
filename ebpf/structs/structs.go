@@ -62,11 +62,15 @@ type SocketDataEventAttr struct {
 	// the socket last changed direction). 0 means nothing of this run is
 	// missing before this chunk.
 	LostRun uint32
+	// Laddr, Lport: the socket's local address (host-order port), as in the
+	// open record, so it is known even without the open record.
+	Laddr uint32
+	Lport uint32
 }
 
 // MsgPayloadOffset is the byte offset of msg[] in socket_data_event_t (C
 // layout); it equals the Go size of SocketDataEventAttr.
-const MsgPayloadOffset = 56
+const MsgPayloadOffset = 64
 
 // MAX_MSG_SIZE must match the C define in module.bpf.c (30720).
 

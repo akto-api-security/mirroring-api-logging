@@ -216,6 +216,11 @@ struct conn_info_t {
      * is a safe point for userspace to resume framing. */
     u32 lost_run;
     u32 run_dir;
+    /* Local address of the socket (skc_rcv_saddr, skc_num in host order),
+     * stamped on every data record so userspace always knows both ends,
+     * even when it never saw the open record. */
+    u32 laddr;
+    u32 lport;
 };
 
 /*
@@ -274,8 +279,12 @@ struct akto_socket {
     __u16  type;
     __u16  _pad;
     __u64  flags;
-    __u64  file;
-    __u64  sk;    /* struct sock * stored as u64 to avoid CO-RE on the pointer type */
+    /* The pointers after flags differ by kernel: 5.3+ has file, sk, ops;
+     * older kernels (RHEL 8's 4.18) have wq, file, sk. Stored as u64 to avoid
+     * CO-RE on struct socket; sk is picked by checking sk->sk_socket. */
+    __u64  p0;
+    __u64  p1;
+    __u64  p2;
 };
 
 struct accept_args_t {
@@ -356,6 +365,9 @@ struct socket_data_event_t {
      * and how many of them belong to this chunk's own run. */
     u32 lost;
     u32 lost_run;
+    /* Local address of the socket (see conn_info_t). */
+    u32 laddr;
+    u32 lport;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -744,7 +756,14 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
         struct akto_socket sock_hdr = {};
         if (bpf_probe_read_kernel(&sock_hdr, sizeof(sock_hdr),
                                   args.sock_alloc_socket) == 0) {
-            struct sock* sk = (struct sock *)(unsigned long)sock_hdr.sk;
+            /* The real sk points back to this socket (sk->sk_socket). */
+            struct sock* sk = (struct sock *)(unsigned long)sock_hdr.p1;
+            if (sk == NULL || BPF_CORE_READ(sk, sk_socket) != args.sock_alloc_socket) {
+                sk = (struct sock *)(unsigned long)sock_hdr.p2;
+                if (sk != NULL && BPF_CORE_READ(sk, sk_socket) != args.sock_alloc_socket) {
+                    sk = NULL;
+                }
+            }
 
             if (sk != NULL) {
                 uint16_t family = BPF_CORE_READ(sk, __sk_common.skc_family);
@@ -836,6 +855,8 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     conn_info.ssl = false;
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
+    conn_info.laddr = srcIp;
+    conn_info.lport = lport;
 
     if (filter_local_traffic && conn_info.ip == local_traffic_ip) {
         if (print_bpf_logs) {
@@ -1094,6 +1115,8 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
         size_to_save = read_size;
         socket_data_event->lost = *lost_p;
         socket_data_event->lost_run = *lost_run_p;
+        socket_data_event->laddr = conn_info.laddr;
+        socket_data_event->lport = conn_info.lport;
 
         socket_data_event->writeEventsCount = conn_info_p->writeEventsCount;
         socket_data_event->readEventsCount  = conn_info_p->readEventsCount;

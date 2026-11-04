@@ -155,6 +155,11 @@ func (s *Shard) HandleRecord(data []byte, now time.Time) {
 			return
 		}
 		if c := s.get(attr.ConnId, true, nowNs); c != nil {
+			if c.lport == 0 && attr.Lport != 0 {
+				// No open record seen (lost, or the conn was swept and recreated):
+				// every data record carries the local address too.
+				c.laddr, c.lport = attr.Laddr, uint16(attr.Lport)
+			}
 			c.onData(&attr, data[structs.MsgPayloadOffset:structs.MsgPayloadOffset+n])
 		}
 	case structs.EventOpen:
@@ -164,7 +169,6 @@ func (s *Shard) HandleRecord(data []byte, now time.Time) {
 		ev := (*structs.SocketOpenEvent)(unsafe.Pointer(&data[0]))
 		if c := s.get(ev.ConnId, true, nowNs); c != nil {
 			c.laddr, c.lport, c.ctx = ev.SrcIp, ev.SrcPort, nil
-			c.opened = true
 		}
 	case structs.EventClose:
 		if len(data) < closeEventSize {

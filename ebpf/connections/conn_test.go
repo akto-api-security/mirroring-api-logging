@@ -30,6 +30,8 @@ type sim struct {
 	ssl     bool
 	chunk   int
 	lose    func(dir uint8) bool // chunk is counted but not delivered
+	laddr   uint32               // local address stamped on data records
+	lport   uint16
 }
 
 type pair struct {
@@ -61,7 +63,8 @@ func newSim(t *testing.T, sh *Shard) *sim {
 	nextFd++
 	return &sim{
 		t: t, sh: sh, chunk: 30720, runDir: -1,
-		id: structs.ConnID{Id: 42 << 32, Fd: nextFd, Conn_start_ns: uint64(nextFd), Port: 443, Ip: 0x0100000a},
+		id:    structs.ConnID{Id: 42 << 32, Fd: nextFd, Conn_start_ns: uint64(nextFd), Port: 443, Ip: 0x0100000a},
+		laddr: 0x0c80000a, lport: 443,
 	}
 }
 
@@ -126,6 +129,8 @@ func (s *sim) syscall(dir uint8, data string) {
 		}
 		binary.LittleEndian.PutUint32(b[48:], s.lost[dir])
 		binary.LittleEndian.PutUint32(b[52:], s.lostRun)
+		binary.LittleEndian.PutUint32(b[56:], s.laddr)
+		binary.LittleEndian.PutUint32(b[60:], uint32(s.lport))
 		s.lost[dir], s.lostRun = 0, 0
 		copy(b[structs.MsgPayloadOffset:], data[off:end])
 		s.sh.HandleRecord(b, time.Now())
@@ -856,5 +861,27 @@ func TestLostStartDetectsAtNextCleanRun(t *testing.T) {
 	}
 	if len(cp.pairs) != 1 || idOf(cp.pairs[0].req) != "3" || idOf(cp.pairs[0].resp) != "3" {
 		t.Fatalf("got %+v", cp.pairs)
+	}
+}
+
+// Addresses: the remote port arrives in network byte order and must be shown
+// in host order; the local address comes from the open record or, without
+// one, from any data record.
+func TestTrafficContextAddresses(t *testing.T) {
+	newCapture(t)
+	sh := newShard()
+	s := newSim(t, sh)
+	s.id.Port = 51234>>8 | (51234&0xff)<<8 // 51234 as the kernel stores it
+	s.read(req(1, ""))                     // no open record
+	c := sh.conns[s.id.Key()]
+	if c == nil {
+		t.Fatal("no conn")
+	}
+	ctx, ok := c.trafficContext()
+	if !ok {
+		t.Fatal("no context")
+	}
+	if ctx.SourceIP != "10.0.0.1:51234" || ctx.DestIP != "10.0.128.12:443" {
+		t.Fatalf("source %s dest %s", ctx.SourceIP, ctx.DestIP)
 	}
 }
