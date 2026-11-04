@@ -86,6 +86,7 @@ struct user_pt_regs {
   #define SYSCALL_PARM1(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[0])
   #define SYSCALL_PARM2(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[1])
   #define SYSCALL_PARM3(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[2])
+  #define SYSCALL_PARM4(ctx) BPF_CORE_READ(__syscall_user_regs_ptr(ctx), regs[3])
 #elif defined(TARGET_ARCH_X86_64)
   #define SYSCALL_PARM1(ctx) \
       BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), di)
@@ -93,10 +94,19 @@ struct user_pt_regs {
       BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), si)
   #define SYSCALL_PARM3(ctx) \
       BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), dx)
+  /* 4th syscall argument is r10 on x86-64 (rcx is clobbered by syscall). */
+  #define SYSCALL_PARM4(ctx) \
+      BPF_CORE_READ((const struct pt_regs *)PT_REGS_PARM1(ctx), r10)
 #else
   #define SYSCALL_PARM1(ctx) PT_REGS_PARM1_CORE_SYSCALL(ctx)
   #define SYSCALL_PARM2(ctx) PT_REGS_PARM2_CORE_SYSCALL(ctx)
   #define SYSCALL_PARM3(ctx) PT_REGS_PARM3_CORE_SYSCALL(ctx)
+  #define SYSCALL_PARM4(ctx) PT_REGS_PARM4_CORE_SYSCALL(ctx)
+#endif
+
+/* recv flag: data is returned but stays in the socket and is read again. */
+#ifndef MSG_PEEK
+#define MSG_PEEK 2
 #endif
 
 /*
@@ -116,6 +126,13 @@ volatile const bool filter_strict_remote_port = false;
 volatile const __u16 strict_remote_port = 10275;
 /* When true (env TRAFFIC_DISABLE_PERF_SUBMIT), skip all ringbuf_output calls. */
 volatile const bool disable_ring_submit = false;
+/* When true (env TRAFFIC_DISABLE_EGRESS, default on), skip registering conn_info_map
+ * entries for connect()-originated sockets — this process acting as a TCP client
+ * (e.g. nginx -> upstream). Userspace already discards this side when building Kafka
+ * messages (ebpf/connections/factory.go); doing it here means those sockets never
+ * reach conn_info_map, the data/open/close ring buffers, or the Go tracker at all.
+ * accept()-originated (ingress) sockets are unaffected. */
+volatile const bool disable_egress_capture = true;
 
 /*
  * CHUNK_SIZE_LIMIT must be a compile-time constant because it is used as the
@@ -188,6 +205,22 @@ struct conn_info_t {
     bool ssl;
     u32 readEventsCount;
     u32 writeEventsCount;
+    /* Bytes of each direction not delivered since the last delivered chunk
+     * of that direction (ring full, failed user read, chunk-limit cut,
+     * ingest paused). Stamped on the next delivered chunk, then cleared. */
+    u32 lost_read;
+    u32 lost_write;
+    /* The part of lost_* that fell in the current run of that direction
+     * (a run ends when the socket's direction changes), and that direction:
+     * 0 none yet, 1 read, 2 write. A chunk whose run lost nothing before it
+     * is a safe point for userspace to resume framing. */
+    u32 lost_run;
+    u32 run_dir;
+    /* Local address of the socket (skc_rcv_saddr, skc_num in host order),
+     * stamped on every data record so userspace always knows both ends,
+     * even when it never saw the open record. */
+    u32 laddr;
+    u32 lport;
 };
 
 /*
@@ -246,8 +279,12 @@ struct akto_socket {
     __u16  type;
     __u16  _pad;
     __u64  flags;
-    __u64  file;
-    __u64  sk;    /* struct sock * stored as u64 to avoid CO-RE on the pointer type */
+    /* The pointers after flags differ by kernel: 5.3+ has file, sk, ops;
+     * older kernels (RHEL 8's 4.18) have wq, file, sk. Stored as u64 to avoid
+     * CO-RE on struct socket; sk is picked by checking sk->sk_socket. */
+    __u64  p0;
+    __u64  p1;
+    __u64  p2;
 };
 
 struct accept_args_t {
@@ -265,15 +302,37 @@ struct data_args_t {
     const struct iovec* iov;
     int iovlen;
     int buf_size;
+    /* SSL_read_ex / SSL_write_ex: they return 1/0 and report the byte count
+     * through this out-pointer (NULL for every other source). */
+    size_t* ex_bytes;
+    /* SSL_* calls: the SSL object, so a syscall made inside the call can bind
+     * the real socket fd to it (see bind_pending_ssl_fd). */
+    u64 ssl_ptr;
+    /* SSL_*: get_fd layout code to read the fd again at return (0: none), and
+     * whether a syscall inside the call used another fd than the SSL object's. */
+    u32 ssl_ver;
+    u32 other_fd; /* SSL_*: fd of a syscall inside the call that differs from fd */
 };
 
 struct close_args_t {
     u32 fd;
 };
 
+/*
+ * Every record on a socket_data_events_N ring starts with the same conn id
+ * prefix. `kind` sits in what used to be the alignment hole after fd, so the
+ * offsets of all other fields are unchanged.
+ */
+enum event_kind_t {
+    kEventData  = 0,
+    kEventOpen  = 1,
+    kEventClose = 2,
+};
+
 struct socket_open_event_t {
     u64 id;
     u32 fd;
+    u32 kind;
     u64 conn_start_ns;
     unsigned short port;
     u32 ip;
@@ -285,15 +344,23 @@ struct socket_open_event_t {
 struct socket_close_event_t {
     u64 id;
     u32 fd;
+    u32 kind;
     u64 conn_start_ns;
     unsigned short port;
     u32 ip;
     u64 socket_close_ns;
+    /* Final per-direction chunk counters and undelivered bytes, so
+     * userspace can tell whether the tail of the last message was lost. */
+    u32 readEventsCount;
+    u32 writeEventsCount;
+    u32 lost_read;
+    u32 lost_write;
 };
 
 struct socket_data_event_t {
     u64 id;
     u32 fd;
+    u32 kind;
     u64 conn_start_ns;
     unsigned short port;
     u32 ip;
@@ -301,6 +368,13 @@ struct socket_data_event_t {
     u32 readEventsCount;
     u32 writeEventsCount;
     bool ssl;
+    /* Bytes of this direction lost right before this chunk (see conn_info_t),
+     * and how many of them belong to this chunk's own run. */
+    u32 lost;
+    u32 lost_run;
+    /* Local address of the socket (see conn_info_t). */
+    u32 laddr;
+    u32 lport;
     char msg[MAX_MSG_SIZE];
 };
 
@@ -308,30 +382,19 @@ struct socket_data_event_t {
  * BPF maps — BTF-typed declarations replacing BCC macros
  * =================================================================== */
 
+/*
+ * LRU so entries whose close() we never saw (process exit, fd passed on)
+ * age out on their own. This replaces a hand-rolled ring of keys whose
+ * counter was bumped without atomics: two CPUs accepting at once got the
+ * same slot, and the second deleted the connection the first had just
+ * registered, so that connection was never captured.
+ */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
     __type(key, u64);
     __type(value, struct conn_info_t);
 } conn_info_map SEC(".maps");
-
-/*
- * conn_info_map_keys: rotating ring of active conn_info_map keys.
- * BPF array keys are always u32 (array index); value is the u64 tgid_fd.
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, TRAFFIC_MAX_CONNECTION_MAP_SIZE);
-    __type(key, u32);
-    __type(value, u64);
-} conn_info_map_keys SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, int);
-} conn_counter SEC(".maps");
 
 /* Total socket_data bpf_ringbuf_output calls (userspace reads for windowed logs). */
 struct {
@@ -376,6 +439,54 @@ struct {
     __type(value, u64);
 } socket_close_submit_failed_total SEC(".maps");
 
+/* TLS calls whose plaintext could not be put on a connection: no fd from the
+ * SSL object nor from a syscall inside the call, or the two disagreed. Each
+ * becomes a hole of unknown size (see ssl_hole_map), never a silent gap. */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} ssl_fd_resolve_failed_total SEC(".maps");
+
+/* Returns never observed, noticed at the thread's next call (syscall / TLS). */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} missed_syscall_return_total SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} missed_ssl_return_total SEC(".maps");
+
+/*
+ * (process, SSL object) -> directions owing a hole: a TLS call of this session
+ * moved plaintext that could not be put on a connection. The session's next
+ * call in that direction marks the hole on its connection before its own
+ * bytes. An SSL object is used by one thread at a time, so that is exactly
+ * where the missing bytes sat in that direction's stream.
+ */
+struct ssl_hole_key_t {
+    u64 ssl;
+    u32 tgid;
+    u32 pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct ssl_hole_key_t);
+    __type(value, u32); /* bit 0: read, bit 1: write */
+} ssl_hole_map SEC(".maps");
+
+/* fd value meaning "could not be determined" (never 0: 0 is a real fd). */
+#define SSL_FD_UNKNOWN 0xFFFFFFFFu
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
@@ -415,16 +526,6 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, SOCKET_DATA_RINGBUF_SHARD_SIZE);
 } socket_data_events_7 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 64 * 1024 * 1024);
-} socket_open_events SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 64 * 1024 * 1024);
-} socket_close_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -615,7 +716,16 @@ static __always_inline u32 socket_data_event_output_len(u32 msg_len) {
     return out;
 }
 
-static __noinline long output_to_data_shard(void *data, u64 size) {
+/*
+ * All records of one connection (open, data, close) go to the same shard, so
+ * the shard's single userspace reader sees them in syscall order. Sharding by
+ * CPU would split a connection across readers and lose that order.
+ */
+static __always_inline u32 conn_shard(u64 tgid_fd) {
+    return (u32)((tgid_fd * 0x9E3779B97F4A7C15ULL) >> 61) & (SOCKET_DATA_RINGBUF_SHARDS - 1);
+}
+
+static __noinline long output_to_data_shard(void *data, u64 size, u64 tgid_fd) {
     /*
      * bpf_ringbuf_output size (R3) must be provably bounded on older verifiers
      * (e.g. RHEL 8 / 4.18): "R3 unbounded memory access, use 'if (var < const)'".
@@ -630,7 +740,7 @@ static __noinline long output_to_data_shard(void *data, u64 size) {
         nbytes = (__u32)size;
     }
 
-    u32 shard = bpf_get_smp_processor_id() & (SOCKET_DATA_RINGBUF_SHARDS - 1);
+    u32 shard = conn_shard(tgid_fd);
     switch (shard) {
     case 0: return bpf_ringbuf_output(&socket_data_events_0, data, nbytes, 0);
     case 1: return bpf_ringbuf_output(&socket_data_events_1, data, nbytes, 0);
@@ -648,12 +758,100 @@ static __always_inline u64 gen_tgid_fd(u32 tgid, int fd) {
   return ((u64)tgid << 32) | (u32)fd;
 }
 
+/*
+ * Missed returns. A call's return can go unseen: a kretprobe runs out of
+ * return instances (kernel default maxactive is the CPU count on RHEL 8;
+ * userspace raises it, see KRETPROBE_MAXACTIVE), or the call started between
+ * the attach of its entry and its return probe (userspace attaches returns
+ * first). The call's entry args then stay in its active_*_args map, and the
+ * data it moved is neither delivered nor counted: userspace would splice the
+ * bytes around it, or mistake the next request for pipelining.
+ *
+ * A thread can't start a new call of the same kind while one is in flight, so
+ * an entry still present when the next one starts is a missed return. Count
+ * one chunk on that connection and flag the hole as LOST_UNKNOWN (its size is
+ * unknown): userspace then never counts it into a body and resyncs at the next
+ * clean message start.
+ */
+#define LOST_UNKNOWN 0x80000000u
+
+/* A hole of unknown size in one direction of (tgid, fd), at this point. */
+static __always_inline void mark_unknown_hole(u32 tgid, u32 fd, bool is_send, bool ssl) {
+    u64 tgid_fd = gen_tgid_fd(tgid, fd);
+    struct conn_info_t* c = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+    if (c == NULL || c->ssl != ssl) {
+        return;
+    }
+    u32 run_dir = is_send ? 2u : 1u;
+    if (c->run_dir != run_dir) {
+        c->run_dir = run_dir;
+        c->lost_run = 0;
+    }
+    if (is_send) {
+        c->writeEventsCount += 1u;
+        c->lost_write |= LOST_UNKNOWN;
+    } else {
+        c->readEventsCount += 1u;
+        c->lost_read |= LOST_UNKNOWN;
+    }
+    c->lost_run |= LOST_UNKNOWN;
+}
+
+static __always_inline void account_missed_return(u64 id, const struct data_args_t* args,
+                                                  bool is_send, bool ssl) {
+    if (ssl) {
+        increment_counter(&missed_ssl_return_total);
+    } else {
+        increment_counter(&missed_syscall_return_total);
+    }
+    mark_unknown_hole(id >> 32, args->fd, is_send, ssl);
+}
+
+/* Defined with the SSL probes below; syscall entries call them. */
+static void set_conn_as_ssl(u32 tgid, u32 fd);
+static __always_inline void bind_pending_ssl_fd(u64 id, u32 fd, bool is_send);
+
+/* Called at every syscall data entry: syscalls don't nest on one thread. */
+static __always_inline void note_missed_syscall_returns(u64 id) {
+    struct data_args_t* a = bpf_map_lookup_elem(&active_read_args_map, &id);
+    if (a != NULL) {
+        account_missed_return(id, a, false, false);
+        bpf_map_delete_elem(&active_read_args_map, &id);
+    }
+    a = bpf_map_lookup_elem(&active_write_args_map, &id);
+    if (a != NULL) {
+        account_missed_return(id, a, true, false);
+        bpf_map_delete_elem(&active_write_args_map, &id);
+    }
+}
+
+/* Called at every SSL data entry: no syscall or SSL call is in flight on this
+ * thread when the application calls into SSL_read/SSL_write. */
+static __always_inline void note_missed_returns_at_ssl_entry(u64 id) {
+    note_missed_syscall_returns(id);
+    struct data_args_t* a = bpf_map_lookup_elem(&active_ssl_read_args_map, &id);
+    if (a != NULL) {
+        account_missed_return(id, a, false, true);
+        bpf_map_delete_elem(&active_ssl_read_args_map, &id);
+    }
+    a = bpf_map_lookup_elem(&active_ssl_write_args_map, &id);
+    if (a != NULL) {
+        account_missed_return(id, a, true, true);
+        bpf_map_delete_elem(&active_ssl_write_args_map, &id);
+    }
+}
+
 static __always_inline void process_syscall_accept(struct pt_regs* ctx,
                                              const struct accept_args_t* args_in,
                                              u64 id, bool isConnect) {
     if (args_in == NULL) {
         return;
     }
+
+    if (isConnect && disable_egress_capture) {
+        return;
+    }
+
     struct accept_args_t args = *args_in;
 
     int ret_fd = PT_REGS_RC(ctx);
@@ -696,7 +894,14 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
         struct akto_socket sock_hdr = {};
         if (bpf_probe_read_kernel(&sock_hdr, sizeof(sock_hdr),
                                   args.sock_alloc_socket) == 0) {
-            struct sock* sk = (struct sock *)(unsigned long)sock_hdr.sk;
+            /* The real sk points back to this socket (sk->sk_socket). */
+            struct sock* sk = (struct sock *)(unsigned long)sock_hdr.p1;
+            if (sk == NULL || BPF_CORE_READ(sk, sk_socket) != args.sock_alloc_socket) {
+                sk = (struct sock *)(unsigned long)sock_hdr.p2;
+                if (sk != NULL && BPF_CORE_READ(sk, sk_socket) != args.sock_alloc_socket) {
+                    sk = NULL;
+                }
+            }
 
             if (sk != NULL) {
                 uint16_t family = BPF_CORE_READ(sk, __sk_common.skc_family);
@@ -788,6 +993,8 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
     conn_info.ssl = false;
     conn_info.readEventsCount = 0;
     conn_info.writeEventsCount = 0;
+    conn_info.laddr = srcIp;
+    conn_info.lport = lport;
 
     if (filter_local_traffic && conn_info.ip == local_traffic_ip) {
         if (print_bpf_logs) {
@@ -804,71 +1011,31 @@ static __always_inline void process_syscall_accept(struct pt_regs* ctx,
         tgid_fd = gen_tgid_fd(tgid, ret_fd);
     }
 
-    u32 idx = 0;
-    int *counter = bpf_map_lookup_elem(&conn_counter, &idx);
-    int  val = 0;
-    u32  val_key = 0;
-    if (counter != NULL) {
-        int c = *counter;
-        if (c > (TRAFFIC_MAX_CONNECTION_MAP_SIZE - 5)) {
-            if (print_bpf_logs) {
-                bpf_printk("conn_info_counter reset: %d", c);
-            }
-            c = 0;
-        }
-        c++;
-        bpf_map_update_elem(&conn_counter, &idx, &c, BPF_ANY);
-        val     = c;
-        val_key = (u32)val;
-        if (print_bpf_logs) {
-            bpf_printk("conn_info_counter found: %d", val);
-        }
-        u64* curr = bpf_map_lookup_elem(&conn_info_map_keys, &val_key);
-        if (curr != NULL) {
-            u64 curVal = *curr;
-            struct conn_info_t* old_conn_info = bpf_map_lookup_elem(&conn_info_map, &curVal);
-            if (old_conn_info != NULL) {
-                bpf_map_delete_elem(&conn_info_map, &curVal);
-                if (print_bpf_logs) {
-                    bpf_printk("conn_info_counter deleting: %d", curVal);
-                }
-            }
-        }
-    }
-
-    bpf_map_update_elem(&conn_info_map_keys, &val_key, &tgid_fd, BPF_ANY);
     bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn_info, BPF_ANY);
 
-    struct socket_open_event_t *socket_open_event = NULL;
-
     if (!disable_ring_submit) {
-        increment_counter(&socket_open_submit_total);
-        socket_open_event = bpf_ringbuf_reserve(&socket_open_events,
-                                                sizeof(struct socket_open_event_t), 0);
-        if (socket_open_event == NULL) {
-            increment_counter(&socket_open_submit_failed_total);
-            return;
-        }
-
-        socket_open_event->id             = conn_info.id;
-        socket_open_event->fd             = conn_info.fd;
-        socket_open_event->conn_start_ns  = conn_info.conn_start_ns;
-        socket_open_event->port           = conn_info.port;
-        socket_open_event->ip             = conn_info.ip;
-        socket_open_event->src_ip         = srcIp;
-        socket_open_event->src_port       = lport;
-        socket_open_event->socket_open_ns = conn_info.conn_start_ns;
+        struct socket_open_event_t socket_open_event = {};
+        socket_open_event.id             = conn_info.id;
+        socket_open_event.fd             = conn_info.fd;
+        socket_open_event.kind           = kEventOpen;
+        socket_open_event.conn_start_ns  = conn_info.conn_start_ns;
+        socket_open_event.port           = conn_info.port;
+        socket_open_event.ip             = conn_info.ip;
+        socket_open_event.src_ip         = srcIp;
+        socket_open_event.src_port       = lport;
+        socket_open_event.socket_open_ns = conn_info.conn_start_ns;
 
         if (print_bpf_logs) {
             bpf_printk("accept call: %llu %d %d",
-                             socket_open_event->id, socket_open_event->fd, isConnect);
+                             socket_open_event.id, socket_open_event.fd, isConnect);
             bpf_printk("accept call 2: %llu %d %d",
-                             socket_open_event->ip, socket_open_event->port, isConnect);
-            bpf_printk("accept call 3: %llu %d %d",
-                             socket_open_event->src_ip, socket_open_event->src_port, isConnect);
+                             socket_open_event.ip, socket_open_event.port, isConnect);
         }
 
-        bpf_ringbuf_submit(socket_open_event, 0);
+        increment_counter(&socket_open_submit_total);
+        if (output_to_data_shard(&socket_open_event, sizeof(socket_open_event), tgid_fd) != 0) {
+            increment_counter(&socket_open_submit_failed_total);
+        }
     }
 }
 
@@ -899,19 +1066,21 @@ static __always_inline void process_syscall_close(struct pt_regs* ctx,
     struct conn_info_t conn_info = *conn_info_p;
 
     if (!disable_ring_submit) {
+        struct socket_close_event_t socket_close_event = {};
+        socket_close_event.id               = conn_info.id;
+        socket_close_event.fd               = conn_info.fd;
+        socket_close_event.kind             = kEventClose;
+        socket_close_event.conn_start_ns    = conn_info.conn_start_ns;
+        socket_close_event.port             = conn_info.port;
+        socket_close_event.ip               = conn_info.ip;
+        socket_close_event.socket_close_ns  = bpf_ktime_get_ns();
+        socket_close_event.readEventsCount  = conn_info.readEventsCount;
+        socket_close_event.writeEventsCount = conn_info.writeEventsCount;
+        socket_close_event.lost_read        = conn_info.lost_read;
+        socket_close_event.lost_write       = conn_info.lost_write;
         increment_counter(&socket_close_submit_total);
-        struct socket_close_event_t *socket_close_event =
-            bpf_ringbuf_reserve(&socket_close_events, sizeof(struct socket_close_event_t), 0);
-        if (socket_close_event == NULL) {
+        if (output_to_data_shard(&socket_close_event, sizeof(socket_close_event), tgid_fd) != 0) {
             increment_counter(&socket_close_submit_failed_total);
-        } else {
-            socket_close_event->id              = conn_info.id;
-            socket_close_event->fd              = conn_info.fd;
-            socket_close_event->conn_start_ns   = conn_info.conn_start_ns;
-            socket_close_event->port            = conn_info.port;
-            socket_close_event->ip              = conn_info.ip;
-            socket_close_event->socket_close_ns = bpf_ktime_get_ns();
-            bpf_ringbuf_submit(socket_close_event, 0);
         }
     }
     bpf_map_delete_elem(&conn_info_map, &tgid_fd);
@@ -952,6 +1121,16 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
     if (args.iovlen > 0 && args.buf_size > 0) {
         bytes_exchanged = args.buf_size;
     }
+    if (args.ex_bytes != NULL) {
+        if (PT_REGS_RC(ctx) != 1) {
+            return;
+        }
+        size_t n = 0;
+        if (bpf_probe_read_user(&n, sizeof(n), args.ex_bytes) != 0 || n > 0x7fffffff) {
+            return;
+        }
+        bytes_exchanged = (int)n;
+    }
 
     if (bytes_exchanged <= 0) {
         return;
@@ -991,7 +1170,32 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
         return;
     }
 
+    /*
+     * Counters are updated in place (not by writing back the conn_info copy),
+     * so a concurrent reader and writer on one socket can't undo each other's
+     * increments, and a concurrent set_conn_as_ssl isn't reverted.
+     *
+     * Every byte this syscall would have delivered but didn't is added to the
+     * direction's lost counter, and the next delivered chunk carries it.
+     * Userspace frames HTTP/1 messages by byte count, so it must know exactly
+     * how many bytes are missing and where; otherwise the bytes on either side
+     * would be spliced together.
+     */
+    u32 *lost_p = is_send ? &conn_info_p->lost_write : &conn_info_p->lost_read;
+    u32 *lost_run_p = &conn_info_p->lost_run;
+    u32 run_dir = is_send ? 2u : 1u;
+    if (conn_info_p->run_dir != run_dir) {
+        conn_info_p->run_dir = run_dir;
+        *lost_run_p = 0;
+    }
     if (is_system_cpu_ingest_paused()) {
+        if (is_send) {
+            conn_info_p->writeEventsCount += 1u;
+        } else {
+            conn_info_p->readEventsCount += 1u;
+        }
+        *lost_p += (u32)bytes_exchanged;
+        *lost_run_p += (u32)bytes_exchanged;
         return;
     }
 
@@ -1019,6 +1223,7 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
 
         socket_data_event->id            = conn_info.id;
         socket_data_event->fd            = conn_info.fd;
+        socket_data_event->kind          = kEventData;
         socket_data_event->conn_start_ns = conn_info.conn_start_ns;
         socket_data_event->port          = conn_info.port;
         socket_data_event->ip            = conn_info.ip;
@@ -1034,19 +1239,25 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
         u32 read_size = bounded_probe_read_user(
             socket_data_event, current_size,
             (const char *)args.buf + bytes_sent);
+
+        if (is_send) {
+            conn_info_p->writeEventsCount += 1u;
+        } else {
+            conn_info_p->readEventsCount += 1u;
+        }
         if (read_size == 0 && current_size > 0) {
+            *lost_p += (u32)bytes_remaining;
+            *lost_run_p += (u32)bytes_remaining;
             break;
         }
         size_to_save = read_size;
+        socket_data_event->lost = *lost_p;
+        socket_data_event->lost_run = *lost_run_p;
+        socket_data_event->laddr = conn_info.laddr;
+        socket_data_event->lport = conn_info.lport;
 
-        if (is_send) {
-            conn_info.writeEventsCount = conn_info.writeEventsCount + 1u;
-        } else {
-            conn_info.readEventsCount = conn_info.readEventsCount + 1u;
-        }
-
-        socket_data_event->writeEventsCount = conn_info.writeEventsCount;
-        socket_data_event->readEventsCount  = conn_info.readEventsCount;
+        socket_data_event->writeEventsCount = conn_info_p->writeEventsCount;
+        socket_data_event->readEventsCount  = conn_info_p->readEventsCount;
 
         if (print_bpf_logs) {
             bpf_printk("pid: %d conn-id:%d, fd: %d",
@@ -1065,15 +1276,71 @@ static __noinline void process_syscall_data(struct pt_regs* ctx,
             increment_counter(&socket_data_submit_total);
         }
         long ret = output_to_data_shard(socket_data_event,
-                                        socket_data_event_output_len(size_to_save));
-        if (ret != 0 && log_socket_data_submit_stats) {
-            increment_counter(&socket_data_submit_failed_total);
+                                        socket_data_event_output_len(size_to_save),
+                                        tgid_fd);
+        if (ret != 0) {
+            *lost_p += read_size;
+            *lost_run_p += read_size;
+            if (log_socket_data_submit_stats) {
+                increment_counter(&socket_data_submit_failed_total);
+            }
+        } else {
+            *lost_p = 0;
+            *lost_run_p = 0;
+        }
+        /* Last chunk of an oversized syscall: only MAX_MSG_SIZE was copied. */
+        if (current_size > read_size) {
+            *lost_p += current_size - read_size;
+            *lost_run_p += current_size - read_size;
         }
 
         bytes_sent += current_size;
     }
 
-    bpf_map_update_elem(&conn_info_map, &tgid_fd, &conn_info, BPF_ANY);
+}
+
+/*
+ * Bytes a tracked socket sent without passing through user memory (sendfile:
+ * the kernel copies file pages straight to the socket). They can't be
+ * captured, but they are counted as lost so userspace keeps exact byte
+ * positions in the stream: the message they belong to is cut at that point
+ * instead of absorbing the next message's bytes.
+ */
+static __always_inline void account_uncaptured(u64 id, u32 fd, bool is_send, u32 n) {
+    if (n == 0) {
+        return;
+    }
+    u64 tgid_fd = gen_tgid_fd(id >> 32, fd);
+    struct conn_info_t* conn_info_p = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+    if (conn_info_p == NULL || conn_info_p->ssl) {
+        return; /* a TLS connection's stream is the plaintext, not these bytes */
+    }
+    u32 run_dir = is_send ? 2u : 1u;
+    if (conn_info_p->run_dir != run_dir) {
+        conn_info_p->run_dir = run_dir;
+        conn_info_p->lost_run = 0;
+    }
+    if (is_send) {
+        conn_info_p->writeEventsCount += 1u;
+        conn_info_p->lost_write += n;
+    } else {
+        conn_info_p->readEventsCount += 1u;
+        conn_info_p->lost_read += n;
+    }
+    conn_info_p->lost_run += n;
+}
+
+static __noinline void account_unreadable(struct pt_regs* ctx,
+                                          const struct data_args_t* args_in,
+                                          u64 id, bool is_send) {
+    if (args_in == NULL) {
+        return;
+    }
+    int n = PT_REGS_RC(ctx);
+    if (n <= 0) {
+        return;
+    }
+    account_uncaptured(id, args_in->fd, is_send, (u32)n);
 }
 
 static __noinline void process_syscall_data_vecs(struct pt_regs* ctx,
@@ -1087,18 +1354,30 @@ static __noinline void process_syscall_data_vecs(struct pt_regs* ctx,
     int bytes_sent  = 0;
     int total_size  = PT_REGS_RC(ctx);
     const struct iovec* iov = args.iov;
+    if (total_size <= 0) {
+        return;
+    }
     for (int i = 0; i < LOOP_LIMIT && i < args.iovlen && bytes_sent < total_size; ++i) {
-        struct iovec iov_cpy;
-        bpf_probe_read_user(&iov_cpy, sizeof(iov_cpy), &iov[i]);
-
+        struct iovec iov_cpy = {};
+        if (bpf_probe_read_user(&iov_cpy, sizeof(iov_cpy), &iov[i]) != 0) {
+            break;
+        }
         const int bytes_remaining = total_size - bytes_sent;
         const size_t iov_size = iov_cpy.iov_len < bytes_remaining
                                 ? iov_cpy.iov_len : bytes_remaining;
+        if (iov_size == 0) {
+            continue; /* size 0 would mean "whole syscall" below */
+        }
 
         args.buf      = iov_cpy.iov_base;
         args.buf_size = iov_size;
         process_syscall_data(ctx, &args, id, is_send, false);
         bytes_sent += iov_size;
+    }
+    /* More vectors than the loop covers, or an unreadable iovec: the rest of
+     * the bytes still moved on the socket and must be counted as a hole. */
+    if (bytes_sent < total_size) {
+        account_uncaptured(id, args.fd, is_send, (u32)(total_size - bytes_sent));
     }
 }
 
@@ -1169,6 +1448,10 @@ int probe_ret_sock_alloc(struct pt_regs* ctx) {
 
 SEC("kprobe")
 int probe_entry_tcp_connect(struct pt_regs* ctx) {
+    if (disable_egress_capture) {
+        return 0;
+    }
+
     uint64_t id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
@@ -1191,6 +1474,10 @@ int probe_entry_tcp_connect(struct pt_regs* ctx) {
 
 SEC("kprobe")
 int syscall__probe_entry_connect(struct pt_regs* ctx) {
+    if (disable_egress_capture) {
+        return 0;
+    }
+
     u64 id = bpf_get_current_pid_tgid();
 
     if (print_bpf_logs) {
@@ -1211,6 +1498,13 @@ int syscall__probe_entry_connect(struct pt_regs* ctx) {
 SEC("kprobe")
 int syscall__probe_ret_connect(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
+
+    if (disable_egress_capture) {
+        // sock_alloc may have inserted an entry for this thread; drop it so
+        // a later accept() on the same thread does not inherit it.
+        bpf_map_delete_elem(&active_accept_args_map, &id);
+        return 0;
+    }
 
     if (print_bpf_logs) {
         bpf_printk("syscall__probe_ret_connect: pid: %d", id);
@@ -1289,6 +1583,10 @@ int syscall__probe_entry_writev(struct pt_regs* ctx) {
         write_args.sock_event = true;
     }
 
+    bind_pending_ssl_fd(id, write_args.fd, true);
+
+    note_missed_syscall_returns(id);
+
     bpf_map_update_elem(&active_write_args_map, &id, &write_args, BPF_ANY);
 
     return 0;
@@ -1337,6 +1635,8 @@ int syscall__probe_entry_sendmsg(struct pt_regs* ctx) {
         write_args.iov       = msghdr_copy.msg_iov;
         write_args.iovlen    = msghdr_copy.msg_iovlen;
         write_args.source_fn = kSyscallSendMsg;
+        bind_pending_ssl_fd(id, write_args.fd, true);
+        note_missed_syscall_returns(id);
         bpf_map_update_elem(&active_write_args_map, &id, &write_args, BPF_ANY);
     }
 
@@ -1383,6 +1683,10 @@ int syscall__probe_entry_readv(struct pt_regs* ctx) {
         read_args.sock_event = true;
     }
 
+    bind_pending_ssl_fd(id, read_args.fd, false);
+
+    note_missed_syscall_returns(id);
+
     bpf_map_update_elem(&active_read_args_map, &id, &read_args, BPF_ANY);
 
     return 0;
@@ -1406,12 +1710,53 @@ int syscall__probe_ret_readv(struct pt_regs* ctx) {
     return 0;
 }
 
+/* sendfile(out_fd, in_fd, offset, count): see account_unreadable. */
+SEC("kprobe")
+int syscall__probe_entry_sendfile(struct pt_regs* ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct data_args_t args = {};
+    args.fd        = (int)SYSCALL_PARM1(ctx);
+    args.source_fn = kSyscallSendfile;
+    bind_pending_ssl_fd(id, args.fd, true);
+    note_missed_syscall_returns(id);
+    bpf_map_update_elem(&active_write_args_map, &id, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("kprobe")
+int syscall__probe_ret_sendfile(struct pt_regs* ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct data_args_t* args = bpf_map_lookup_elem(&active_write_args_map, &id);
+    if (args != NULL && args->source_fn == kSyscallSendfile) {
+        account_unreadable(ctx, args, id, true);
+    }
+    bpf_map_delete_elem(&active_write_args_map, &id);
+    return 0;
+}
+
+/* Same, for the egress hook set, which swaps the read and write directions. */
+SEC("kprobe")
+int syscall__probe_ret_sendfile_swapped(struct pt_regs* ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct data_args_t* args = bpf_map_lookup_elem(&active_write_args_map, &id);
+    if (args != NULL && args->source_fn == kSyscallSendfile) {
+        account_unreadable(ctx, args, id, false);
+    }
+    bpf_map_delete_elem(&active_write_args_map, &id);
+    return 0;
+}
+
 SEC("kprobe")
 int syscall__probe_entry_recvfrom(struct pt_regs* ctx) {
     u64 id = bpf_get_current_pid_tgid();
 
     int fd     = (int)SYSCALL_PARM1(ctx);
     char* buf  = (char*)SYSCALL_PARM2(ctx);
+    /* A peek is followed by a real read of the same bytes; capturing both
+     * would duplicate them inside one message. */
+    if (((int)SYSCALL_PARM4(ctx)) & MSG_PEEK) {
+        return 0;
+    }
 
     if (print_bpf_logs) {
         struct data_args_t* read_args_1 = bpf_map_lookup_elem(&active_read_args_map, &id);
@@ -1428,6 +1773,8 @@ int syscall__probe_entry_recvfrom(struct pt_regs* ctx) {
     read_args.buf       = buf;
     read_args.fd        = fd;
     read_args.source_fn = kSyscallRecvFrom;
+    bind_pending_ssl_fd(id, read_args.fd, false);
+    note_missed_syscall_returns(id);
     bpf_map_update_elem(&active_read_args_map, &id, &read_args, BPF_ANY);
 
     return 0;
@@ -1473,6 +1820,8 @@ int syscall__probe_entry_sendto(struct pt_regs* ctx) {
     write_args.buf       = buf;
     write_args.fd        = fd;
     write_args.source_fn = kSyscallSendTo;
+    bind_pending_ssl_fd(id, write_args.fd, true);
+    note_missed_syscall_returns(id);
     bpf_map_update_elem(&active_write_args_map, &id, &write_args, BPF_ANY);
 
     return 0;
@@ -1506,11 +1855,16 @@ int syscall__probe_entry_recv(struct pt_regs* ctx) {
 
     int fd    = (int)SYSCALL_PARM1(ctx);
     char* buf = (char*)SYSCALL_PARM2(ctx);
+    if (((int)SYSCALL_PARM4(ctx)) & MSG_PEEK) {
+        return 0;
+    }
 
     struct data_args_t read_args = {};
     read_args.buf       = buf;
     read_args.fd        = fd;
     read_args.source_fn = kSyscallRecv;
+    bind_pending_ssl_fd(id, read_args.fd, false);
+    note_missed_syscall_returns(id);
     bpf_map_update_elem(&active_read_args_map, &id, &read_args, BPF_ANY);
 
     return 0;
@@ -1562,6 +1916,10 @@ int syscall__probe_entry_read(struct pt_regs* ctx) {
         read_args.sock_event = true;
     }
 
+    bind_pending_ssl_fd(id, read_args.fd, false);
+
+    note_missed_syscall_returns(id);
+
     bpf_map_update_elem(&active_read_args_map, &id, &read_args, BPF_ANY);
 
     return 0;
@@ -1592,6 +1950,9 @@ int syscall__probe_entry_recvmsg(struct pt_regs* ctx) {
 
     int fd = (int)SYSCALL_PARM1(ctx);
     struct user_msghdr* msghdr = (struct user_msghdr*)SYSCALL_PARM2(ctx);
+    if (((int)SYSCALL_PARM3(ctx)) & MSG_PEEK) {
+        return 0;
+    }
 
     if (msghdr != NULL) {
         if (print_bpf_logs) {
@@ -1608,6 +1969,8 @@ int syscall__probe_entry_recvmsg(struct pt_regs* ctx) {
         read_args.iov       = msghdr_copy.msg_iov;
         read_args.iovlen    = msghdr_copy.msg_iovlen;
         read_args.source_fn = kSyscallRecvMsg;
+        bind_pending_ssl_fd(id, read_args.fd, false);
+        note_missed_syscall_returns(id);
         bpf_map_update_elem(&active_read_args_map, &id, &read_args, BPF_ANY);
     }
 
@@ -1647,6 +2010,8 @@ int syscall__probe_entry_send(struct pt_regs* ctx) {
     write_args.buf       = buf;
     write_args.fd        = fd;
     write_args.source_fn = kSyscallSend;
+    bind_pending_ssl_fd(id, write_args.fd, true);
+    note_missed_syscall_returns(id);
     bpf_map_update_elem(&active_write_args_map, &id, &write_args, BPF_ANY);
 
     return 0;
@@ -1690,6 +2055,10 @@ int syscall__probe_entry_write(struct pt_regs* ctx) {
     if (existing != NULL && existing->sock_event) {
         write_args.sock_event = true;
     }
+
+    bind_pending_ssl_fd(id, write_args.fd, true);
+
+    note_missed_syscall_returns(id);
 
     bpf_map_update_elem(&active_write_args_map, &id, &write_args, BPF_ANY);
     return 0;
@@ -1799,10 +2168,16 @@ static u32 get_fd(void* ssl, int sslVersion, bool rw) {
         break;
     }
 
-    const void* rbio_ptr;
-    bpf_probe_read_user(&rbio_ptr, sizeof(rbio_ptr), ssl + SSL_rbio_offset);
-    u32 rbio_num;
-    bpf_probe_read_user(&rbio_num, sizeof(rbio_num), rbio_ptr + RBIO_num_offset);
+    /* These are reads of the process's memory and can fail (page not present,
+     * e.g. during NUMA rebalancing). A failure must not read as fd 0. */
+    const void* rbio_ptr = NULL;
+    if (bpf_probe_read_user(&rbio_ptr, sizeof(rbio_ptr), ssl + SSL_rbio_offset) != 0 || rbio_ptr == NULL) {
+        return SSL_FD_UNKNOWN;
+    }
+    u32 rbio_num = SSL_FD_UNKNOWN;
+    if (bpf_probe_read_user(&rbio_num, sizeof(rbio_num), rbio_ptr + RBIO_num_offset) != 0) {
+        return SSL_FD_UNKNOWN;
+    }
 
     if (print_bpf_logs) {
         bpf_printk("SSL fd offset: %d %d %d", rbio_num,
@@ -1828,6 +2203,10 @@ static void set_conn_as_ssl(u32 tgid, u32 fd) {
     if (!conn_info->ssl) {
         conn_info->readEventsCount = 0;
         conn_info->writeEventsCount = 0;
+        conn_info->lost_read = 0;
+        conn_info->lost_write = 0;
+        conn_info->lost_run = 0;
+        conn_info->run_dir = 0;
     }
     conn_info->ssl = true;
     if (print_bpf_logs) {
@@ -1839,8 +2218,88 @@ static void set_conn_as_ssl(u32 tgid, u32 fd) {
  * probe_entry_SSL_write_core — shared inner handler for all SSL write entry probes.
  * With BPF_UPROBE, buf is already extracted from pt_regs by the macro; we pass it directly.
  */
+/*
+ * Which socket a TLS call uses. Only exact sources, nothing remembered across
+ * calls (a remembered fd goes stale when a close is missed, and then puts one
+ * connection's plaintext on another):
+ *   - the fd in the SSL object's BIO, read at entry, or again at return when
+ *     the entry read failed (page not present; the library has just used it);
+ *   - the fd of a socket syscall the library makes inside the call.
+ * When neither is known, or they disagree, the plaintext is not delivered but
+ * becomes a hole of unknown size (process_ssl_return): a guessed fd could put
+ * one session's bytes on another connection, and a silent gap could splice
+ * the bytes around it.
+ */
+static __always_inline void bind_pending_ssl_fd(u64 id, u32 fd, bool is_send) {
+    struct data_args_t* a = is_send ? bpf_map_lookup_elem(&active_ssl_write_args_map, &id)
+                                    : bpf_map_lookup_elem(&active_ssl_read_args_map, &id);
+    if (a == NULL) {
+        return;
+    }
+    if (a->fd == SSL_FD_UNKNOWN) {
+        a->fd = fd;
+        set_conn_as_ssl(id >> 32, fd);
+        return;
+    }
+    if (a->fd != fd) {
+        a->other_fd = fd;
+    }
+}
+
+/* SSL_read / SSL_write return: emit the plaintext on the call's socket. */
+static __always_inline void process_ssl_return(struct pt_regs* ctx, u64 id, bool is_send) {
+    struct data_args_t* a = is_send ? bpf_map_lookup_elem(&active_ssl_write_args_map, &id)
+                                    : bpf_map_lookup_elem(&active_ssl_read_args_map, &id);
+    if (a == NULL) {
+        return;
+    }
+    struct data_args_t args = *a;
+    if (args.fd == SSL_FD_UNKNOWN && args.ssl_ver != 0) {
+        args.fd = get_fd((void*)args.ssl_ptr, (int)args.ssl_ver, !is_send);
+        if (args.fd != SSL_FD_UNKNOWN) {
+            set_conn_as_ssl(id >> 32, args.fd);
+        }
+    }
+    u32 tgid = id >> 32;
+    u32 bit = is_send ? 2u : 1u;
+    struct ssl_hole_key_t key = {};
+    key.ssl  = args.ssl_ptr;
+    key.tgid = tgid;
+    if (args.fd == SSL_FD_UNKNOWN || args.other_fd != SSL_FD_UNKNOWN) {
+        if ((long)PT_REGS_RC(ctx) <= 0) {
+            return; /* nothing moved */
+        }
+        increment_counter(&ssl_fd_resolve_failed_total);
+        if (args.fd == SSL_FD_UNKNOWN) {
+            /* No connection to name now: the session owes a hole. */
+            u32 owed = bit;
+            u32* cur = bpf_map_lookup_elem(&ssl_hole_map, &key);
+            if (cur != NULL) {
+                owed |= *cur;
+            }
+            bpf_map_update_elem(&ssl_hole_map, &key, &owed, BPF_ANY);
+        } else {
+            /* Two candidates: the hole goes on both. */
+            mark_unknown_hole(tgid, args.fd, is_send, true);
+            mark_unknown_hole(tgid, args.other_fd, is_send, true);
+        }
+        return;
+    }
+    u32* owed = bpf_map_lookup_elem(&ssl_hole_map, &key);
+    if (owed != NULL && (*owed & bit)) {
+        mark_unknown_hole(tgid, args.fd, is_send, true);
+        u32 rest = *owed & ~bit;
+        if (rest == 0) {
+            bpf_map_delete_elem(&ssl_hole_map, &key);
+        } else {
+            bpf_map_update_elem(&ssl_hole_map, &key, &rest, BPF_ANY);
+        }
+    }
+    process_syscall_data(ctx, &args, id, is_send, true);
+}
+
 static void probe_entry_SSL_write_core(struct pt_regs* ctx, void* ssl, void* buf,
-                                        int num, u32 fd) {
+                                        int num, u32 fd, size_t* ex_bytes, int ver) {
     u64 id   = bpf_get_current_pid_tgid();
     u32 tgid = id >> 32;
 
@@ -1852,10 +2311,17 @@ static void probe_entry_SSL_write_core(struct pt_regs* ctx, void* ssl, void* buf
 
     struct data_args_t write_args = {};
     write_args.fd  = fd;
+    write_args.ssl_ptr = (u64)ssl;
+    write_args.ssl_ver = (u32)ver;
+    write_args.other_fd = SSL_FD_UNKNOWN;
     write_args.buf = bufc;
+    write_args.ex_bytes = ex_bytes;
+    note_missed_returns_at_ssl_entry(id);
     bpf_map_update_elem(&active_ssl_write_args_map, &id, &write_args, BPF_ANY);
 
-    set_conn_as_ssl(tgid, write_args.fd);
+    if (fd != SSL_FD_UNKNOWN) {
+        set_conn_as_ssl(tgid, fd);
+    }
 }
 
 SEC("uprobe")
@@ -1864,7 +2330,7 @@ int BPF_UPROBE(probe_entry_SSL_write_1_0, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_write_1_0: fd: %d", fd);
     }
-    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd, NULL, 1);
     return 0;
 }
 
@@ -1874,7 +2340,7 @@ int BPF_UPROBE(probe_entry_SSL_write_1_1, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_write_1_1: fd: %d", fd);
     }
-    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd, NULL, 2);
     return 0;
 }
 
@@ -1884,19 +2350,16 @@ int BPF_UPROBE(probe_entry_SSL_write_3_0, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_write_3_0: fd: %d", fd);
     }
-    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd, NULL, 3);
     return 0;
 }
 
 /* Node-OpenSSL only: FD resolved via the TLS-wrap map. */
-SEC("uprobe")
-int BPF_UPROBE(probe_entry_SSL_write, void* ssl, void* buf, int num) {
-    u64 id   = bpf_get_current_pid_tgid();
-    u32 tgid = id >> 32;
-
+/* Node.js: the socket fd is reached through the TLSWrap object, not SSL->rbio. */
+static __always_inline u32 node_ssl_fd(void* ssl, u32 tgid) {
     __u64 ssl_key = (__u64)ssl;
     __u64* tls_wrap_val = bpf_map_lookup_elem(&node_ssl_tls_wrap_map, &ssl_key);
-    u32 fd = 0;
+    u32 fd = SSL_FD_UNKNOWN;
     if (tls_wrap_val != NULL) {
         __u64 tls_wrap_word = *tls_wrap_val;
         u32 tgid_key = tgid;
@@ -1927,10 +2390,19 @@ int BPF_UPROBE(probe_entry_SSL_write, void* ssl, void* buf, int num) {
             }
         }
     }
+    return fd;
+}
+
+SEC("uprobe")
+int BPF_UPROBE(probe_entry_SSL_write, void* ssl, void* buf, int num) {
+    u64 id   = bpf_get_current_pid_tgid();
+    u32 tgid = id >> 32;
+
+    u32 fd = node_ssl_fd(ssl, tgid);
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_write: fd: %d", fd);
     }
-    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd, NULL, 0);
     return 0;
 }
 
@@ -1940,7 +2412,7 @@ int BPF_UPROBE(probe_entry_SSL_write_boring, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_write_boring: fd: %d", fd);
     }
-    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_write_core(ctx, ssl, buf, num, fd, NULL, 4);
     return 0;
 }
 
@@ -1952,17 +2424,13 @@ int probe_ret_SSL_write(struct pt_regs* ctx) {
         bpf_printk("probe_ret_SSL_write: pid: %d", id);
     }
 
-    const struct data_args_t* write_args = bpf_map_lookup_elem(&active_ssl_write_args_map, &id);
-    if (write_args != NULL) {
-        process_syscall_data(ctx, write_args, id, true, true);
-    }
-
+    process_ssl_return(ctx, id, true);
     bpf_map_delete_elem(&active_ssl_write_args_map, &id);
     return 0;
 }
 
 static void probe_entry_SSL_read_core(struct pt_regs* ctx, void* ssl, void* buf,
-                                       int num, u32 fd) {
+                                        int num, u32 fd, size_t* ex_bytes, int ver) {
     u64 id   = bpf_get_current_pid_tgid();
     u32 tgid = id >> 32;
 
@@ -1974,10 +2442,17 @@ static void probe_entry_SSL_read_core(struct pt_regs* ctx, void* ssl, void* buf,
 
     struct data_args_t read_args = {};
     read_args.fd  = fd;
+    read_args.ssl_ptr = (u64)ssl;
+    read_args.ssl_ver = (u32)ver;
+    read_args.other_fd = SSL_FD_UNKNOWN;
     read_args.buf = bufc;
+    read_args.ex_bytes = ex_bytes;
+    note_missed_returns_at_ssl_entry(id);
     bpf_map_update_elem(&active_ssl_read_args_map, &id, &read_args, BPF_ANY);
 
-    set_conn_as_ssl(tgid, read_args.fd);
+    if (fd != SSL_FD_UNKNOWN) {
+        set_conn_as_ssl(tgid, fd);
+    }
 }
 
 SEC("uprobe")
@@ -1986,7 +2461,7 @@ int BPF_UPROBE(probe_entry_SSL_read_1_0, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_read_1_0: fd: %d", fd);
     }
-    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd, NULL, 1);
     return 0;
 }
 
@@ -1996,7 +2471,7 @@ int BPF_UPROBE(probe_entry_SSL_read_1_1, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_read_1_1: fd: %d", fd);
     }
-    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd, NULL, 2);
     return 0;
 }
 
@@ -2006,7 +2481,7 @@ int BPF_UPROBE(probe_entry_SSL_read_3_0, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_read_3_0: fd: %d", fd);
     }
-    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd, NULL, 3);
     return 0;
 }
 
@@ -2016,43 +2491,11 @@ int BPF_UPROBE(probe_entry_SSL_read, void* ssl, void* buf, int num) {
     u64 id   = bpf_get_current_pid_tgid();
     u32 tgid = id >> 32;
 
-    __u64 ssl_key = (__u64)ssl;
-    __u64* tls_wrap_val = bpf_map_lookup_elem(&node_ssl_tls_wrap_map, &ssl_key);
-    int32_t fd = 0;
-    if (tls_wrap_val != NULL) {
-        __u64 tls_wrap_word = *tls_wrap_val;
-        u32 tgid_key = tgid;
-        struct node_tlswrap_symaddrs_t* symaddrs_p =
-            bpf_map_lookup_elem(&node_tlswrap_symaddrs_map, &tgid_key);
-        if (symaddrs_p != NULL) {
-            struct node_tlswrap_symaddrs_t symaddrs = *symaddrs_p;
-            void* tls_wrap = (void*)tls_wrap_word;
-            void* stream_ptr = tls_wrap + symaddrs.TLSWrapStreamListenerOffset
-                               + symaddrs.StreamListenerStreamOffset;
-            void* stream = NULL;
-            bpf_probe_read(&stream, sizeof(stream), stream_ptr);
-            if (stream != NULL) {
-                void* uv_stream_ptr = stream
-                                      - symaddrs.StreamBaseStreamResourceOffset
-                                      - symaddrs.LibuvStreamWrapStreamBaseOffset
-                                      + symaddrs.LibuvStreamWrapStreamOffset;
-                void* uv_stream = NULL;
-                bpf_probe_read(&uv_stream, sizeof(uv_stream), uv_stream_ptr);
-                if (uv_stream != NULL) {
-                    int32_t* fd_ptr = uv_stream + symaddrs.UVStreamSIOWatcherOffset
-                                      + symaddrs.UVIOSFDOffset;
-                    int32_t fd_val = 0;
-                    if (bpf_probe_read(&fd_val, sizeof(fd_val), fd_ptr) == 0) {
-                        fd = fd_val;
-                    }
-                }
-            }
-        }
-    }
+    u32 fd = node_ssl_fd(ssl, tgid);
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_read: fd: %d", fd);
     }
-    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd, NULL, 0);
     return 0;
 }
 
@@ -2062,7 +2505,35 @@ int BPF_UPROBE(probe_entry_SSL_read_boring, void* ssl, void* buf, int num) {
     if (print_bpf_logs) {
         bpf_printk("probe_entry_SSL_read_boring: fd: %d", fd);
     }
-    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd);
+    probe_entry_SSL_read_core(ctx, ssl, buf, num, fd, NULL, 4);
+    return 0;
+}
+
+
+/* SSL_write_ex / SSL_read_ex (OpenSSL 3, Node): byte count via out-pointer. */
+SEC("uprobe")
+int BPF_UPROBE(probe_entry_SSL_write_ex_3_0, void* ssl, void* buf, size_t num, size_t* written) {
+    probe_entry_SSL_write_core(ctx, ssl, buf, (int)num, get_fd(ssl, 3, false), written, 3);
+    return 0;
+}
+
+SEC("uprobe")
+int BPF_UPROBE(probe_entry_SSL_read_ex_3_0, void* ssl, void* buf, size_t num, size_t* readbytes) {
+    probe_entry_SSL_read_core(ctx, ssl, buf, (int)num, get_fd(ssl, 3, true), readbytes, 3);
+    return 0;
+}
+
+SEC("uprobe")
+int BPF_UPROBE(probe_entry_SSL_write_ex, void* ssl, void* buf, size_t num, size_t* written) {
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    probe_entry_SSL_write_core(ctx, ssl, buf, (int)num, node_ssl_fd(ssl, tgid), written, 0);
+    return 0;
+}
+
+SEC("uprobe")
+int BPF_UPROBE(probe_entry_SSL_read_ex, void* ssl, void* buf, size_t num, size_t* readbytes) {
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    probe_entry_SSL_read_core(ctx, ssl, buf, (int)num, node_ssl_fd(ssl, tgid), readbytes, 0);
     return 0;
 }
 
@@ -2074,11 +2545,7 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
         bpf_printk("probe_ret_SSL_read: pid: %d", id);
     }
 
-    const struct data_args_t* read_args = bpf_map_lookup_elem(&active_ssl_read_args_map, &id);
-    if (read_args != NULL) {
-        process_syscall_data(ctx, read_args, id, false, true);
-    }
-
+    process_ssl_return(ctx, id, false);
     bpf_map_delete_elem(&active_ssl_read_args_map, &id);
     return 0;
 }

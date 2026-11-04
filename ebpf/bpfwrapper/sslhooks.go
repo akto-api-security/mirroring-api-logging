@@ -70,7 +70,7 @@ var (
 	SslHooks_3_0_ex = []Uprobe{
 		{
 			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_entry_SSL_write_3_0",
+			HookName:       "probe_entry_SSL_write_ex_3_0",
 			Type:           EntryType,
 		},
 		{
@@ -80,7 +80,7 @@ var (
 		},
 		{
 			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_entry_SSL_read_3_0",
+			HookName:       "probe_entry_SSL_read_ex_3_0",
 			Type:           EntryType,
 		},
 		{

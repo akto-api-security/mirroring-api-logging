@@ -52,6 +52,7 @@ func AttachUprobes(soPath string, pid int, coll *ebpf.Collection, uprobeList []U
 		pid = 0
 	}
 
+	uprobeList = uprobesReturnsFirst(uprobeList)
 	useMulti := features.HaveBPFLinkUprobeMulti() == nil
 
 	if useMulti {
@@ -364,4 +365,28 @@ func escapeRegexChars(input string) string {
 	}
 
 	return input
+}
+
+// isReturnProbe reports whether t observes a function's return.
+func isReturnProbe(t ProbeType) bool {
+	return t == ReturnType || t == ReturnType_Matching_Pre || t == ReturnType_Matching_Suf_Addr
+}
+
+// Return probes are attached before entry probes. A call that starts between
+// the two attaches then has a return without an entry (ignored), never an
+// entry without a return, which would leave a stale pending call behind and
+// cost that connection a hole of unknown size.
+func uprobesReturnsFirst(list []Uprobe) []Uprobe {
+	out := make([]Uprobe, 0, len(list))
+	for _, p := range list {
+		if isReturnProbe(p.Type) {
+			out = append(out, p)
+		}
+	}
+	for _, p := range list {
+		if !isReturnProbe(p.Type) {
+			out = append(out, p)
+		}
+	}
+	return out
 }

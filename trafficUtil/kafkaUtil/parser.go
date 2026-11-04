@@ -73,9 +73,10 @@ type HeaderSet struct {
 
 // ConvertedHeaders holds converted headers for both request and response.
 type ConvertedHeaders struct {
-	Request  HeaderSet
-	Response HeaderSet
-	DebugID  string // x-debug-token value if present
+	Request   HeaderSet
+	Response  HeaderSet
+	DebugID   string // x-debug-token value if present
+	DebugEcho string // x-debug-token echoed on the response, if any
 }
 
 // PayloadInput contains the data needed to build traffic payloads.
@@ -230,6 +231,9 @@ func convertHeaders(req *http.Request, resp *http.Response, shouldPrint bool) Co
 			result.Response.Protobuf[strings.ToLower(name)] = &trafficpb.StringList{
 				Values: []string{value},
 			}
+			if shouldPrint && strings.EqualFold(name, "x-debug-token") {
+				result.DebugEcho = value
+			}
 			result.Response.StringMap[name] = value
 		}
 	}
@@ -267,8 +271,6 @@ func shouldProcessRequest(req *http.Request, reqHeaders map[string]string, ctx T
 }
 
 var (
-	goodRequests               = 0
-	badRequests                = 0
 	debugMode                  = false
 	dataPrintMode              = false
 	outputBandwidthLimitPerMin = -1
@@ -638,8 +640,8 @@ func ParseAndProduce(receiveBuffer []byte, sentBuffer []byte, ctx TrafficContext
 		return
 	}
 
-	shouldPrint := (debugMode && strings.Contains(string(receiveBuffer), "x-debug-token")) || dataPrintMode
-	if shouldPrint {
+	shouldPrint := (debugMode && bytes.Contains(receiveBuffer, debugTokenHeader)) || dataPrintMode
+	if shouldPrint && (dataPrintMode || debugDumpAllowed()) {
 		slog.Warn("ParseAndProduce", append(TrafficConnIDLogArgs(ctx.ConnID), "receiveBuffer", string(receiveBuffer), "sentBuffer", string(sentBuffer))...)
 	}
 
@@ -771,16 +773,60 @@ func sendMetrics(headers ConvertedHeaders, ctx TrafficContext, outgoingBytes int
 	oc := utils.GenerateOutgoingCounter(ctx.VxlanID, ctx.SourceIP, hostString)
 	trafficMetrics.SubmitOutgoingTrafficMetrics(oc, outgoingBytes)
 
-	if shouldPrint {
-		if strings.Contains(responsesContent[i], headers.DebugID) {
-			goodRequests++
-		} else {
-			slog.Debug("req-resp.String()", append(TrafficConnIDLogArgs(ctx.ConnID), "out", string(out))...)
-			badRequests++
-		}
-
-		if goodRequests%10 == 0 || badRequests%10 == 0 {
-			slog.Debug("Good requests", append(TrafficConnIDLogArgs(ctx.ConnID), "count", goodRequests, "badRequests", badRequests)...)
-		}
+	if shouldPrint && headers.DebugID != "" {
+		countDebugPair(headers.DebugID, headers.DebugEcho, responsesContent[i], ctx, out)
 	}
 }
+
+var debugTokenHeader = []byte("x-debug-token")
+
+// Pairs checked by countDebugPair. Pairs are produced from several goroutines.
+var goodRequests, badRequests atomic.Int64
+
+// DebugPairCounts reports the pairs checked by countDebugPair since start, and
+// whether the check is on (DEBUG_MODE).
+func DebugPairCounts() (good, bad int64, enabled bool) {
+	return goodRequests.Load(), badRequests.Load(), debugMode
+}
+
+// countDebugPair checks a pair whose request carried an x-debug-token header
+// (DEBUG_MODE). The pair is good when the response echoes the same token, in a
+// response header (an edge with add_header) or in the body (an echo server).
+// Otherwise the request was paired with another exchange's response.
+func countDebugPair(debugID, echoed, responseBody string, ctx TrafficContext, out []byte) {
+	var good, bad int64
+	if echoed == debugID || strings.Contains(responseBody, debugID) {
+		good, bad = goodRequests.Add(1), badRequests.Load()
+	} else {
+		if len(out) > 4096 {
+			out = out[:4096]
+		}
+		slog.Warn("x-debug-token: bad pair", append(TrafficConnIDLogArgs(ctx.ConnID), "token", debugID, "echoed", echoed, "out", string(out))...)
+		good, bad = goodRequests.Load(), badRequests.Add(1)
+	}
+
+	if good%10 == 0 || bad%10 == 0 {
+		slog.Debug("Good requests", append(TrafficConnIDLogArgs(ctx.ConnID), "count", good, "badRequests", bad)...)
+	}
+}
+
+// debugDumpAllowed limits the full-buffer dump of x-debug-token requests to
+// 100 a minute, so DEBUG_MODE stays usable when every request carries a token.
+func debugDumpAllowed() bool {
+	debugDumpMu.Lock()
+	defer debugDumpMu.Unlock()
+	if now := time.Now(); now.Sub(debugDumpReset) > time.Minute {
+		debugDumpReset, debugDumpLeft = now, 100
+	}
+	if debugDumpLeft <= 0 {
+		return false
+	}
+	debugDumpLeft--
+	return true
+}
+
+var (
+	debugDumpMu    sync.Mutex
+	debugDumpReset time.Time
+	debugDumpLeft  int
+)

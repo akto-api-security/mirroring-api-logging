@@ -52,6 +52,11 @@ var (
 		},
 	}
 
+	// connect / tcp_connect stay in Level1hooks even when TRAFFIC_DISABLE_EGRESS
+	// is on. The BPF program does not register those sockets, but the connect
+	// return probe still clears active_accept_args_map so a sock_alloc from
+	// connect() cannot leak into a later accept() on the same thread.
+
 	Level1hooksType2 = []Kprobe{
 		{
 			FunctionToHook: "security_socket_sendmsg",
@@ -134,6 +139,18 @@ var (
 			Type:           ReturnType,
 			IsSyscall:      true,
 		},
+		{
+			FunctionToHook: "sendfile64",
+			HookName:       "syscall__probe_entry_sendfile",
+			Type:           EntryType,
+			IsSyscall:      true,
+		},
+		{
+			FunctionToHook: "sendfile64",
+			HookName:       "syscall__probe_ret_sendfile",
+			Type:           ReturnType,
+			IsSyscall:      true,
+		},
 	}
 
 	Level2hooksEgress = []Kprobe{
@@ -194,6 +211,18 @@ var (
 		{
 			FunctionToHook: "sendmsg",
 			HookName:       "syscall__probe_ret_recvmsg",
+			Type:           ReturnType,
+			IsSyscall:      true,
+		},
+		{
+			FunctionToHook: "sendfile64",
+			HookName:       "syscall__probe_entry_sendfile",
+			Type:           EntryType,
+			IsSyscall:      true,
+		},
+		{
+			FunctionToHook: "sendfile64",
+			HookName:       "syscall__probe_ret_sendfile_swapped",
 			Type:           ReturnType,
 			IsSyscall:      true,
 		},
@@ -363,7 +392,7 @@ var (
 		},
 		{
 			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_entry_SSL_write",
+			HookName:       "probe_entry_SSL_write_ex",
 			Type:           EntryType,
 		},
 		{
@@ -373,54 +402,11 @@ var (
 		},
 		{
 			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_entry_SSL_read",
+			HookName:       "probe_entry_SSL_read_ex",
 			Type:           EntryType,
 		},
 		{
 			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-	}
-
-	SslHooksEgress = []Uprobe{
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_entry_SSL_write",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_entry_SSL_read",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write",
-			HookName:       "probe_ret_SSL_read",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_entry_SSL_write",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_read_ex",
-			HookName:       "probe_ret_SSL_write",
-			Type:           ReturnType,
-		},
-		{
-			FunctionToHook: "SSL_write_ex",
-			HookName:       "probe_entry_SSL_read",
-			Type:           EntryType,
-		},
-		{
-			FunctionToHook: "SSL_write_ex",
 			HookName:       "probe_ret_SSL_read",
 			Type:           ReturnType,
 		},

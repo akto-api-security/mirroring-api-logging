@@ -42,6 +42,7 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 	defer parserPool.Put(p)
 	p.Gunzip = utils.FastParserGunzip
 	p.HandleChunkEncoding = utils.FastParserChunkEncoding
+	p.AllowTruncatedBody = true
 
 	req, err := p.ParseRequest(receiveBuffer)
 	if err != nil {
@@ -62,11 +63,34 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 	if resp != nil && !singleMessageBody(resp.Headers, resp.Body) {
 		return false
 	}
+	produceFast(req, resp, ctx)
+	return true
+}
+
+// ProduceReqResp emits one already-parsed exchange (HTTP/2 streams).
+func ProduceReqResp(req *fastparser.Request, resp *fastparser.Response, ctx TrafficContext) {
+	if req == nil || resp == nil || KafkaDisabled() {
+		return
+	}
+	if checkAndUpdateBandwidthProcessed(0) {
+		return
+	}
+	produceFast(req, resp, ctx)
+}
+
+func produceFast(req *fastparser.Request, resp *fastparser.Response, ctx TrafficContext) {
+	if maxBody := utils.SocketDataEventBytesThreshold; maxBody > 0 {
+		if len(req.Body) > maxBody {
+			req.Body = req.Body[:maxBody]
+		}
+		if len(resp.Body) > maxBody {
+			resp.Body = resp.Body[:maxBody]
+		}
+	}
 
 	host := string(req.Host())
-	reqHeaderMap := headersToStringMap(req.Headers)
-	if !shouldProcessRequestFast(string(req.Method), host, reqHeaderMap, ctx) {
-		return true
+	if !shouldProcessRequestFast(string(req.Method), host, headersToStringMap(req.Headers), ctx) {
+		return
 	}
 
 	processName := ""
@@ -97,7 +121,7 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 	out := enc.Encode(req, resp, meta)
 
 	if checkAndUpdateBandwidthProcessed(len(out)) {
-		return true
+		return
 	}
 
 	if n := fastPrinted.Add(1); n <= 10 {
@@ -106,15 +130,21 @@ func tryFastParseAndProduce(receiveBuffer, sentBuffer []byte, ctx TrafficContext
 
 	path := string(req.Path)
 	method := string(req.Method)
-	go ProduceStr(context.Background(), string(out), path, host, method)
+	// The writer is async: these enqueue and return, so no goroutine per message.
+	ProduceBytes(context.Background(), append([]byte(nil), out...), path, host, method)
 
 	if utils.ThreatEnabled {
 		srcIP := getSourceIpFast(req, ctx.SourceIP)
-		go Produce(context.Background(), buildProtobufPayloadFast(req, resp, ctx, srcIP))
+		Produce(context.Background(), buildProtobufPayloadFast(req, resp, ctx, srcIP))
 	}
 
 	checkDebugUrlAndPrint(path, host, "URL,host found in fastParseAndProduce")
-	return true
+
+	if debugMode {
+		if token := req.Header("x-debug-token"); len(token) > 0 {
+			countDebugPair(string(token), string(resp.Header("x-debug-token")), string(resp.Body), ctx, out)
+		}
+	}
 }
 
 // singleMessageBody reports whether body length matches Content-Length when set.

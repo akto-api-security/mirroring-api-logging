@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/akto-api-security/mirroring-api-logging/ebpf/connections"
@@ -23,74 +24,71 @@ func init() {
 	metaUtils.InitVar("TRAFFIC_RINGBUF_STATS_INTERVAL", &ringbufStatsInterval)
 }
 
-// ProbeEventHandler processes a single ring buffer record inline in the reader goroutine.
-// data is backed by the reader's internal buffer and is only valid until the handler returns;
-// the handler must copy out any bytes it needs to keep.
-type ProbeEventHandler func(data []byte, connectionFactory *connections.Factory)
-
-// ProbeChannel links a named BPF ring buffer to an event handler.
-type ProbeChannel struct {
-	name    string
-	handler ProbeEventHandler
-	reader  *ringbuf.Reader
+// ShardReader drains one socket_data_events_N ring into the Shard that owns
+// the connections hashed to it. The kernel puts every record of a connection
+// on the same ring, so this goroutine sees them in order and is the only one
+// touching that shard.
+type ShardReader struct {
+	name   string
+	shard  *connections.Shard
+	reader *ringbuf.Reader
 }
 
-// NewProbeChannel creates a new probe channel for the given BPF ring buffer name.
-func NewProbeChannel(name string, handler ProbeEventHandler) *ProbeChannel {
-	return &ProbeChannel{
-		name:    name,
-		handler: handler,
-	}
+func NewShardReader(name string, shard *connections.Shard) *ShardReader {
+	return &ShardReader{name: name, shard: shard}
 }
 
-// Start opens the ring buffer reader and processes events inline with no intermediate Go channel.
-// The kernel ring buffer (mmap'd) acts as the sole buffer. Backpressure propagates directly:
-// if the handler is slow, ReadInto blocks, the kernel ring fills, and BPF drops at the source.
-func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connections.Factory) error {
-	m, ok := coll.Maps[pc.name]
+func (sr *ShardReader) Start(coll *ebpf.Collection) error {
+	m, ok := coll.Maps[sr.name]
 	if !ok {
-		return fmt.Errorf("BPF map %q not found in collection", pc.name)
+		return fmt.Errorf("BPF map %q not found in collection", sr.name)
 	}
-
 	var err error
-	pc.reader, err = ringbuf.NewReader(m)
+	sr.reader, err = ringbuf.NewReader(m)
 	if err != nil {
-		return fmt.Errorf("failed to open ring buffer reader for %q: %v", pc.name, err)
+		return fmt.Errorf("failed to open ring buffer reader for %q: %v", sr.name, err)
 	}
 
 	go func() {
-		log.Printf("ring buffer reader started for %s", pc.name)
+		log.Printf("ring buffer reader started for %s", sr.name)
 		var rec ringbuf.Record
 		var eventsInWindow uint64
-		var lastStatsLog time.Time
+		lastStatsLog := time.Now()
 		minRemaining := -1
+		sweep := connections.SweepInterval()
+		sr.reader.SetDeadline(time.Now().Add(sweep))
 		for {
-			if err := pc.reader.ReadInto(&rec); err != nil {
+			err := sr.reader.ReadInto(&rec)
+			now := time.Now()
+			if err != nil {
 				if errors.Is(err, ringbuf.ErrClosed) {
 					return
 				}
-				log.Printf("error reading ring buffer event on %s: %v", pc.name, err)
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					sr.shard.Sweep(now)
+					sr.reader.SetDeadline(now.Add(sweep))
+					continue
+				}
+				log.Printf("error reading ring buffer event on %s: %v", sr.name, err)
 				continue
 			}
+			handleShardRecord(sr.shard, rec.RawSample, now)
+
 			if logRingbufStats {
 				eventsInWindow++
 				if minRemaining < 0 || rec.Remaining < minRemaining {
 					minRemaining = rec.Remaining
 				}
-				now := time.Now()
-				if lastStatsLog.IsZero() {
-					lastStatsLog = now
-				} else if now.Sub(lastStatsLog) >= ringbufStatsInterval {
-					bufferSize := pc.reader.BufferSize()
-					availableBytes := pc.reader.AvailableBytes()
+				if now.Sub(lastStatsLog) >= ringbufStatsInterval {
+					bufferSize := sr.reader.BufferSize()
+					availableBytes := sr.reader.AvailableBytes()
 					slog.Warn("ring buffer stats",
-						"map", pc.name,
+						"map", sr.name,
 						"eventsInWindow", eventsInWindow,
 						"window", now.Sub(lastStatsLog).String(),
 						"bufferSizeBytes", bufferSize,
 						"availableBytes", availableBytes,
 						"availablePct", pct(availableBytes, bufferSize),
-						"lastRecordRemainingBytes", rec.Remaining,
 						"minRecordRemainingBytes", minRemaining,
 					)
 					eventsInWindow = 0
@@ -98,10 +96,8 @@ func (pc *ProbeChannel) Start(coll *ebpf.Collection, connectionFactory *connecti
 					lastStatsLog = now
 				}
 			}
-			pc.handler(rec.RawSample, connectionFactory)
 		}
 	}()
-
 	return nil
 }
 
@@ -112,19 +108,8 @@ func pct(n, d int) float64 {
 	return float64(n) * 100 / float64(d)
 }
 
-// Stop closes the underlying ring buffer reader, which will unblock the reader goroutine.
-func (pc *ProbeChannel) Stop() {
-	if pc.reader != nil {
-		pc.reader.Close()
+func (sr *ShardReader) Stop() {
+	if sr.reader != nil {
+		sr.reader.Close()
 	}
-}
-
-// LaunchPerfBufferConsumers starts all probe channels.
-func LaunchPerfBufferConsumers(coll *ebpf.Collection, connectionFactory *connections.Factory, probeList []*ProbeChannel) error {
-	for _, pc := range probeList {
-		if err := pc.Start(coll, connectionFactory); err != nil {
-			return err
-		}
-	}
-	return nil
 }
