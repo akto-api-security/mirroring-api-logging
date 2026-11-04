@@ -13,8 +13,8 @@ import (
 var (
 	systemCPUSoftAbs                        = math.NaN()
 	systemCPUHardAbs                        = math.NaN()
-	systemCPUSoftAddCores                   = 2.0
-	systemCPUHardAddCores                   = 3.0
+	systemCPUSoftAddCores                   = 3.0
+	systemCPUHardAddCores                   = 4.0
 	systemCPUCheckIntervalSec               = 1
 	systemCPUBaselineWindowSec              = 15
 	systemCPUBaselineStepSec                = 1

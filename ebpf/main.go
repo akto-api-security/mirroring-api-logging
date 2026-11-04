@@ -93,7 +93,7 @@ func replaceMaxConnectionMapSize(spec *ebpf.CollectionSpec) {
 // replaceRingBufSizes overrides ring buffer max_entries from env vars (in MB).
 // Values must be powers of 2; the BPF C defaults are used when env vars are unset.
 func replaceRingBufSizes(spec *ebpf.CollectionSpec) {
-	dataTotalMB := 512
+	dataTotalMB := 1024
 	trafficUtils.InitVar("TRAFFIC_RINGBUF_DATA_MB", &dataTotalMB)
 	if dataTotalMB > 0 {
 		if dataTotalMB%socketDataRingbufShardCount != 0 {
