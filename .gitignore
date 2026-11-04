@@ -14,3 +14,5 @@ ebpf/module_bpf*.o
 ebpf/kernel/module.bpf.o
 
 ebpf/docs/**
+# rate-sweep harness output (callback_ratesweep_test.go)
+ebpf/connections/pprof/

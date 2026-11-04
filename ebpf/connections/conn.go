@@ -41,9 +41,9 @@ const (
 const maxClassifyBytes = 64 << 10
 
 type conn struct {
-	id     structs.ConnID
-	laddr  uint32
-	lport  uint16 // local port, host byte order (id.Port is the remote port, network order)
+	id    structs.ConnID
+	laddr uint32
+	lport uint16 // local port, host byte order (id.Port is the remote port, network order)
 
 	ssl    bool
 	state  connState
