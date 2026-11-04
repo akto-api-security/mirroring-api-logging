@@ -6,11 +6,17 @@ package connections
 // block, then Content-Length, chunked encoding, or until close). Requests
 // queue in order; a response, once its headers are in, takes its request:
 //
-//   - normally (one request in flight) it is the last request before the
-//     response, and only if nothing in the request stream came after it: no
-//     other request began (epoch) and no request byte was lost after the last
-//     one delivered (both directions stamp both chunk counters, so the
-//     response's first chunk says how many request chunks preceded it).
+//   - it is the last request before the response, and only if nothing came
+//     between them in either direction. Both directions stamp both chunk
+//     counters, lost chunks included, so this is checked exactly:
+//       - request side: no request byte after the last one delivered (the
+//         response's first chunk says how many request chunks preceded it),
+//         and no other request began (epoch);
+//       - response side: the response's first chunk is the first response
+//         chunk since the request began (or follows an interim 1xx answer to
+//         it). Any other response chunk in between answered that request, so
+//         this response can't be its answer, even when the bytes of the
+//         request that it does answer were never framed as a request.
 //     Otherwise the response is an orphan. A request whose response was lost
 //     is dropped, never paired with the next response.
 //   - a pipelining client (a new request while the previous one had no
@@ -50,7 +56,8 @@ type h1msg struct {
 	done      bool   // framing complete
 	ord       uint32 // request-direction counter at the message's first chunk
 	epoch     uint32 // request: http1State.reqEpoch when it started
-	respOrd   uint32 // request: response-direction counter when it started
+	respOrd   uint32 // response-direction counter at the message's first chunk
+	interim   uint32 // request: response counter at the end of a 1xx answer to it (0: none)
 	headLen   int
 	head      bool // request method HEAD
 	connect   bool // request method CONNECT
@@ -74,8 +81,8 @@ type http1State struct {
 	partner *h1msg   // request of the response being framed
 	status  int      // status of the response being framed
 
-	pipelined     bool
 	lastReqOrd    uint32 // request-direction counter of the last request chunk
+	lastRespCnt   uint32 // response-direction counter of the last response chunk
 	reqEpoch      uint32 // bumped whenever a request may have begun
 	abandonExpect bool   // a final answer came before a 100-continue body
 }
@@ -116,7 +123,7 @@ func (c *conn) store(m *h1msg, b []byte) {
 
 // runStart is true for the first chunk of a run of dir with nothing of that
 // run lost before it.
-func (c *conn) onHTTP1(dir uint8, data []byte, lost int64, runStart bool, reqOrd, otherOrd uint32) {
+func (c *conn) onHTTP1(dir uint8, data []byte, lost int64, runStart bool, reqCnt, respCnt uint32) {
 	h := &c.h1
 	if lost > 0 {
 		c.h1Lose(dir, lost)
@@ -126,7 +133,7 @@ func (c *conn) onHTTP1(dir uint8, data []byte, lost int64, runStart bool, reqOrd
 	}
 	f := &h.fr[dir]
 	if dir == c.reqDir {
-		h.lastReqOrd = reqOrd
+		h.lastReqOrd = reqCnt
 		if runStart && (!f.synced || f.phase == phStart) {
 			h.reqEpoch++ // a request we may not be able to parse begins here
 		}
@@ -148,7 +155,10 @@ func (c *conn) onHTTP1(dir uint8, data []byte, lost int64, runStart bool, reqOrd
 		}
 		f.synced, f.phase, f.m = true, phStart, nil
 	}
-	c.h1Feed(dir, data, reqOrd, otherOrd) // otherOrd is the response counter for requests
+	if dir != c.reqDir {
+		h.lastRespCnt = respCnt
+	}
+	c.h1Feed(dir, data, reqCnt, respCnt)
 }
 
 func looksLikeStart(isReq bool, b []byte) bool {
@@ -180,9 +190,11 @@ func (c *conn) h1Lose(dir uint8, n int64) {
 			return
 		}
 	case phUntilClose:
-		f.m.seen += int(n)
-		f.m.truncated = true
-		return
+		if n < lostUnknownBytes {
+			f.m.seen += int(n)
+			f.m.truncated = true
+			return
+		}
 	}
 	c.h1Desync(dir)
 }
@@ -191,11 +203,6 @@ func (c *conn) h1Lose(dir uint8, n int64) {
 // its next run that starts with a fresh message.
 func (c *conn) h1Desync(dir uint8) {
 	h := &c.h1
-	if h.pipelined {
-		desyncedConns.Add(1)
-		c.ignore()
-		return
-	}
 	f := &h.fr[dir]
 	if dir == c.reqDir {
 		h.reqEpoch++
@@ -371,30 +378,25 @@ func (c *conn) h1RequestHead(respOrd uint32) {
 	m.expect = headerHas(hdr, "expect", "100-continue")
 
 	if len(h.queue) > 0 && h.queue[len(h.queue)-1].respOrd == respOrd {
-		// A new request while the previous one has not had a single response
-		// byte since it started: pipelining. Older queued requests did get response bytes (lost
-		// ones), so they will never be answered in order.
-		if !h.pipelined {
-			pipelinedConns.Add(1)
-			last := h.queue[len(h.queue)-1]
-			for _, o := range h.queue[:len(h.queue)-1] {
-				c.dropMsg(o)
-			}
-			h.queue = append(h.queue[:0], last)
-		}
-		h.pipelined = true
+		// A new request while the previous one has had no response byte since
+		// it started. That is pipelining, or a response we never saw. Pairing
+		// in arrival order would shift every later pair if even one response
+		// went unseen, and the two cases can't be told apart: stop pairing
+		// this connection.
+		pipelinedConns.Add(1)
+		c.ignore()
+		return
 	}
 	if len(h.queue) >= maxQueued {
-		if h.pipelined {
-			c.ignore()
-			return
-		}
 		c.dropMsg(h.queue[0])
 		h.queue = h.queue[1:]
 	}
 	h.queue = append(h.queue, m)
 
-	switch cl, chunked := bodyFraming(hdr); {
+	cl, chunked, ok := bodyFraming(hdr)
+	switch {
+	case !ok:
+		c.ignore() // can't be sure where this request ends
 	case chunked:
 		f.phase, f.line, f.lineHx, f.lineSz = phChunkSize, 0, 0, true
 	case cl > 0:
@@ -424,13 +426,19 @@ func (c *conn) h1ResponseHead() {
 	}
 	h.status = status
 	if status >= 100 && status < 200 && status != 101 {
-		// Informational: no body, and the request is still waiting.
+		// Informational: no body, and the request is still waiting. Its final
+		// answer may start in the chunk that ends this one, or right after.
+		if q := h.queue; len(q) > 0 {
+			if r := q[len(q)-1]; m.respOrd == r.respOrd+1 || (r.interim != 0 && (m.respOrd == r.interim || m.respOrd == r.interim+1)) {
+				r.interim = h.lastRespCnt
+			}
+		}
 		c.dropMsg(m)
 		f.m, f.phase = nil, phStart
 		return
 	}
 
-	h.partner = c.takePartner(m.ord)
+	h.partner = c.takePartner(m.ord, m.respOrd)
 	if h.partner == nil {
 		orphanMessages.Add(1)
 		c.dropMsg(m) // keep framing it, but don't buffer
@@ -441,12 +449,15 @@ func (c *conn) h1ResponseHead() {
 		hdr = hdr[:m.headLen]
 	}
 	req := h.partner
-	switch cl, chunked := bodyFraming(hdr); {
+	cl, chunked, ok := bodyFraming(hdr)
+	switch {
 	case status == 101, req != nil && req.connect && status/100 == 2:
 		c.h1Complete(dir)
 		c.ignore() // the connection now carries another protocol
 	case req != nil && req.head, status == 204, status == 304:
 		c.h1Complete(dir)
+	case !ok:
+		c.ignore() // can't be sure where this response ends
 	case chunked:
 		f.phase, f.line, f.lineHx, f.lineSz = phChunkSize, 0, 0, true
 	case cl >= 0:
@@ -461,41 +472,50 @@ func (c *conn) h1ResponseHead() {
 	}
 }
 
-// takePartner picks the request a response answers. ord is the
-// request-direction counter stamped on the response's first chunk.
-func (c *conn) takePartner(ord uint32) *h1msg {
+// takePartner picks the request a response answers. ord and respCnt are the
+// request- and response-direction counters stamped on the response's first
+// chunk.
+func (c *conn) takePartner(ord, respCnt uint32) *h1msg {
 	h := &c.h1
 	q := h.queue
 	if len(q) == 0 {
 		return nil
 	}
-	i := 0
-	if !h.pipelined {
-		// The last request, if nothing in the request stream followed it;
-		// everything before it lost its response.
-		i = -1
-		for j := range q {
-			if q[j].ord <= ord {
-				i = j
-			}
+	// The last request, if nothing in the request stream followed it;
+	// everything before it lost its response.
+	i := -1
+	for j := range q {
+		if q[j].ord <= ord {
+			i = j
 		}
-		if i < 0 {
-			return nil
-		}
-		if ord != h.lastReqOrd || q[i].epoch != h.reqEpoch {
-			// The partner is a request we don't have: everything up to i
-			// lost its response, and this response is an orphan.
-			for _, o := range q[:i+1] {
-				orphanMessages.Add(1)
-				c.dropMsg(o)
-			}
-			h.queue = append(q[:0], q[i+1:]...)
-			return nil
-		}
-		for _, o := range q[:i] {
+	}
+	if i < 0 {
+		return nil
+	}
+	r := q[i]
+	adjacent := respCnt == r.respOrd+1 || (r.interim != 0 && (respCnt == r.interim || respCnt == r.interim+1))
+	if ord != h.lastReqOrd || r.epoch != h.reqEpoch || !adjacent {
+		// The partner is a request we don't have: everything up to i
+		// lost its response, and this response is an orphan.
+		inProgress := h.fr[c.reqDir].m
+		cut := false
+		for _, o := range q[:i+1] {
 			orphanMessages.Add(1)
 			c.dropMsg(o)
+			cut = cut || (o == inProgress && !adjacent)
 		}
+		h.queue = append(q[:0], q[i+1:]...)
+		if cut {
+			// A request still being framed was already answered: the client
+			// moved on, so the bytes we are framing as its body are not. The
+			// request stream resumes at its next clean message start.
+			c.h1Desync(c.reqDir)
+		}
+		return nil
+	}
+	for _, o := range q[:i] {
+		orphanMessages.Add(1)
+		c.dropMsg(o)
 	}
 	m := q[i]
 	h.queue = append(q[:0], q[i+1:]...)
@@ -557,30 +577,107 @@ func (c *conn) h1Finish() {
 	}
 }
 
-// bodyFraming reads Content-Length (-1 if absent) and chunked encoding.
-func bodyFraming(hdr []byte) (cl int64, chunked bool) {
+// bodyFraming reads a message's length headers the way RFC 9112 §6 says a
+// recipient must. cl is -1 without Content-Length. ok is false when the length
+// is ambiguous: the server may frame the message differently from us (request
+// smuggling class), so the caller stops capturing the connection instead of
+// guessing.
+//
+//   - Transfer-Encoding (all its headers, in order) must end in "chunked",
+//     with "chunked" appearing once, and no Content-Length alongside it.
+//   - Content-Length: every value (headers and comma lists) must be the same
+//     run of digits.
+//   - No folded header lines, and no whitespace between a length header's
+//     name and its colon.
+func bodyFraming(hdr []byte) (cl int64, chunked bool, ok bool) {
 	if hdr == nil {
-		return -1, false
+		return -1, false, true
 	}
-	if headerHas(hdr, "transfer-encoding", "chunked") {
-		return -1, true
-	}
-	v := headerValue(hdr, "content-length")
-	if v == nil {
-		return -1, false
-	}
-	n := int64(0)
-	for _, ch := range v {
-		if ch < '0' || ch > '9' || n > 1<<40 {
-			return -1, false
+	cl = -1
+	var te []byte
+	sawTE := false
+	lines := hdr
+	first := true
+	for len(lines) > 0 {
+		nl := bytes.IndexByte(lines, '\n')
+		if nl < 0 {
+			break
 		}
-		n = n*10 + int64(ch-'0')
+		line := bytes.TrimRight(lines[:nl], "\r")
+		lines = lines[nl+1:]
+		if first {
+			first = false
+			continue // start line
+		}
+		if len(line) == 0 {
+			break
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			return -1, false, false // obs-fold
+		}
+		colon := bytes.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		name := line[:colon]
+		trimmed := bytes.TrimRight(name, " \t")
+		isTE := bytes.EqualFold(trimmed, []byte("transfer-encoding"))
+		isCL := bytes.EqualFold(trimmed, []byte("content-length"))
+		if !isTE && !isCL {
+			continue
+		}
+		if len(trimmed) != len(name) {
+			return -1, false, false // whitespace before the colon
+		}
+		value := line[colon+1:]
+		if isTE {
+			sawTE = true
+			te = append(append(te, ','), value...)
+			continue
+		}
+		for _, part := range bytes.Split(value, []byte(",")) {
+			part = bytes.Trim(part, " \t")
+			if len(part) == 0 {
+				return -1, false, false
+			}
+			n := int64(0)
+			for _, ch := range part {
+				if ch < '0' || ch > '9' || n > 1<<40 {
+					return -1, false, false
+				}
+				n = n*10 + int64(ch-'0')
+			}
+			if cl >= 0 && n != cl {
+				return -1, false, false
+			}
+			cl = n
+		}
 	}
-	return n, false
+	if !sawTE {
+		return cl, false, true
+	}
+	if cl >= 0 {
+		return -1, false, false // both: RFC says reject
+	}
+	codings := 0
+	last := []byte(nil)
+	for _, part := range bytes.Split(te, []byte(",")) {
+		part = bytes.Trim(part, " \t")
+		if len(part) == 0 {
+			continue
+		}
+		if last != nil && bytes.EqualFold(last, []byte("chunked")) {
+			return -1, false, false // chunked must be the final coding, once
+		}
+		last = part
+		codings++
+	}
+	if codings == 0 || !bytes.EqualFold(last, []byte("chunked")) {
+		return -1, false, false
+	}
+	return -1, true, true
 }
 
-// headerValue returns the trimmed value of the first header named name
-// (lower case) in an HTTP/1 header block.
 func headerValue(head []byte, name string) []byte {
 	for len(head) > 0 {
 		nl := bytes.IndexByte(head, '\n')

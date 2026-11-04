@@ -68,6 +68,11 @@ type SocketDataEventAttr struct {
 	Lport uint32
 }
 
+// LostUnknown is set in a lost count (Lost, LostRun, LostRead, LostWrite) when
+// some bytes went missing whose size is unknown: a kretprobe/uretprobe that
+// never fired. The low 31 bits still count the bytes whose size is known.
+const LostUnknown uint32 = 1 << 31
+
 // MsgPayloadOffset is the byte offset of msg[] in socket_data_event_t (C
 // layout); it equals the Go size of SocketDataEventAttr.
 const MsgPayloadOffset = 64

@@ -85,6 +85,29 @@ func putBuf(b []byte) {
 	bufPool.Put(&b)
 }
 
+// lostUnknownBytes stands for a hole of unknown size: larger than any body, so
+// framing never counts it as part of a message and resyncs instead.
+const lostUnknownBytes int64 = 1 << 62
+
+// addLost adds lost counts, keeping the unknown-size flag.
+func addLost(a, b uint32) uint32 {
+	flag := (a | b) & structs.LostUnknown
+	sum := uint64(a&^structs.LostUnknown) + uint64(b&^structs.LostUnknown)
+	if sum >= uint64(structs.LostUnknown) {
+		sum = uint64(structs.LostUnknown) - 1
+	}
+	return uint32(sum) | flag
+}
+
+// lostSize turns a lost count into bytes for framing; an unknown-size hole is
+// lostUnknownBytes.
+func lostSize(v uint32) int64 {
+	if v&structs.LostUnknown != 0 {
+		return lostUnknownBytes
+	}
+	return int64(v)
+}
+
 func (c *conn) addHeld(n int) {
 	c.held += n
 	heldBytes.Add(int64(n))
@@ -128,7 +151,7 @@ func (c *conn) dropData(attr *structs.SocketDataEventAttr, n int) {
 		dir = dirSend
 	}
 	if attr.Ssl == c.ssl {
-		c.ulost[dir] += attr.Lost + uint32(n)
+		c.ulost[dir] = addLost(c.ulost[dir], addLost(attr.Lost, uint32(n)))
 	}
 }
 
@@ -147,14 +170,18 @@ func (c *conn) onData(attr *structs.SocketDataEventAttr, data []byte) {
 	if attr.Bytes_sent > 0 {
 		dir, own, other = dirSend, attr.WriteEventsCount, attr.ReadEventsCount
 	}
-	lost := int64(attr.Lost) + int64(c.ulost[dir])
+	lostCount := addLost(attr.Lost, c.ulost[dir])
+	lost := lostSize(lostCount)
 	// Bytes dropped in userspace may sit in this run; count them as such.
 	cleanRun := attr.LostRun == 0 && c.ulost[dir] == 0
 	c.ulost[dir] = 0
 	runStart := !c.seenDir[dir] || other != c.lastOther[dir]
 	c.lastOther[dir], c.seenDir[dir] = other, true
-	if lost > 0 {
-		lostBytes.Add(uint64(lost))
+	if lostCount != 0 {
+		lostBytes.Add(uint64(lostCount &^ structs.LostUnknown))
+		if lostCount&structs.LostUnknown != 0 {
+			lostUnknown.Add(1)
+		}
 	}
 
 	switch c.state {
@@ -173,11 +200,11 @@ func (c *conn) onData(attr *structs.SocketDataEventAttr, data []byte) {
 	case stateHTTP2:
 		c.onHTTP2(dir, data, lost > 0)
 	case stateHTTP1:
-		reqOrd := own // request-direction counter at this chunk
+		reqCnt, respCnt := own, other // both directions' counters at this chunk
 		if dir != c.reqDir {
-			reqOrd = other
+			reqCnt, respCnt = other, own
 		}
-		c.onHTTP1(dir, data, lost, runStart && cleanRun, reqOrd, other)
+		c.onHTTP1(dir, data, lost, runStart && cleanRun, reqCnt, respCnt)
 	}
 }
 
@@ -185,9 +212,9 @@ func (c *conn) onData(attr *structs.SocketDataEventAttr, data []byte) {
 // never reached us after the last delivered chunk.
 func (c *conn) onClose(lostRead, lostWrite uint32) {
 	if c.state == stateHTTP1 {
-		c.h1Lose(dirRecv, int64(lostRead)+int64(c.ulost[dirRecv]))
+		c.h1Lose(dirRecv, lostSize(addLost(lostRead, c.ulost[dirRecv])))
 		if c.state == stateHTTP1 {
-			c.h1Lose(dirSend, int64(lostWrite)+int64(c.ulost[dirSend]))
+			c.h1Lose(dirSend, lostSize(addLost(lostWrite, c.ulost[dirSend])))
 		}
 	}
 	c.finish()
@@ -213,18 +240,18 @@ func (c *conn) finish() {
 // wipe drops everything buffered for the connection, without emitting it
 // (memory pressure). Only the connection's identity is kept: HTTP/1 and
 // unclassified connections resume at the next clean message start, exactly as
-// after lost bytes. HTTP/2 can't rebuild its HPACK state, nor a pipelined
-// connection its request order, so those are ignored from here on.
+// after lost bytes. HTTP/2 can't rebuild its HPACK state, so it is ignored from
+// here on.
 func (c *conn) wipe() {
 	switch {
 	case c.state == stateUnknown:
 		c.dropPre()
 		c.preLost = true
-	case c.state == stateHTTP1 && !c.h1.pipelined:
+	case c.state == stateHTTP1:
 		epoch := c.h1.reqEpoch + 1 // nothing queued before the wipe may be paired
 		c.h1.reset(c)
 		c.h1.reqEpoch = epoch
-	case c.state == stateHTTP1, c.state == stateHTTP2:
+	case c.state == stateHTTP2:
 		c.ignore()
 	default: // TLS handshake or ignored: nothing buffered
 		return

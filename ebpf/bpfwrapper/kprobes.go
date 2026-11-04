@@ -2,7 +2,9 @@ package bpfwrapper
 
 import (
 	"log/slog"
+	"os"
 	"runtime"
+	"strconv"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -74,7 +76,20 @@ func PlatformPrefix() string {
 func AttachKprobes(coll *ebpf.Collection, kprobeList []Kprobe) ([]link.Link, error) {
 	var links []link.Link
 
-	for _, probe := range kprobeList {
+	// Returns first, for the same reason as uprobesReturnsFirst.
+	ordered := make([]Kprobe, 0, len(kprobeList))
+	for _, p := range kprobeList {
+		if p.Type == ReturnType {
+			ordered = append(ordered, p)
+		}
+	}
+	for _, p := range kprobeList {
+		if p.Type != ReturnType {
+			ordered = append(ordered, p)
+		}
+	}
+
+	for _, probe := range ordered {
 		functionToHook := probe.FunctionToHook
 		if probe.IsSyscall {
 			functionToHook = PlatformPrefix() + "sys_" + probe.FunctionToHook
@@ -98,7 +113,7 @@ func AttachKprobes(coll *ebpf.Collection, kprobeList []Kprobe) ([]link.Link, err
 
 		case ReturnType:
 			slog.Warn("Attaching kretprobe", "hook", probe.HookName, "function", functionToHook)
-			l, err := link.Kretprobe(functionToHook, prog, nil)
+			l, err := attachKretprobe(functionToHook, prog)
 			if err != nil {
 				slog.Error("failed to attach kretprobe", "hook", probe.HookName, "function", functionToHook, "error", err)
 				continue
@@ -111,4 +126,28 @@ func AttachKprobes(coll *ebpf.Collection, kprobeList []Kprobe) ([]link.Link, err
 	}
 
 	return links, nil
+}
+
+// kretprobeMaxActive is how many calls of one probed function can be in flight
+// (across all threads) while its return is still observed. The kernel default
+// is the CPU count on non-preemptible kernels (RHEL 8: 32 on a 32-CPU host), so
+// a loaded host silently skips returns once more threads than that sit inside
+// read() or write(). Each skipped return is a hole of unknown size in that
+// connection's stream. 4096 is the kernel's maximum.
+func kretprobeMaxActive() int {
+	if v, err := strconv.Atoi(os.Getenv("KRETPROBE_MAXACTIVE")); err == nil && v >= 0 {
+		return v
+	}
+	return 4096
+}
+
+func attachKretprobe(fn string, prog *ebpf.Program) (link.Link, error) {
+	if n := kretprobeMaxActive(); n > 0 {
+		l, err := link.Kretprobe(fn, prog, &link.KprobeOptions{RetprobeMaxActive: n})
+		if err == nil {
+			return l, nil
+		}
+		slog.Warn("kretprobe with maxactive failed, using the kernel default", "function", fn, "maxactive", n, "error", err)
+	}
+	return link.Kretprobe(fn, prog, nil)
 }

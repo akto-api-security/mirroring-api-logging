@@ -19,10 +19,20 @@ func chunkedResp(id int, body string) string {
 }
 
 // Many short connections mixing pipelining, chunked responses, early
-// answers, random syscall splits, 10% chunk loss in both directions and
-// occasional memory wipes. No
-// emitted pair may ever join a request with another exchange's response.
-func TestFuzzNoCrossedPairs(t *testing.T) {
+// answers, random syscall splits, 10% chunk loss in both directions,
+// occasional missed return probes, chunks whose socket can't be named when
+// they happen (the hole is reported at the session's next call) and memory
+// wipes. No emitted pair may ever join a request with another exchange's
+// response.
+func TestFuzzNoCrossedPairs(t *testing.T) { fuzzNoCrossedPairs(t, false) }
+
+// The same with chunks that vanish uncounted, which the kernel no longer
+// produces: the bytes around such a gap are spliced, so a message's content
+// can be wrong, but pairing must still never join two exchanges (two
+// different, well-formed request ids). Clients don't pipeline here.
+func TestFuzzSilentGapsNeverCrossPairs(t *testing.T) { fuzzNoCrossedPairs(t, true) }
+
+func fuzzNoCrossedPairs(t *testing.T, silent bool) {
 	n := int64(20000)
 	if testing.Short() {
 		n = 2000
@@ -40,6 +50,25 @@ func TestFuzzNoCrossedPairs(t *testing.T) {
 			}
 			return l
 		}
+		s.missed = func(dir uint8) bool {
+			m := rng.Intn(40) == 0
+			if m {
+				log = append(log, fmt.Sprintf("  MISSED return dir=%d", dir))
+			}
+			return m
+		}
+		gap := func(dir uint8) bool {
+			d := rng.Intn(30) == 0
+			if d {
+				log = append(log, fmt.Sprintf("  GAP dir=%d silent=%v", dir, silent))
+			}
+			return d
+		}
+		if silent {
+			s.drop = gap
+		} else {
+			s.owe = gap
+		}
 		wipeMaybe := func() {
 			if rng.Intn(25) == 0 {
 				log = append(log, "  WIPE")
@@ -48,7 +77,9 @@ func TestFuzzNoCrossedPairs(t *testing.T) {
 			}
 		}
 		carry := ""
-		pipe := rng.Intn(4) == 0
+		// A pipelined request whose head vanished leaves no trace that the
+		// connection pipelines, so silent gaps are only checked without it.
+		pipe := rng.Intn(4) == 0 && !silent
 		if pipe { // a pipelining client: requests first, then responses
 			var all, outs string
 			for i := 0; i < 4; i++ {
@@ -105,9 +136,19 @@ func TestFuzzNoCrossedPairs(t *testing.T) {
 		s.close()
 		for _, p := range cp.pairs {
 			a, b := idOf(p.req), idOf(p.resp)
+			if silent && (!intactID(p.req, a) || !intactID(p.resp, b)) {
+				continue // a message spliced at a gap, not a crossed pair
+			}
 			if a != "" && b != "" && a != b {
 				t.Fatalf("seed %d chunk %d: crossed %s/%s\n%s\nREQ=%q\nRESP=%q", seed, s.chunk, a, b, strings.Join(log, "\n"), p.req, p.resp)
 			}
 		}
 	}
+}
+
+// intactID reports whether msg names exchange id the same way in its start
+// line and in its X-Request-Id header (a splice at a gap rarely keeps both).
+func intactID(msg, id string) bool {
+	return len(id) == 1 && id[0] >= '0' && id[0] <= '3' &&
+		strings.Contains(msg, "\r\nX-Request-Id: "+id+"\r\n")
 }

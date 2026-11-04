@@ -285,8 +285,8 @@ var (
 	http2Streams        atomic.Uint64
 	http2ConnFailed     atomic.Uint64
 	lostBytes           atomic.Uint64
+	lostUnknown         atomic.Uint64 // holes of unknown size (missed kretprobe/uretprobe returns)
 	desyncs             atomic.Uint64
-	desyncedConns       atomic.Uint64
 	orphanMessages      atomic.Uint64
 	truncatedPairs      atomic.Uint64
 	cappedMessages      atomic.Uint64
@@ -307,8 +307,8 @@ func StatsArgs() []any {
 		"h2_streams", http2Streams.Swap(0),
 		"h2_conn_failed", http2ConnFailed.Swap(0),
 		"lost_bytes", lostBytes.Swap(0),
+		"lost_unknown", lostUnknown.Swap(0),
 		"desyncs", desyncs.Swap(0),
-		"pipelined_desync_drops", desyncedConns.Swap(0),
 		"orphans", orphanMessages.Swap(0),
 		"truncated_pairs", truncatedPairs.Swap(0),
 		"capped_messages", cappedMessages.Swap(0),

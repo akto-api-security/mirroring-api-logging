@@ -203,6 +203,9 @@ func startSocketDataSubmitStatsReporter(coll *ebpf.Collection) {
 		"socket_open_submit_failed_total",
 		"socket_close_submit_total",
 		"socket_close_submit_failed_total",
+		"ssl_fd_resolve_failed_total",
+		"missed_syscall_return_total",
+		"missed_ssl_return_total",
 	}
 	counters := make([]counterSpec, 0, len(counterNames))
 	for _, name := range counterNames {
@@ -512,6 +515,9 @@ func run() {
 	}
 	if captureSsl == "true" || captureAll == "true" {
 		go func() {
+			// Attach to the processes already running now; the ticker then
+			// only picks up processes started later.
+			attachToProcesses()
 			slog.Debug("Starting uprobe process ticker")
 			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()

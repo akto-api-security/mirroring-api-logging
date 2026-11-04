@@ -30,8 +30,19 @@ type sim struct {
 	ssl     bool
 	chunk   int
 	lose    func(dir uint8) bool // chunk is counted but not delivered
-	laddr   uint32               // local address stamped on data records
-	lport   uint16
+	// missed: the whole syscall's return probe never fired. The kernel notices at
+	// the thread's next entry: one chunk counted, hole flagged unknown-size.
+	missed func(dir uint8) bool
+	// drop: the chunk never reaches the connection and nothing is counted
+	// (a TLS read whose socket could not be named).
+	drop func(dir uint8) bool
+	// owe: the chunk's connection is unknown when it happens; the session's
+	// next call in that direction reports a hole of unknown size first
+	// (ssl_hole_map in the kernel).
+	owe   func(dir uint8) bool
+	owed  [2]bool
+	laddr uint32 // local address stamped on data records
+	lport uint16
 }
 
 type pair struct {
@@ -103,8 +114,35 @@ func (s *sim) syscall(dir uint8, data string) {
 	if s.runDir != int(dir) {
 		s.runDir, s.lostRun = int(dir), 0
 	}
+	if s.owed[dir] {
+		s.owed[dir] = false
+		if dir == dirSend {
+			s.wc++
+		} else {
+			s.rc++
+		}
+		s.lost[dir] |= structs.LostUnknown
+		s.lostRun |= structs.LostUnknown
+	}
+	if s.owe != nil && s.owe(dir) {
+		s.owed[dir] = true // the whole call: its chunks go together or not at all
+		return
+	}
+	if s.missed != nil && s.missed(dir) {
+		if dir == dirSend {
+			s.wc++
+		} else {
+			s.rc++
+		}
+		s.lost[dir] |= structs.LostUnknown
+		s.lostRun |= structs.LostUnknown
+		return
+	}
 	for off := 0; off < len(data); off += s.chunk {
 		end := min(off+s.chunk, len(data))
+		if s.drop != nil && s.drop(dir) {
+			continue
+		}
 		if dir == dirSend {
 			s.wc++
 		} else {
@@ -425,7 +463,7 @@ func TestCloseDelimitedResponseEmittedAtClose(t *testing.T) {
 
 // A pipelining client: requests split across reads at arbitrary byte
 // offsets, responses written between them. Pairing follows request order.
-func TestPipelinedRequestsPairInOrder(t *testing.T) {
+func TestPipelinedConnectionIsNotPaired(t *testing.T) {
 	cp := newCapture(t)
 	s := newSim(t, newShard())
 	all := ""
@@ -441,14 +479,11 @@ func TestPipelinedRequestsPairInOrder(t *testing.T) {
 	s.read(all[cut2:])
 	s.write(resp(5, "e") + resp(6, "f"))
 	s.close()
-	if len(cp.pairs) != 6 {
-		t.Fatalf("pairs = %d, want 6", len(cp.pairs))
-	}
-	for i, p := range cp.pairs {
-		want := fmt.Sprint(i + 1)
-		if idOf(p.req) != want || idOf(p.resp) != want || p.req != req(i+1, strings.Repeat("p", (i+1)*7)) {
-			t.Fatalf("pair %d: %q / %q", i, idOf(p.req), idOf(p.resp))
-		}
+	// Pipelining looks exactly like a response we never saw; pairing in
+	// arrival order would shift every pair after one unseen response. The
+	// connection is dropped instead.
+	if len(cp.pairs) != 0 || cp.ignored != 1 {
+		t.Fatalf("pairs = %d ignored = %d, want 0 pairs and the connection ignored", len(cp.pairs), cp.ignored)
 	}
 }
 
@@ -883,5 +918,144 @@ func TestTrafficContextAddresses(t *testing.T) {
 	}
 	if ctx.SourceIP != "10.0.0.1:51234" || ctx.DestIP != "10.0.128.12:443" {
 		t.Fatalf("source %s dest %s", ctx.SourceIP, ctx.DestIP)
+	}
+}
+
+// A response write whose return probe never fired (seen on RHEL 8 under load):
+// the next request must not be taken for pipelining, and no pair may cross.
+func TestMissedReturnNeverCrossesPairs(t *testing.T) {
+	for _, missedDir := range []uint8{dirSend, dirRecv} {
+		cp := newCapture(t)
+		pipelined0 := pipelinedConns.Load()
+		s := newSim(t, newShard())
+		s.open()
+		for i := 1; i <= 6; i++ {
+			s.missed = func(d uint8) bool { return i == 2 && d == missedDir }
+			s.read(req(i, strings.Repeat("b", 50)))
+			s.write(resp(i, strings.Repeat("x", 300)))
+		}
+		s.close()
+		if pipelinedConns.Load() != pipelined0 {
+			t.Fatalf("dir %d: a missed return was taken for pipelining", missedDir)
+		}
+		got := map[string]bool{}
+		for _, p := range cp.pairs {
+			if idOf(p.req) != idOf(p.resp) {
+				t.Fatalf("dir %d: crossed %s/%s", missedDir, idOf(p.req), idOf(p.resp))
+			}
+			got[idOf(p.req)] = true
+		}
+		for _, id := range []string{"1", "3", "4", "5", "6"} {
+			if !got[id] {
+				t.Fatalf("dir %d: pair %s missing; got %v", missedDir, id, got)
+			}
+		}
+	}
+}
+
+// Length headers are read the way RFC 9112 §6 tells a recipient to; anything
+// the server might frame differently is reported as ambiguous.
+func TestBodyFramingStrict(t *testing.T) {
+	head := func(lines ...string) []byte {
+		return []byte("POST / HTTP/1.1\r\n" + strings.Join(lines, "\r\n") + "\r\n\r\n")
+	}
+	cases := []struct {
+		name    string
+		hdr     []byte
+		cl      int64
+		chunked bool
+		ok      bool
+	}{
+		{"none", head("Host: h"), -1, false, true},
+		{"cl", head("Content-Length: 10"), 10, false, true},
+		{"cl identical list", head("Content-Length: 10, 10"), 10, false, true},
+		{"cl identical headers", head("Content-Length: 10", "content-length: 10"), 10, false, true},
+		{"cl differing list", head("Content-Length: 10, 20"), -1, false, false},
+		{"cl differing headers", head("Content-Length: 10", "Content-Length: 20"), -1, false, false},
+		{"cl plus sign", head("Content-Length: +10"), -1, false, false},
+		{"cl exponent", head("Content-Length: 1e2"), -1, false, false},
+		{"cl empty", head("Content-Length: "), -1, false, false},
+		{"cl space before colon", head("Content-Length : 10"), -1, false, false},
+		{"te chunked", head("Transfer-Encoding: chunked"), -1, true, true},
+		{"te gzip, chunked", head("Transfer-Encoding: gzip, chunked"), -1, true, true},
+		{"te split headers", head("Transfer-Encoding: gzip", "Transfer-Encoding: chunked"), -1, true, true},
+		{"te xchunked", head("Transfer-Encoding: xchunked"), -1, false, false},
+		{"te chunked not last", head("Transfer-Encoding: chunked, identity"), -1, false, false},
+		{"te chunked twice", head("Transfer-Encoding: chunked, chunked"), -1, false, false},
+		{"te and cl", head("Transfer-Encoding: chunked", "Content-Length: 5"), -1, false, false},
+		{"obs-fold", head("Transfer-Encoding:", " chunked"), -1, false, false},
+	}
+	for _, tc := range cases {
+		cl, chunked, ok := bodyFraming(tc.hdr)
+		if cl != tc.cl || chunked != tc.chunked || ok != tc.ok {
+			t.Errorf("%s: got (%d, %v, %v), want (%d, %v, %v)", tc.name, cl, chunked, ok, tc.cl, tc.chunked, tc.ok)
+		}
+	}
+}
+
+// A request whose length is ambiguous ends capture of the connection instead
+// of a guess that could frame it differently from the server.
+func TestAmbiguousLengthDropsConnection(t *testing.T) {
+	cp := newCapture(t)
+	s := newSim(t, newShard())
+	s.open()
+	s.read(req(1, ""))
+	s.write(resp(1, "a"))
+	s.read("POST /item/2 HTTP/1.1\r\nHost: h\r\nX-Request-Id: 2\r\nContent-Length: 4, 40\r\n\r\nGET /item/3 HTTP/1.1\r\nHost: h\r\n\r\n")
+	s.write(resp(2, "b") + resp(3, "c"))
+	s.close()
+	if len(cp.pairs) != 1 || idOf(cp.pairs[0].req) != "1" || cp.ignored != 1 {
+		t.Fatalf("pairs %d ignored %d", len(cp.pairs), cp.ignored)
+	}
+}
+
+// A request body that silently lost bytes swallows the next request, and the
+// response of the swallowed request arrives while the first request is still
+// queued (its own response was lost). Request counters and epochs can't tell;
+// the response counter can: a response chunk came in between, so the first
+// request was already answered.
+func TestSwallowedRequestNeverPairsWithFirst(t *testing.T) {
+	cp := newCapture(t)
+	s := newSim(t, newShard())
+	s.read(req(1, "")) // keep-alive warm-up pair
+	s.write(resp(1, "a"))
+	r2 := req(2, strings.Repeat("x", 200))
+	s.read(r2[:len(r2)-150])
+	s.drop = func(uint8) bool { return true }
+	s.read(r2[len(r2)-150:]) // 150 body bytes vanish, uncounted
+	s.drop = nil
+	s.lose = func(dir uint8) bool { return dir == dirSend }
+	s.write(resp(2, "b")) // counted, never delivered
+	s.lose = nil
+	s.read(req(3, "")) // framed as the rest of request 2's body
+	s.write(resp(3, "c"))
+	s.read(req(4, ""))
+	s.write(resp(4, "d"))
+	s.close()
+	for _, p := range cp.pairs {
+		if idOf(p.req) != idOf(p.resp) {
+			t.Fatalf("crossed pair: request %s with response %s", idOf(p.req), idOf(p.resp))
+		}
+	}
+	if len(cp.pairs) == 0 || idOf(cp.pairs[len(cp.pairs)-1].resp) != "4" {
+		t.Fatalf("capture did not resume: %+v", cp.pairs)
+	}
+}
+
+// A 100-continue written in the same write as the final response, and in its
+// own write, both leave the final response paired with its request.
+func TestInterimResponseKeepsPairing(t *testing.T) {
+	cp := newCapture(t)
+	s := newSim(t, newShard())
+	head := "POST /up HTTP/1.1\r\nHost: h\r\nX-Request-Id: 8\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n"
+	s.read(head)
+	s.write("HTTP/1.1 100 Continue\r\n\r\n")
+	s.read("hi")
+	s.write("HTTP/1.1 102 Processing\r\n\r\n" + resp(8, "ok"))
+	s.read(req(9, ""))
+	s.write(resp(9, "n"))
+	s.close()
+	if len(cp.pairs) != 2 || idOf(cp.pairs[0].resp) != "8" || idOf(cp.pairs[1].resp) != "9" {
+		t.Fatalf("got %+v", cp.pairs)
 	}
 }
