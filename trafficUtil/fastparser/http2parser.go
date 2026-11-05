@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/akto-api-security/mirroring-api-logging/trafficUtil/utils"
 	"golang.org/x/net/http2/hpack"
 )
 
@@ -46,10 +47,10 @@ const (
 	h2FrameHeaderLen = 9
 
 	// Guards against a corrupt/huge length field and unbounded per-stream growth.
-	h2MaxFrameSize        = 1 << 20  // 1 MB single frame
-	h2MaxStreamBodyBytes  = 8 << 20  // 8 MB accumulated per stream, then dropped
-	h2DefaultHeaderTable  = 4096
-	h2ClientPreface       = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+	h2MaxFrameSize       = 1 << 20 // 1 MB single frame
+	h2MaxStreamBodyBytes = 8 << 20 // 8 MB accumulated per stream, then dropped
+	h2DefaultHeaderTable = 4096
+	h2ClientPreface      = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 )
 
 var errShortFrame = errors.New("http2: short frame payload")
@@ -76,8 +77,9 @@ type HTTP2Stream struct {
 // dirState is the persistent decode state for ONE direction.
 type dirState struct {
 	dec              *hpack.Decoder
-	buf              []byte // leftover partial-frame bytes carried across Feed calls
-	pendingHdr       []byte // header block being accumulated across HEADERS+CONTINUATION
+	tol              *TolerantDecoder // used instead of dec when TolerantHPACKEnabled
+	buf              []byte           // leftover partial-frame bytes carried across Feed calls
+	pendingHdr       []byte           // header block being accumulated across HEADERS+CONTINUATION
 	pendingStream    uint32
 	pendingEndStream bool
 }
@@ -222,7 +224,26 @@ func (c *HTTP2Conn) handleFrame(d *dirState, isRequest bool, typ, flags byte, st
 // decodePending HPACK-decodes the accumulated header block (persistent dynamic
 // table) and applies it to the stream.
 func (c *HTTP2Conn) decodePending(d *dirState, isRequest bool) error {
-	fields, err := d.dec.DecodeFull(d.pendingHdr)
+	var (
+		fields []hpack.HeaderField
+		err    error
+	)
+	if TolerantHPACKEnabled {
+		// Skips representations whose index predates our join instead of
+		// discarding the block. Still errors — and so still abandons the
+		// connection — on a block that cannot be walked at all, because from
+		// there our dynamic table would drift out of step with the peer's.
+		if d.tol == nil {
+			d.tol = NewTolerantDecoder(h2DefaultHeaderTable)
+		}
+		before := d.tol.Unresolved
+		fields, err = d.tol.Decode(d.pendingHdr)
+		if n := d.tol.Unresolved - before; n > 0 {
+			utils.Pipeline.HTTP2HpackUnresolved.Add(int64(n))
+		}
+	} else {
+		fields, err = d.dec.DecodeFull(d.pendingHdr)
+	}
 	streamID := d.pendingStream
 	endStream := d.pendingEndStream
 	d.pendingHdr = nil
