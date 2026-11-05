@@ -22,6 +22,15 @@ func init() {
 	utils.InitVar("AKTO_CONN_PREFILL", &enableConnPrefill)
 }
 
+// PrefillEnabled reports whether pre-existing connections are written into the
+// BPF maps. Other startup paths warn when they depend on it and it is off.
+func PrefillEnabled() bool {
+	return enableConnPrefill
+}
+
+// tcpStateListen is TCP_LISTEN as /proc/net/tcp renders it (hex, field 4).
+const tcpStateListen = 0x0A
+
 // SocketInfo holds parsed socket information from /proc/net/tcp
 type SocketInfo struct {
 	Inode      uint64
@@ -29,6 +38,7 @@ type SocketInfo struct {
 	LocalPort  uint16
 	RemoteIP   uint32
 	RemotePort uint16
+	State      uint8
 }
 
 // FdInfo holds file descriptor information
@@ -44,6 +54,13 @@ type ConnectionInfo struct {
 	RemotePort uint16
 	LocalIP    uint32
 	LocalPort  uint16
+	// Role is structs.RoleServer when this connection's local port is one the
+	// process is listening on, structs.RoleClient otherwise. accept()/connect()
+	// normally supply this; a pre-existing connection never ran either under our
+	// probes, so it is inferred here instead. Leaving it RoleUnknown makes the
+	// HTTP/2 path fall back to assuming the server side, which mislabels request
+	// and response on every connection where we are actually the client.
+	Role uint32
 }
 
 // GenTgidFd generates the map key matching the C function gen_tgid_fd
@@ -61,10 +78,18 @@ func SerializeConnInfo(info *structs.ConnInfoT) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ParseProcNetTcp parses /proc/<pid>/net/tcp and /proc/<pid>/net/tcp6
-// Returns a map of inode -> SocketInfo
-func ParseProcNetTcp(pid uint32) (map[uint64]*SocketInfo, error) {
+// ParseProcNetTcp parses /proc/<pid>/net/tcp and /proc/<pid>/net/tcp6.
+// Returns a map of inode -> SocketInfo for established connections, plus a map
+// of inode -> port for listening sockets. The listener map is keyed by inode
+// rather than port on purpose: /proc/<pid>/net/tcp is per network namespace, so
+// it lists every listener in the namespace, not just this process's. Matching
+// those inodes against the process's own fds (see EnumerateExistingConnections)
+// narrows it back down to the ports this process actually accepts on, which is
+// what tells a server connection from a client one without having seen
+// accept() or connect().
+func ParseProcNetTcp(pid uint32) (map[uint64]*SocketInfo, map[uint64]uint16, error) {
 	sockets := make(map[uint64]*SocketInfo)
+	listening := make(map[uint64]uint16)
 
 	// Parse both tcp and tcp6
 	for _, proto := range []string{"tcp", "tcp6"} {
@@ -88,11 +113,17 @@ func ParseProcNetTcp(pid uint32) (map[uint64]*SocketInfo, error) {
 			if err != nil {
 				continue
 			}
+			if info.State == tcpStateListen {
+				// A listener has no remote peer, so it is not a connection we can
+				// prefill — but its port identifies every inbound connection.
+				listening[info.Inode] = info.LocalPort
+				continue
+			}
 			sockets[info.Inode] = info
 		}
 	}
 
-	return sockets, nil
+	return sockets, listening, nil
 }
 
 // parseTcpLine parses a single line from /proc/net/tcp or tcp6
@@ -115,6 +146,12 @@ func parseTcpLine(line string, isIPv6 bool) (*SocketInfo, error) {
 		return nil, err
 	}
 
+	// Parse connection state (field 3, hex)
+	state, err := strconv.ParseUint(fields[3], 16, 8)
+	if err != nil {
+		return nil, err
+	}
+
 	// Parse inode (field 9)
 	inode, err := strconv.ParseUint(fields[9], 10, 64)
 	if err != nil {
@@ -127,6 +164,7 @@ func parseTcpLine(line string, isIPv6 bool) (*SocketInfo, error) {
 		LocalPort:  localPort,
 		RemoteIP:   remoteIP,
 		RemotePort: remotePort,
+		State:      uint8(state),
 	}, nil
 }
 
@@ -208,10 +246,35 @@ func GetSocketFds(pid uint32) ([]FdInfo, error) {
 	return fds, nil
 }
 
+// ownListeningPorts narrows a namespace-wide listener set (inode -> port, as
+// ParseProcNetTcp returns it) to the ports this process itself accepts on, by
+// keeping only the listening inodes it holds an fd for. Without this step a
+// sibling process's listening port in the same network namespace would make
+// our own outbound connection on that port number look inbound.
+func ownListeningPorts(fds []FdInfo, listeners map[uint64]uint16) map[uint16]bool {
+	own := make(map[uint16]bool)
+	for _, fdInfo := range fds {
+		if port, ok := listeners[fdInfo.Inode]; ok {
+			own[port] = true
+		}
+	}
+	return own
+}
+
+// inferRole classifies a pre-existing connection the probes never saw open.
+// Inbound connections land on a port the process accept()s on; outbound ones
+// get an ephemeral local port that is not in the listening set.
+func inferRole(localPort uint16, ownListenPorts map[uint16]bool) uint32 {
+	if ownListenPorts[localPort] {
+		return structs.RoleServer
+	}
+	return structs.RoleClient
+}
+
 // EnumerateExistingConnections returns all existing TCP connections for a PID
 func EnumerateExistingConnections(pid uint32) ([]ConnectionInfo, error) {
-	// Get socket info by inode
-	sockets, err := ParseProcNetTcp(pid)
+	// Get socket info by inode, plus every listener in this network namespace
+	sockets, listeners, err := ParseProcNetTcp(pid)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +285,8 @@ func EnumerateExistingConnections(pid uint32) ([]ConnectionInfo, error) {
 		return nil, err
 	}
 
+	ownListenPorts := ownListeningPorts(fds, listeners)
+
 	// Match FDs to sockets
 	var connections []ConnectionInfo
 	for _, fdInfo := range fds {
@@ -230,12 +295,14 @@ func EnumerateExistingConnections(pid uint32) ([]ConnectionInfo, error) {
 			if sockInfo.RemoteIP == 0 && sockInfo.RemotePort == 0 {
 				continue
 			}
+			role := inferRole(sockInfo.LocalPort, ownListenPorts)
 			connections = append(connections, ConnectionInfo{
 				Fd:         fdInfo.Fd,
 				RemoteIP:   sockInfo.RemoteIP,
 				RemotePort: sockInfo.RemotePort,
 				LocalIP:    sockInfo.LocalIP,
 				LocalPort:  sockInfo.LocalPort,
+				Role:       role,
 			})
 		}
 	}
@@ -342,8 +409,9 @@ func PopulateExistingConnections(
 				Ssl:              false,
 				ReadEventsCount:  0,
 				WriteEventsCount: 0,
-				MsgSeq:           0, // First data event will init to 1
-				PrevDirection:    0, // Irrelevant when msg_seq=0
+				Role:             conn.Role, // inferred from the listening-port set
+				MsgSeq:           0,         // First data event will init to 1
+				PrevDirection:    0,         // Irrelevant when msg_seq=0
 			}
 
 			err := PopulateConnInfoWithRotation(

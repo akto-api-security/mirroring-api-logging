@@ -150,6 +150,25 @@ func run() {
 	setKernelFlag(bpfModule, "drop_http1_flag", dropHttp1)
 	slog.Info("kernel HTTP/1 drop", "enabled", dropHttp1 == 1)
 
+	// Populate h2_frame_shape_flag: when 1, classify_protocol recognises HTTP/2
+	// by frame shape for connections whose preface it never saw. Default 0.
+	//
+	// Only meaningful together with AKTO_CONN_PREFILL: without a conn_info row
+	// the data path returns before classification, so this alone cannot rescue a
+	// pre-existing connection. Log it when it is on without prefill, since that
+	// combination silently does nothing.
+	h2FrameShape := uint32(0)
+	if strings.EqualFold(os.Getenv("AKTO_H2_FRAME_SHAPE_DETECT"), "true") {
+		h2FrameShape = 1
+	}
+	setKernelFlag(bpfModule, "h2_frame_shape_flag", h2FrameShape)
+	slog.Info("kernel HTTP/2 frame-shape detection", "enabled", h2FrameShape == 1)
+	if h2FrameShape == 1 && !conntrack.PrefillEnabled() {
+		slog.Warn("AKTO_H2_FRAME_SHAPE_DETECT is on but AKTO_CONN_PREFILL is off; " +
+			"pre-existing connections have no conn_info row and are dropped before " +
+			"classification, so frame-shape detection will have no effect on them")
+	}
+
 	// TODO: pids should be of K8 services only ??
 	fillExistingConnections(bpfModule, tracedPids)
 
