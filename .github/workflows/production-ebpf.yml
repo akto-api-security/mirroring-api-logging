@@ -1,0 +1,99 @@
+# Production: release a versioned ebpf image from feature/k8s_ebpf.
+# Pushes ebpf-<version> and the legacy moving tag k8s_ebpf (same digest),
+# then creates an annotated git tag ebpf-<version> and a GitHub release.
+name: production-ebpf
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version without prefix (e.g. 1.2.3)."
+        required: true
+      architecture:
+        description: "Target architecture(s)."
+        required: true
+        type: choice
+        options: [both, arm64, amd64]
+        default: both
+
+concurrency:
+  group: production-ebpf
+  cancel-in-progress: false
+
+env:
+  ECR_IMAGE: public.ecr.aws/p7q3h0z2/mirror-api-logging
+  DOCKERHUB_IMAGE: aktosecurity/mirror-api-logging
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/feature/k8s_ebpf'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version and uniqueness
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must be MAJOR.MINOR.PATCH, got '$VERSION'"; exit 1
+          fi
+          TAG="ebpf-$VERSION"
+          if git ls-remote --exit-code --tags "https://github.com/${{ github.repository }}.git" "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::git tag $TAG already exists"; exit 1
+          fi
+          for img in "$ECR_IMAGE" "$DOCKERHUB_IMAGE"; do
+            if docker buildx imagetools inspect "$img:$TAG" >/dev/null 2>&1; then
+              echo "::error::image $img:$TAG already exists"; exit 1
+            fi
+          done
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/_ebpf-build.yml
+    with:
+      tags: ebpf-${{ inputs.version }},k8s_ebpf
+      architecture: ${{ inputs.architecture }}
+    secrets: inherit
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create annotated git tag
+        env:
+          TAG: ebpf-${{ inputs.version }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "${{ github.sha }}" -m "ebpf release $TAG
+          image: $DOCKERHUB_IMAGE:$TAG
+          image: $ECR_IMAGE:$TAG
+          digest: $DIGEST
+          run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push origin "refs/tags/$TAG"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ebpf-${{ inputs.version }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          PREV="$(git tag --list 'ebpf-[0-9]*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          cat > notes.md <<NOTES
+          ## Images
+          - \`$DOCKERHUB_IMAGE:$TAG\`
+          - \`$ECR_IMAGE:$TAG\`
+          - digest: \`$DIGEST\`
+          - also pushed as \`k8s_ebpf\` (legacy moving tag, same digest)
+
+          Commit: ${{ github.sha }}
+          NOTES
+          ARGS=(--title "$TAG" --notes-file notes.md --generate-notes)
+          [ -n "$PREV" ] && ARGS+=(--notes-start-tag "$PREV")
+          gh release create "$TAG" "${ARGS[@]}"

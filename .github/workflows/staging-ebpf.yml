@@ -1,0 +1,40 @@
+# Staging: build any branch and push it under a free-form image tag.
+# No git tag, no GitHub release. Cannot overwrite production tags.
+name: staging-ebpf
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to push (e.g. k8s_ebpf_dev_foo). Production tags are rejected."
+        required: true
+      architecture:
+        description: "Target architecture(s)."
+        required: true
+        type: choice
+        options: [both, arm64, amd64]
+        default: both
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject production-reserved tags
+        env:
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "::error::invalid docker tag: $TAG"; exit 1
+          fi
+          lower="$(printf '%s' "$TAG" | tr 'A-Z' 'a-z')"
+          if printf '%s' "$lower" | grep -Eq '^(k8s_ebpf|latest)$|^ebpf-[0-9]|^tcpdump-[0-9]'; then
+            echo "::error::'$TAG' is reserved for production releases; use production-ebpf.yml"; exit 1
+          fi
+
+  build:
+    needs: guard
+    uses: ./.github/workflows/_ebpf-build.yml
+    with:
+      tags: ${{ inputs.image_tag }}
+      architecture: ${{ inputs.architecture }}
+    secrets: inherit
