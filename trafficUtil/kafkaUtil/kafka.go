@@ -236,7 +236,7 @@ func getDaemonPodName() string {
 func getImageVersion() string {
 	imageVersion := os.Getenv("AKTO_IMAGE_VERSION")
 	if imageVersion == "" {
-		imageVersion = "aktosecurity/mirror-api-logging:k8s-ebpf"
+		imageVersion = "aktosecurity/mirror-api-logging:k8s_ebpf"
 	}
 	return imageVersion
 }

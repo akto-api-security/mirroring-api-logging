@@ -39,6 +39,10 @@ FROM base
 
 RUN apk add perf bpftrace curl jq
 
+# Image name reported in heartbeats (AKTO_IMAGE_VERSION); set by the release workflow via --build-arg.
+ARG IMAGE_TAG=k8s_ebpf
+ENV AKTO_IMAGE_VERSION=aktosecurity/mirror-api-logging:${IMAGE_TAG}
+
 WORKDIR /ebpf
 COPY --from=builder /ebpf/ebpf-logging /ebpf/ebpf-logging
 COPY --from=builder /ebpf/kernel/module.cc /ebpf/kernel/module.cc
