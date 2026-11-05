@@ -51,6 +51,7 @@ jobs:
           done
           [ -z "$IMAGES" ] && { echo "no tags given"; exit 1; }
           echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+          echo "first_tag=$(echo "${T[0]}" | xargs)" >> "$GITHUB_OUTPUT"
           { echo "images<<EOF"; printf '%s' "$IMAGES"; echo "EOF"; } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
@@ -78,8 +79,9 @@ jobs:
           platforms: ${{ steps.cfg.outputs.platform }}
           push: true
           tags: ${{ steps.cfg.outputs.images }}
+          build-args: |
+            IMAGE_TAG=${{ steps.cfg.outputs.first_tag }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.ref.name=${{ github.ref_name }}
-          provenance: false
