@@ -1,0 +1,85 @@
+# Reusable: build Dockerfile.eBPF once and push the given tags to ECR Public and DockerHub.
+# Called by staging-ebpf.yml and production-ebpf.yml; not meant to be run directly.
+name: _ebpf-build
+
+on:
+  workflow_call:
+    inputs:
+      tags:
+        description: "Comma-separated image tags to push (same digest for all)."
+        required: true
+        type: string
+      architecture:
+        description: "both | arm64 | amd64"
+        required: false
+        type: string
+        default: both
+    outputs:
+      digest:
+        description: "Image digest (sha256:...) of the pushed manifest."
+        value: ${{ jobs.build.outputs.digest }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      ECR_IMAGE: public.ecr.aws/p7q3h0z2/mirror-api-logging
+      DOCKERHUB_IMAGE: aktosecurity/mirror-api-logging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve platforms and image list
+        id: cfg
+        env:
+          ARCH_INPUT: ${{ inputs.architecture }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          case "$ARCH_INPUT" in
+            arm64) PLATFORM="linux/arm64/v8" ;;
+            amd64) PLATFORM="linux/amd64" ;;
+            both)  PLATFORM="linux/arm64/v8,linux/amd64" ;;
+            *) echo "invalid architecture: $ARCH_INPUT"; exit 1 ;;
+          esac
+          IMAGES=""
+          IFS=',' read -ra T <<< "$TAGS"
+          for t in "${T[@]}"; do
+            t="$(echo "$t" | xargs)"
+            [ -z "$t" ] && continue
+            IMAGES="${IMAGES}${ECR_IMAGE}:${t}"$'\n'"${DOCKERHUB_IMAGE}:${t}"$'\n'
+          done
+          [ -z "$IMAGES" ] && { echo "no tags given"; exit 1; }
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+          { echo "images<<EOF"; printf '%s' "$IMAGES"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.eBPF
+          platforms: ${{ steps.cfg.outputs.platform }}
+          push: true
+          tags: ${{ steps.cfg.outputs.images }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
+          provenance: false
